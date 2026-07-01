@@ -48,6 +48,8 @@ class Observables:
     transmissions : dict, optional
         Transmission coefficients between contact pairs.
 
+    bond_currents : NDArray, optional
+        Bond current values for each bond (couple of orbitals) in the device, if full current calculation is enabled.
     """
 
     electron_ldos: dict[Contact, NDArray] = field(default_factory=dict)
@@ -792,15 +794,27 @@ class QTBM(TransportSolver):
         if self.config.qtbm.full_current:
             for contact in self.device.contacts:
                 slice_tuple = injection_slices[contact].indices(phi.shape[1])
-                for n_phi in range(*slice_tuple):
-                    M = -(
-                        sparse.diags(phi[:, n_phi].T.conj())
-                        @ self.system_matrix
-                        @ sparse.diags(phi[:, n_phi])
+                row_indices = xp.repeat(
+                    xp.arange(self.system_matrix.shape[0]),
+                    xp.diff(self.system_matrix.indptr).tolist(),
+                )
+                for n_phi in range(
+                    *slice_tuple
+                ):  # Iterate over the injected modes for the current contact
+                    # Compute the bond current contribution directly on the existing
+                    # sparsity pattern so explicit zeros are preserved.
+                    bond_current_data = -(
+                        xp.conjugate(phi[row_indices, n_phi])
+                        * self.system_matrix.data
+                        * phi[self.system_matrix.indices, n_phi]
                     )
+                    # Update the bond currents observable with the contribution from this mode,
+                    # weighted by the Fermi-Dirac distribution and the energy differentials
+                    # Due to the large size of the bond transmission matrix,
+                    # we compute the contribution in-place without storing the full bond transmission matrix
                     self.observables.bond_currents -= (
                         2
-                        * xp.imag(M.data)
+                        * xp.imag(bond_current_data)
                         * fermi_dirac(
                             self.local_energies[global_energy_ind]
                             - contact.fermi_level,
@@ -1263,56 +1277,6 @@ class QTBM(TransportSolver):
         for contact in self.device.contacts:
             contact._init_hamiltonian_overlap_matrices()
 
-    def _compute_excess_charge_densities(self):
-        """Computes the charge density from the local density of states.
-
-        Returns
-        -------
-        excess_electron_density : NDArray
-            The excess electron density computed from the local density
-            of states.
-        excess_hole_density : NDArray
-            The excess hole density computed from the local density of
-            states.
-        """
-
-        # Compute the spectral electron and hole densities.
-        electron_density = xp.zeros((self.num_orbitals, self.electron_energies.size))
-        hole_density = xp.zeros((self.num_orbitals, self.electron_energies.size))
-        for contact, ldos in self.observables.electron_ldos.items():
-            mu = contact.fermi_level - contact.voltage
-            occupancy = fermi_dirac(
-                self.electron_energies - mu,
-                contact.temperature,
-            )
-
-            electron_density += occupancy * ldos.sum(axis=0) * 2  # Spin
-            hole_density += (1 - occupancy) * ldos.sum(axis=0) * 2  # Spin
-
-        # Find the reference contact mid-gap energy to separate
-        # electrons and holes.
-        for contact in self.device.contacts:
-            if contact.voltage == 0:
-                mid_gap_energy = contact.mid_gap_energy
-                break
-        else:  # Did not break, no reference contact found
-            raise ValueError(
-                "No reference contact with zero voltage found to determine mid-gap energy."
-            )
-
-        mid_gap_energy = self.device.potential + mid_gap_energy
-
-        mask = self.electron_energies > mid_gap_energy[:, None]
-        electron_density[~mask] = 0
-        hole_density[mask] = 0
-
-        excess_electron_density = xp.trapezoid(
-            electron_density, self.electron_energies, axis=1
-        )
-        excess_hole_density = xp.trapezoid(hole_density, self.electron_energies, axis=1)
-
-        return excess_electron_density, excess_hole_density
-
     def get_charge_density(self) -> NDArray:
         """Gets the charge density from the QTBM calculation.
 
@@ -1440,6 +1404,8 @@ class QTBM(TransportSolver):
             )
 
         if self.config.qtbm.full_current:
+            # Reduce the bond currents across all processes to get the total bond currents
+            # all_reduce_v is not present, so we need a temporary array
             temp = xp.empty_like(self.observables.bond_currents)
             comm.stack.all_reduce(self.observables.bond_currents, temp)
             self.observables.bond_currents = temp
