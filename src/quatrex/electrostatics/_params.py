@@ -11,6 +11,7 @@ of order -1/2 by piecewise rational function approximation", 2020.
 integral of order 1/2 by minimax rational function approximation", 2015.
 
 """
+
 from dataclasses import dataclass
 
 import numpy as np

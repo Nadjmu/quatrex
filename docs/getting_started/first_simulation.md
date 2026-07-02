@@ -7,8 +7,9 @@ located in the `examples` directory of the `quatrex` source code.
 <!-- TODO: Include an image of the example setup -->
 ![image](https://dummyimage.com/600x400/222/eee&text=placeholder)
 
-As a first toy example, you can consider a QTBM calculation for a ~25 nm
-long chain of carbon atoms, which you can find under
+As a first toy example, you can consider a [QTBM
+calculation](../user_guide/methodology/qtbm.md) for a ~25 nm long chain
+of carbon atoms, which you can find under
 
 ```bash
 ./examples/cp2k/carbon-chain/qtbm
@@ -36,8 +37,8 @@ parameters. The configuration file for this example looks as follows:
 ```
 
 More information about each individual configuration parameter can be
-found in the [simulation parameters
-section](../user_guide/simulation_parameters.md) of the user guide.
+found in the [simulation parameters section](../user_guide/parameters)
+of the user guide.
 
 You can run this example simulation using the following command:
 

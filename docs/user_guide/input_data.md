@@ -48,7 +48,11 @@ codes reduces to just providing the initial Kohn-Sham Hamiltonian and
 orbital overlap matrices.
 
 Here we provide some information on how to extract the necessary data
-from a few different DFT codes.
+from a few different DFT codes. Once you have transformed the DFT
+Hamiltonian and overlap matrices into the format described above, you
+can use the
+[`save_hdf5_dict`](../api/qttools/utils/hdf5_utils/#qttools.utils.hdf5_utils.save_hdf5_dict)
+function to save them in HDF5 format for use with `quatrex`.
 
 !!! note "Localized Orbital Basis Requirement"
     Because any simulated system's periodicity will broken along
@@ -59,18 +63,18 @@ from a few different DFT codes.
 
 To extract the necessary Hamiltonian and overlap matrices from
 plane-wave DFT codes, one can use the [Wannier90](https://wannier.org/)
-package to construct a basis of maximally-localized Wannier functions.
-Besides the enforced orthonormality, this gives us the added benefit of
-selecting only a submanifold of the full electronic structure, which can
+package to project the electronic structure onto a basis of
+maximally-localized Wannier functions. Besides the enforced
+orthonormality, this gives one the added benefit of being able to select
+only a submanifold of the full electronic structure, which can
 significantly reduce the size of the Hamiltonian and overlap matrices,
 and thus the computational cost of the transport simulation.
 
 Wannier90 outputs the Hamiltonian when the [`write_hr`
 option](https://wannier90.readthedocs.io/en/latest/user_guide/wannier90/parameters/#logical-write_hr)
-is enabled in the `<seedname>.win` input file.
-
-Information about the format of Wannier90's Hamiltonian output
-(`seedname_hr.dat`) can be found in the [Wannier90
+is enabled in the `<seedname>.win` input file. Information about the
+format of Wannier90's Hamiltonian output (`seedname_hr.dat`) can be
+found in the [Wannier90
 documentation](https://wannier90.readthedocs.io/en/latest/user_guide/wannier90/files/#seedname_hrdat).
 
 ## CP2K

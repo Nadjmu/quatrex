@@ -203,7 +203,7 @@ description = "Lint the code with ruff."
 
 [tool.pixi.tasks.docs]
 cmd = """
-rm -r docs/api/quatrex  && rm -r docs/api/qttools && rm -r docs/user_guide/parameters \
+rm -rf docs/api/quatrex && rm -rf docs/api/qttools && rm -rf docs/user_guide/parameters \
 && python docs/scripts/generate_api_pages.py \
 && python docs/scripts/generate_parameter_docs.py \
 && zensical

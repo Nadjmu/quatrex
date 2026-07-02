@@ -57,6 +57,7 @@ nav = [
                     { "Comm" = "user_guide/parameters/comm.md" },
                 ] },
             ] },
+            "user_guide/simulation_output.md",
         ] },
         { "Examples" = [
             "user_guide/examples/index.md",
