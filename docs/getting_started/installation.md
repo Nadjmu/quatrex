@@ -1,14 +1,24 @@
 # Installation
 
-`quatrex` can be installed using any Python package manager, but we can
-generally recommend using project-based installations via
-[`pixi`](https://pixi.sh/) or [`uv`](https://docs.astral.sh/uv/).
+`quatrex` can be installed using any Python package manager, but at this
+stage we generally recommend using project-based installations via
+[`pixi`](https://pixi.sh/) or [`uv`](https://docs.astral.sh/uv/) that
+facilitate reproducible environments and dependency management,
+especially for development and testing.
 
+!!! tip "Direct installation from GitHub"
+    If you just want to use `quatrex` and do not care about the source
+    code or the example data, you can also install it directly from
+    GitHub using `uv`:
+
+    ```bash
+    uv pip install "git+https://github.com/quatrex/quatrex.git"
+    ```
 
 ## Obtaining the source code
 
 We currently do not ship any pre-built binaries for `quatrex`, so the
-first step in installing `quatrex` is always to clone the repository.
+first step in installing `quatrex` is typically to clone the repository:
 
 ```bash
 git clone git@github.com:quatrex/quatrex.git
@@ -158,7 +168,9 @@ on multiple nodes using a batch script similar to the following:
 export CUPY_CACHE_DIR=${SCRATCH}/.cupy/kernel_cache
 export NUMBA_CACHE_DIR=${SCRATCH}/.numba/kernel_cache
 
-srun pixi run --environment=hpc quatrex run <path/to/config.toml>
+eval "$(pixi shell-hook --environment hpc --frozen)"
+
+srun quatrex run <path/to/config.toml>
 
 ```
 
@@ -185,7 +197,7 @@ source .venv/bin/activate
 uv pip install ".[gpu]" --no-binary=mpi4py
 ```
 
-!!! note
+!!! note "Building `mpi4py` from source"
     The `--no-binary=mpi4py` option is necessary to ensure that `mpi4py`
     is built from source and linked against the system's MPI library.
     This is automatically handled in the `pixi` installation above.
@@ -223,6 +235,8 @@ batch script similar to the following:
 export CUPY_CACHE_DIR=${SCRATCH}/.cupy/kernel_cache
 export NUMBA_CACHE_DIR=${SCRATCH}/.numba/kernel_cache
 
-srun uv run quatrex run <path/to/config.toml>
+source .venv/bin/activate
+
+srun quatrex run <path/to/config.toml>
 
 ```

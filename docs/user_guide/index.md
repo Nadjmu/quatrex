@@ -2,10 +2,10 @@
 
 In this section, we provide an overview of the different components of a
 `quatrex` simulation, including the required input data, configuration
-parameters, command line interface, and output. For minimal example of a
-complete simulation workflow, please refer to the ["getting started"
-guide](../getting_started/first_simulation.md) or to the more detailed
-[example setups](./examples/).
+parameters, command line interface, and the simulation output. For a
+minimal example of a complete simulation workflow, please refer to the
+["getting started" guide](../getting_started/first_simulation.md) or
+have a look at the more detailed [example setups](./examples/).
 
 ## In This Section
 

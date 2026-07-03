@@ -10,6 +10,8 @@ repo_name = "quatrex/quatrex"
 extra_javascript = [
     "javascript/mathjax.js",
     "https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js",
+    "https://3Dmol.org/build/3Dmol-min.js",
+    "https://3Dmol.org/build/3Dmol.ui-min.js",
 ]
 
 extra_css = ["stylesheets/custom.css"]
@@ -295,6 +297,8 @@ nav = [
     [project.markdown_extensions.pymdownx.tilde]
     [project.markdown_extensions.pymdownx.snippets]
     check_paths = true
+    [project.markdown_extensions.zensical.extensions.macros]
+    module_name = "docs/scripts/macros"
 
 
     [project.plugins.mkdocstrings.handlers.python]

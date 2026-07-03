@@ -2,27 +2,11 @@
 
 The `quatrex` package is an _ab initio_ quantum transport simulator
 developed in the [computational nanoelectronics
-group](https://nano-tcad.ee.ethz.ch/) at ETH Zürich.
-
-Starting from a description of a nanosystem's geometry, its electronic
-structure (Kohn-Sham Hamiltonian and overlap matrix), and a set of
-relevant configuration parameters, `quatrex` computes transport
-properties, such as transmission and current spectra, non-equilibrium
-charge carrier densities, and current-voltage characteristics.
-
-<!-- Good spot for a diagram/illustration -->
-
-The underlying theory is the non-equilibrium Green's function (NEGF)
-formalism, which is a powerful and widely used framework for describing
-quantum transport in nanoscale systems[^negf]. Besides a powerful method
-for simulating coherent quantum transport based on the quantum
-transmitting boundary method (QTBM), `quatrex` implements NEGF with
-scattering effects, like screened Coulomb interactions at the level of
-the GW approximation[^gw] and electron-phonon interactions in a
-pseudo-scattering potential approach. You can find more details about
-the theoretical framework and the implemented methods in the
-[methodology section](../user_guide/methodology/index.md) of the user
-guide.
+group](https://nano-tcad.ee.ethz.ch/) at ETH Zürich. It is intended as
+the successor of the *OMEN* simulator, that was developed in the same
+group and has been used for many years in different research projects.
+Preliminary work on `quatrex` started in 2024, and the first public
+release was made in 2026.
 
 !!! info "Development status"
     `quatrex` is a research code, and its development is ongoing. The
@@ -34,15 +18,34 @@ guide.
     guide](../contributing.md) for more information on how to get
     involved.
 
+Starting from a description of a nanosystem's geometry, its electronic
+structure (Hamiltonian and overlap matrix), and a set of relevant
+configuration parameters, `quatrex` computes transport properties, such
+as transmission and current spectra, non-equilibrium charge carrier
+densities, and current-voltage characteristics.
+
+<!-- Good spot for a diagram/illustration -->
+
+The underlying theory is the non-equilibrium Green's function (NEGF)
+formalism, which is a widely used framework for describing quantum
+transport in nanoscale systems[^negf]. Besides a powerful method for
+simulating coherent transport based on the quantum transmitting boundary
+method (QTBM), `quatrex` implements NEGF with scattering effects, like
+screened Coulomb interactions at the level of the GW approximation[^gw]
+and electron-phonon interactions in a pseudo-scattering potential
+approach. You can find more details about the theoretical framework and
+the implemented methods in the [methodology
+section](../user_guide/methodology/index.md) of the user guide.
+
 In terms of implementation and performance, we leverage Python's core
 CPU and GPU array frameworks, [`numpy`](https://numpy.org/) and
 [`cupy`](https://cupy.dev/), as well as associated frameworks and
 libraries, such as [`scipy`](https://scipy.org/),
 [`mpi4py`](https://mpi4py.readthedocs.io/en/stable/), and
 [`numba`](https://numba.pydata.org/). The `quatrex` codebase is designed
-to be extensible, portable, and highly performant. It shows excellent
-scaling and sustained exascale performance on different
-supercomputers.[^sc-25]
+to be extensible, portable, and highly performant. It has already shown
+excellent scaling on different supercomputers and even achieved
+sustained exascale performance on the *Frontier* supercomputer.[^sc-25]
 
 [^negf]: S. Datta, *Electronic Transport in Mesoscopic Systems*,
     Cambridge University Press, 1995.

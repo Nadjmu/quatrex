@@ -36,7 +36,8 @@ dependencies = [
     "pydantic",
     "ase",
     "meshio",
-    "gmsh",
+    # gmsh wheels are not available for aarch64.
+    "gmsh; platform_machine != 'aarch64'",
     "scikit-fem",
     "pyvista>=0.46.0",
     "matplotlib",

@@ -14,6 +14,8 @@ essentially a dictionary of hopping terms, where each term is a matrix
 containing the elements connecting orbitals in the respective image cell
 with the home cell.
 
+<!-- Include a picture here -->
+
 ```python
 hamiltonian = {
     (0, 0, 0): h_000,  # Hopping within the home cell
@@ -29,9 +31,9 @@ where $N$ is the number of orbitals in the home cell.
 
 Depending on the simulation configuration, the hopping terms are then
 used to construct device Hamiltonians (see
-[`construct_from_unit_cell`](http://localhost:8000/quatrex/user_guide/input_data/))
+[`construct_from_unit_cell`](parameters/device/#construct_from_unit_cell))
 and/or to sample the Brillouin zone in transverse directions (see
-[`kpoint_grid`](http://localhost:8000/quatrex/user_guide/parameters/device/#kpoint_grid)).
+[`kpoint_grid`](parameters/device/#kpoint_grid)).
 
 ## Interfacing with DFT Codes
 
