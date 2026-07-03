@@ -846,6 +846,35 @@ class DeviceConfig(BaseModel):
         return self
 
 
+class EnvironmentScreeningConfig(BaseModel):
+    """Options for equilibrium screening of the environment subsystem."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    method: Literal["rpa", "negf"] | None = None
+    source: Literal["compute", "file"] = "compute"
+    input_dir: Path | None = None
+    hamiltonian_matrix_name: str = "hamiltonian"
+    coulomb_matrix_name: str = "coulomb_matrix"
+
+    num_k_points: PositiveInt | None = None
+    num_q_points: PositiveInt | None = None
+    num_frequencies: PositiveInt | None = None
+    max_frequency: NonNegativeFloat | None = None
+
+    include_zero_q: bool = True
+
+    periodic_axis: NonNegativeInt | None = Field(default=None, le=2)
+    lattice_constant: PositiveFloat = 1.0
+
+    chemical_potential: float | None = None
+    broadening: NonNegativeFloat = 0.0
+
+    matrix_valued_polarization: bool = False
+    spin_degeneracy: PositiveFloat = 1.0
+    valley_degeneracy: PositiveFloat = 1.0
+
+
 class EnvironmentConfig(BaseModel):
     """Options for an explicitly modeled dielectric environment subsystem."""
 
@@ -869,8 +898,8 @@ class EnvironmentConfig(BaseModel):
     kpoint_grid: tuple[PositiveInt, PositiveInt, PositiveInt] = (1, 1, 1)
     kpoint_shift: tuple[float, float, float] = (0.0, 0.0, 0.0)
     orthogonal_basis: bool = True
-    screening: "EnvironmentScreeningConfig" = Field(
-        default_factory=lambda: EnvironmentScreeningConfig()
+    screening: EnvironmentScreeningConfig = Field(
+        default_factory=EnvironmentScreeningConfig
     )
 
     @model_validator(mode="after")
@@ -899,35 +928,6 @@ class EnvironmentConfig(BaseModel):
                 + ", ".join(missing_fields)
             )
         return self
-
-
-class EnvironmentScreeningConfig(BaseModel):
-    """Options for equilibrium screening of the environment subsystem."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    method: Literal["rpa", "negf"] | None = None
-    source: Literal["compute", "file"] = "compute"
-    input_dir: Path | None = None
-    hamiltonian_matrix_name: str = "hamiltonian"
-    coulomb_matrix_name: str = "coulomb_matrix"
-
-    num_k_points: PositiveInt | None = None
-    num_q_points: PositiveInt | None = None
-    num_frequencies: PositiveInt | None = None
-    max_frequency: NonNegativeFloat | None = None
-
-    include_zero_q: bool = True
-
-    periodic_axis: NonNegativeInt | None = Field(default=None, le=2)
-    lattice_constant: PositiveFloat = 1.0
-
-    chemical_potential: float | None = None
-    broadening: NonNegativeFloat = 0.0
-
-    matrix_valued_polarization: bool = False
-    spin_degeneracy: PositiveFloat = 1.0
-    valley_degeneracy: PositiveFloat = 1.0
 
 
 class EnvironmentCouplingConfig(BaseModel):
