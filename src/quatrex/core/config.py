@@ -3,6 +3,7 @@
 import os
 import re
 import subprocess
+import tomllib
 import warnings
 from math import isclose
 from pathlib import Path
@@ -10,7 +11,6 @@ from typing import Literal
 
 import numba as nb
 import numpy as np
-import tomllib
 from mpi4py.MPI import COMM_WORLD as mpi_comm_world
 from pydantic import (
     BaseModel,
@@ -663,9 +663,9 @@ class CoulombScreeningConfig(BaseModel):
 
     """
 
-    include_energy_renormalization: Literal[
-        "self-energy", "polarization", "both"
-    ] = "self-energy"
+    include_energy_renormalization: Literal["self-energy", "polarization", "both"] = (
+        "self-energy"
+    )
     r"""Whether to compute the real part of the retarded polarization and/or self-energy.
 
     Possible values are `"self-energy"`, `"polarization"`, and `"both"`.
@@ -1085,9 +1085,9 @@ class ComputeConfig(BaseModel):
     numba_threading_layer: Literal["workqueue", "omp", "tbb"] = "workqueue"
     threadpool_api: Literal["blas", "openmp", "tbb"] | None = None
     numba_num_threads: PositiveInt | None = None
-    blas_num_threads: PositiveInt | Literal[
-        "sequential_blas_under_openmp"
-    ] | None = None
+    blas_num_threads: PositiveInt | Literal["sequential_blas_under_openmp"] | None = (
+        None
+    )
 
     convolve: ConvolveConfig = ConvolveConfig()
     nevp: NEVPConfig = NEVPConfig()

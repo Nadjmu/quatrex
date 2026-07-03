@@ -367,9 +367,9 @@ class SCBA:
         """Stash the current into the previous self-energy buffers."""
         self.data.sigma_lesser_prev.data[:] = self.data.sigma_lesser.data
         self.data.sigma_greater_prev.data[:] = self.data.sigma_greater.data
-        self.data.sigma_retarded_hermitian_prev.data[
-            :
-        ] = self.data.sigma_retarded_hermitian.data
+        self.data.sigma_retarded_hermitian_prev.data[:] = (
+            self.data.sigma_retarded_hermitian.data
+        )
 
         self.data.sigma_retarded_hermitian.data[:] = 0.0
         self.data.sigma_lesser.data[:] = 0.0
@@ -552,9 +552,9 @@ class SCBA:
                     mask=self.data.g_lesser._stack_padding_mask,
                 )
 
-                self.observables.electron_current[
-                    "meir-wingreen"
-                ] = meir_wingreen_current
+                self.observables.electron_current["meir-wingreen"] = (
+                    meir_wingreen_current
+                )
 
         if self.config.outputs.self_energy_density:
             self.observables.sigma_lesser_density = density(
@@ -678,20 +678,20 @@ class SCBA:
         if self.config.outputs.electron_ldos:
             outputs[f"electron_ldos_{iteration}.npy"] = self.observables.electron_ldos
         if self.config.outputs.electron_density:
-            outputs[
-                f"electron_density_{iteration}.npy"
-            ] = self.observables.electron_density
+            outputs[f"electron_density_{iteration}.npy"] = (
+                self.observables.electron_density
+            )
         if self.config.outputs.hole_density:
             outputs[f"hole_density_{iteration}.npy"] = self.observables.hole_density
 
         if self.config.outputs.device_currents:
-            outputs[
-                f"device_current_{iteration}.npy"
-            ] = self.observables.electron_current["device"]
+            outputs[f"device_current_{iteration}.npy"] = (
+                self.observables.electron_current["device"]
+            )
             if self.config.electron.solver.compute_current:
-                outputs[
-                    f"meir_wingreen_current_{iteration}.npy"
-                ] = self.observables.electron_current["meir-wingreen"]
+                outputs[f"meir_wingreen_current_{iteration}.npy"] = (
+                    self.observables.electron_current["meir-wingreen"]
+                )
 
         if self.config.scba.coulomb_screening:
             if self.config.outputs.polarization_density:
