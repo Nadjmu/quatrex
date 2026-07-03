@@ -16,11 +16,7 @@ from quatrex.core.statistics import bose_einstein
 from quatrex.coulomb_screening.block_screening import (
     solve_environment_dressed_interaction,
 )
-from quatrex.device.inputs import (
-    _create_matrix_from_unit_cells,
-    load_matrix,
-    trim_tight_binding_matrix,
-)
+from quatrex.device.inputs import _create_matrix_from_unit_cells, load_matrix
 
 from .equilibrium_screening import EquilibriumScreening
 from .rpa_compute import (
