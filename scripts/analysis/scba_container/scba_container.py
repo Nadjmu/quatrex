@@ -1,5 +1,7 @@
 import os
+
 import numpy as np
+
 
 # data class to hold data across iterations
 class SCBAContainer:
@@ -69,7 +71,9 @@ class SCBAContainer:
     def load_p_data(self, data_dir: str, iteration: int):
         p_lesser_file = f"{data_dir}/scba_variables_p_lesser_iter{iteration:02}.npy"
         p_greater_file = f"{data_dir}/scba_variables_p_greater_iter{iteration:02}.npy"
-        p_retarded_file = f"{data_dir}/scba_variables_p_retarded_hermitian_iter{iteration:02}.npy"
+        p_retarded_file = (
+            f"{data_dir}/scba_variables_p_retarded_hermitian_iter{iteration:02}.npy"
+        )
         self.p_lesser[iteration, :, :] = np.load(p_lesser_file)
         self.p_greater[iteration, :, :] = np.load(p_greater_file)
         self.p_retarded[iteration, :, :] = np.load(p_retarded_file)
@@ -81,9 +85,15 @@ class SCBAContainer:
         self.w_greater[iteration, :, :] = np.load(w_greater_file)
 
     def load_sigma_data(self, data_dir: str, iteration: int):
-        sigma_lesser_file = f"{data_dir}/scba_variables_sigma_lesser_iter{iteration:02}.npy"
-        sigma_greater_file = f"{data_dir}/scba_variables_sigma_greater_iter{iteration:02}.npy"
-        sigma_retarded_file = f"{data_dir}/scba_variables_sigma_retarded_hermitian_iter{iteration:02}.npy"
+        sigma_lesser_file = (
+            f"{data_dir}/scba_variables_sigma_lesser_iter{iteration:02}.npy"
+        )
+        sigma_greater_file = (
+            f"{data_dir}/scba_variables_sigma_greater_iter{iteration:02}.npy"
+        )
+        sigma_retarded_file = (
+            f"{data_dir}/scba_variables_sigma_retarded_hermitian_iter{iteration:02}.npy"
+        )
         self.sigma_lesser[iteration, :, :] = np.load(sigma_lesser_file)
         self.sigma_greater[iteration, :, :] = np.load(sigma_greater_file)
         self.sigma_retarded[iteration, :, :] = np.load(sigma_retarded_file)
@@ -106,7 +116,7 @@ class SCBAContainer:
             print(
                 f"Warning: adaptive electron energies for g and sigma file {data_dir}/adaptive_electron_energies_for_g_sigma.npy not found. This data will be None."
             )
-        
+
         if os.path.exists(f"{data_dir}/adaptive_electron_energies_for_p_w.npy"):
             self.adaptive_electron_energies_for_p_w = np.load(
                 f"{data_dir}/adaptive_electron_energies_for_p_w.npy"
@@ -127,7 +137,7 @@ class SCBAContainer:
         colorImag=None,
         linewidthReal=1,
         linewidthImag=1,
-        markersize=1
+        markersize=1,
     ):
         """expect 4,3 subplot axs
         axs: np.ndarray
@@ -159,7 +169,10 @@ class SCBAContainer:
             markersize = 5
 
         # uniform grid
-        if iteration < adaptive_start_iteration or self.adaptive_electron_energies_for_g_sigma is None:
+        if (
+            iteration < adaptive_start_iteration
+            or self.adaptive_electron_energies_for_g_sigma is None
+        ):
             x_axis = self.energies
             linestyle = "-"
             title_suffix = ""
@@ -168,7 +181,7 @@ class SCBAContainer:
             x_axis = self.adaptive_electron_energies_for_g_sigma
             linestyle = "."
             title_suffix = " (adaptive grid)"
-        
+
         axs[0, 0].set_title(f"G Lesser{title_suffix}")
         axs[0, 0].plot(
             x_axis,
@@ -242,8 +255,13 @@ class SCBAContainer:
         axs[0, 2].legend()
 
         # uniform grid
-        if iteration < adaptive_start_iteration or self.adaptive_electron_energies_for_p_w is None:
-            conv_energies = np.linspace(0, max(self.energies) - min(self.energies), len(self.energies))
+        if (
+            iteration < adaptive_start_iteration
+            or self.adaptive_electron_energies_for_p_w is None
+        ):
+            conv_energies = np.linspace(
+                0, max(self.energies) - min(self.energies), len(self.energies)
+            )
             linestyle = "-"
             title_suffix = ""
         # adaptive grid
@@ -324,8 +342,13 @@ class SCBAContainer:
         axs[1, 2].grid()
         axs[1, 2].legend()
 
-        if iteration < adaptive_start_iteration or self.adaptive_electron_energies_for_p_w is None:
-            conv_energies = np.linspace(0, max(self.energies) - min(self.energies), len(self.energies))
+        if (
+            iteration < adaptive_start_iteration
+            or self.adaptive_electron_energies_for_p_w is None
+        ):
+            conv_energies = np.linspace(
+                0, max(self.energies) - min(self.energies), len(self.energies)
+            )
             linestyle = "-"
             title_suffix = ""
         else:
@@ -381,7 +404,10 @@ class SCBAContainer:
         axs[2, 1].grid()
         axs[2, 1].legend()
 
-        if iteration < adaptive_start_iteration or self.adaptive_electron_energies_for_g_sigma is None:
+        if (
+            iteration < adaptive_start_iteration
+            or self.adaptive_electron_energies_for_g_sigma is None
+        ):
             x_axis = self.energies
             linestyle = "-"
             title_suffix = ""

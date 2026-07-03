@@ -138,7 +138,9 @@ def get_local_slice(global_array: NDArray, comm: MPI.Comm = comm) -> NDArray:
     ]
 
 
-def gather_array_stack(array: NDArray, comm: MPI.Comm, sample_indices: NDArray | None = None) -> NDArray | None:
+def gather_array_stack(
+    array: NDArray, comm: MPI.Comm, sample_indices: NDArray | None = None
+) -> NDArray | None:
     """Gathers a distributed array split along energy (ex. G, P, W), i.e. stack distribution.
 
     Parameters
@@ -180,13 +182,13 @@ def gather_array_stack(array: NDArray, comm: MPI.Comm, sample_indices: NDArray |
         # mpi treats 2-D numpy arrays as contiguous 1-D arrays, so need to multiply lengths by the second dimension
         total_energy = xp.sum(energy_lengths)
         gatherbuf = xp.empty((total_energy, len(sample_indices)), dtype=xp.complex128)
-        
+
         counts = xp.array(energy_lengths) * len(sample_indices)
-        displ = xp.array( [sum(counts[:rk]) for rk in range(world_rank)] )
+        displ = xp.array([sum(counts[:rk]) for rk in range(world_rank)])
 
     comm.Gatherv(data, [gatherbuf, counts, displ, MPI.COMPLEX16], root=0)
     comm.barrier()
-    
+
     if rank == 0:
         return gatherbuf
     else:
