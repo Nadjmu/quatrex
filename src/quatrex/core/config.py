@@ -3,7 +3,6 @@
 import os
 import re
 import subprocess
-import tomllib
 import warnings
 from math import isclose
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Literal
 
 import numba as nb
 import numpy as np
+import tomllib
 from mpi4py.MPI import COMM_WORLD as mpi_comm_world
 from pydantic import (
     BaseModel,
@@ -607,7 +607,6 @@ class ElectronConfig(BaseModel):
             or self.energy_window_num is not None
             or self.energy_window_num_per_rank is not None
         ):
-
             if (self.energy_window_min is None) and (self.energy_window_max is None):
                 raise ValueError(
                     "When the energy grid is not read from file, should set both `energy_window_min` and `energy_window_max`."
@@ -664,9 +663,9 @@ class CoulombScreeningConfig(BaseModel):
 
     """
 
-    include_energy_renormalization: Literal["self-energy", "polarization", "both"] = (
-        "self-energy"
-    )
+    include_energy_renormalization: Literal[
+        "self-energy", "polarization", "both"
+    ] = "self-energy"
     r"""Whether to compute the real part of the retarded polarization and/or self-energy.
 
     Possible values are `"self-energy"`, `"polarization"`, and `"both"`.
@@ -786,7 +785,9 @@ class OutputConfig(BaseModel):
     coulomb_screening_density: bool = False
 
     save_scba_variables: bool = False
-    num_nnz_samples_scba_variables: PositiveInt = 100 # used if save_scba_variables is True
+    num_nnz_samples_scba_variables: PositiveInt = (
+        100  # used if save_scba_variables is True
+    )
 
     self_energy_density: bool = False
 
@@ -1084,9 +1085,9 @@ class ComputeConfig(BaseModel):
     numba_threading_layer: Literal["workqueue", "omp", "tbb"] = "workqueue"
     threadpool_api: Literal["blas", "openmp", "tbb"] | None = None
     numba_num_threads: PositiveInt | None = None
-    blas_num_threads: PositiveInt | Literal["sequential_blas_under_openmp"] | None = (
-        None
-    )
+    blas_num_threads: PositiveInt | Literal[
+        "sequential_blas_under_openmp"
+    ] | None = None
 
     convolve: ConvolveConfig = ConvolveConfig()
     nevp: NEVPConfig = NEVPConfig()
