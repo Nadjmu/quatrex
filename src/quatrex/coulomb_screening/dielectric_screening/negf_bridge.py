@@ -23,7 +23,11 @@ from quatrex.device.inputs import (
 )
 
 from .equilibrium_screening import EquilibriumScreening
-from .rpa_compute import BrillouinZoneMesh, build_uniform_brillouin_zone_mesh
+from .rpa_compute import (
+    BrillouinZoneMesh,
+    ScreeningChannels,
+    build_uniform_brillouin_zone_mesh,
+)
 
 
 @dataclass(frozen=True)
@@ -123,7 +127,12 @@ class EquilibriumRPAScreeningBridge:
         self.config = config
         self.screening_energies = np.asarray(screening_energies, dtype=np.float64)
         self.template = template
+        channels = ScreeningChannels(
+            spin_degeneracy=config.coulomb_screening.spin_degeneracy,
+            valley_degeneracy=config.coulomb_screening.valley_degeneracy,
+        )
         self._solver = EquilibriumScreening(
+            channels=channels,
             matrix_polarization=getattr(
                 config.coulomb_screening,
                 "matrix_valued_polarization",
@@ -132,6 +141,7 @@ class EquilibriumRPAScreeningBridge:
             frequency_axis="real",
         )
         self._cached_result: EquilibriumRPABridgeResult | None = None
+        self._cached_local_buffer_ids: tuple[int | None, int, int] | None = None
 
     def populate(
         self,
@@ -141,9 +151,6 @@ class EquilibriumRPAScreeningBridge:
     ) -> None:
         """Populate the distributed screened-interaction tensors used by SCBA."""
 
-        result = self._cached_result or self._build_cached_result()
-        self._cached_result = result
-
         if w_retarded is not None and w_retarded._data is None:
             w_retarded.allocate_data()
         if w_lesser._data is None:
@@ -151,10 +158,44 @@ class EquilibriumRPAScreeningBridge:
         if w_greater._data is None:
             w_greater.allocate_data()
 
+        if self._can_populate_screening_locally():
+            local_buffer_ids = (
+                id(w_retarded) if w_retarded is not None else None,
+                id(w_lesser),
+                id(w_greater),
+            )
+            if self._cached_local_buffer_ids == local_buffer_ids:
+                if comm.rank == 0:
+                    print(
+                        "Environment cache: reused local environment screening "
+                        "from in-memory buffers.",
+                        flush=True,
+                    )
+                return
+
         if w_retarded is not None:
             w_retarded.data[:] = 0.0
         w_lesser.data[:] = 0.0
         w_greater.data[:] = 0.0
+
+        if self._can_populate_saved_negf_screening_locally():
+            self._populate_saved_negf_screening_locally(
+                w_retarded=w_retarded,
+                w_lesser=w_lesser,
+                w_greater=w_greater,
+            )
+            return
+
+        if self._can_populate_computed_rpa_screening_locally():
+            self._populate_computed_rpa_screening_locally(
+                w_retarded=w_retarded,
+                w_lesser=w_lesser,
+                w_greater=w_greater,
+            )
+            return
+
+        result = self._cached_result or self._build_cached_result()
+        self._cached_result = result
 
         local_energy_count = int(self.template.stack_section_sizes[self._stack_rank])
         energy_offset = int(
@@ -169,6 +210,282 @@ class EquilibriumRPAScreeningBridge:
                 ]
             w_lesser.stack[(local_index,)] = result.w_lesser_matrices[global_index]
             w_greater.stack[(local_index,)] = result.w_greater_matrices[global_index]
+
+    def _can_populate_screening_locally(self) -> bool:
+        return (
+            self._can_populate_saved_negf_screening_locally()
+            or self._can_populate_computed_rpa_screening_locally()
+        )
+
+    def _can_populate_saved_negf_screening_locally(self) -> bool:
+        screening = self.config.environment_screening
+        return screening.method == "negf" and screening.source == "file"
+
+    def _can_populate_computed_rpa_screening_locally(self) -> bool:
+        screening = self.config.environment_screening
+        return screening.method == "rpa" and screening.source == "compute"
+
+    def _populate_saved_negf_screening_locally(
+        self,
+        *,
+        w_retarded: DSDBSparse | None,
+        w_lesser: DSDBSparse,
+        w_greater: DSDBSparse,
+    ) -> None:
+        """Populate environment-dressed interactions using only local energies.
+
+        The original cache path builds all dressed interactions on rank 0 and
+        broadcasts them to every rank. That is convenient for small grids, but it
+        becomes the dominant memory bottleneck for high-resolution environment
+        exports. Saved NEGF environment arrays are already energy-indexed on
+        disk, so each stack rank can load and dress only its own energy section.
+        """
+
+        screening = self.config.environment_screening
+        if screening.input_dir is None:
+            raise ValueError(
+                "environment.screening.source='file' requires environment.screening.input_dir."
+            )
+
+        local_energy_count = int(self.template.stack_section_sizes[self._stack_rank])
+        energy_offset = int(
+            np.sum(self.template.stack_section_sizes[: self._stack_rank])
+        )
+        energy_stop = energy_offset + local_energy_count
+
+        if comm.rank == 0:
+            print(
+                "Environment cache: populating saved NEGF screening locally "
+                "by MPI energy slice...",
+                flush=True,
+            )
+
+        input_dir = screening.input_dir
+        p_retarded = np.load(input_dir / "p_ee_retarded.npy", mmap_mode="r")
+        p_lesser = np.load(input_dir / "p_ee_lesser.npy", mmap_mode="r")
+        v_ee = np.asarray(np.load(input_dir / "v_ee.npy"), dtype=np.complex128)
+
+        expected_energies = self.screening_energies.size
+        if p_retarded.shape[0] != expected_energies:
+            raise ValueError(
+                "Saved environment retarded polarization has "
+                f"{p_retarded.shape[0]} energies, expected {expected_energies}."
+            )
+        if p_lesser.shape != p_retarded.shape:
+            raise ValueError(
+                "Saved environment lesser polarization must have the same shape as the retarded polarization."
+            )
+        if p_retarded.ndim != 3:
+            raise ValueError(
+                "Saved environment polarization arrays must have shape (num_energies, n, n)."
+            )
+        if v_ee.ndim != 2 or v_ee.shape[0] != v_ee.shape[1]:
+            raise ValueError(
+                "Saved environment Coulomb matrix v_ee must be a square 2D array."
+            )
+        if p_retarded.shape[1:] != v_ee.shape:
+            raise ValueError(
+                "Saved environment polarization matrices must match the shape of v_ee."
+            )
+
+        v_c = self._load_bare_coulomb_matrix(
+            self.config,
+            matrix_name=self.config.coulomb_screening.coulomb_matrix_name,
+        )
+        v_ce, v_ec = self._load_environment_coupling_matrices(
+            central_size=v_c.shape[0],
+            environment_size=v_ee.shape[0],
+        )
+
+        for local_index, global_index in enumerate(range(energy_offset, energy_stop)):
+            if (
+                local_energy_count <= 4
+                or local_index == 0
+                or local_index == local_energy_count - 1
+                or (local_index + 1) % max(1, local_energy_count // 4) == 0
+            ):
+                print(
+                    "Environment cache: rank "
+                    f"{comm.stack.rank} dressing local interaction "
+                    f"{local_index + 1}/{local_energy_count} "
+                    f"(global {global_index + 1}/{expected_energies})...",
+                    flush=True,
+                )
+
+            dressed = solve_environment_dressed_interaction(
+                v_c=v_c,
+                v_ee=v_ee,
+                v_ce=v_ce,
+                v_ec=v_ec,
+                p_ee_retarded=np.asarray(
+                    p_retarded[global_index], dtype=np.complex128
+                ),
+                p_ee_lesser=np.asarray(p_lesser[global_index], dtype=np.complex128),
+            )
+            if w_retarded is not None:
+                w_retarded.stack[(local_index,)] = sparse.coo_matrix(dressed.retarded)
+            w_lesser.stack[(local_index,)] = sparse.coo_matrix(dressed.lesser)
+            w_greater.stack[(local_index,)] = sparse.coo_matrix(
+                _compute_environment_greater(dressed.retarded, dressed.lesser)
+            )
+
+        self._cached_local_buffer_ids = (
+            id(w_retarded) if w_retarded is not None else None,
+            id(w_lesser),
+            id(w_greater),
+        )
+
+    def _populate_computed_rpa_screening_locally(
+        self,
+        *,
+        w_retarded: DSDBSparse | None,
+        w_lesser: DSDBSparse,
+        w_greater: DSDBSparse,
+    ) -> None:
+        """Compute RPA environment screening only for this rank's energy slice.
+
+        The root-cache path builds all RPA frequency points on rank 0 and then
+        broadcasts full central-region W matrices. For matrix-valued RPA this is
+        prohibitively expensive for large MoS2/hBN supercells. This path mirrors
+        the saved-NEGF fast path: each MPI stack rank computes, transforms, and
+        dresses only its local frequency section.
+        """
+
+        self._validate_supported_configuration()
+        local_energy_count = int(self.template.stack_section_sizes[self._stack_rank])
+        energy_offset = int(
+            np.sum(self.template.stack_section_sizes[: self._stack_rank])
+        )
+        energy_stop = energy_offset + local_energy_count
+        local_frequencies = self.screening_energies[energy_offset:energy_stop]
+
+        if comm.rank == 0:
+            print(
+                "Environment cache: computing RPA screening locally "
+                "by MPI energy slice...",
+                flush=True,
+            )
+
+        screening = self.config.environment_screening
+        environment_config = self._build_environment_config()
+        mesh = self._build_mesh(frequencies=local_frequencies)
+        chemical_potential = self._resolve_chemical_potential()
+
+        print(
+            "Environment cache: rank "
+            f"{comm.stack.rank} loading environment RPA inputs "
+            f"(nk={mesh.k_points.size}, nq={mesh.q_points.size}, "
+            f"local nw={mesh.frequencies.size})...",
+            flush=True,
+        )
+        inputs = self._solver.load_inputs_from_config(
+            environment_config,
+            hamiltonian_matrix_name=screening.hamiltonian_matrix_name,
+            coulomb_matrix_name=screening.coulomb_matrix_name,
+        )
+
+        print(
+            "Environment cache: rank "
+            f"{comm.stack.rank} computing matrix-valued RPA P(q,w)...",
+            flush=True,
+        )
+        polarization_result = self._solver.polarization_solver.solve_matrix_from_translation_blocks(
+            translation_blocks=inputs.hamiltonian_blocks,
+            mesh=mesh,
+            chemical_potential=chemical_potential,
+            temperature=self.config.coulomb_screening.temperature,
+            periodic_axis=screening.periodic_axis,
+            lattice_constant=screening.lattice_constant,
+            broadening=screening.broadening,
+        )
+        p_retarded_qw = np.asarray(
+            polarization_result.polarization,
+            dtype=np.complex128,
+        )
+        if p_retarded_qw.ndim != 4:
+            raise NotImplementedError(
+                "RPA environment screening requires matrix_valued_polarization=True."
+            )
+
+        p_spectral_function = p_retarded_qw - np.swapaxes(
+            p_retarded_qw.conj(), -1, -2
+        )
+        bose = np.asarray(
+            bose_einstein(
+                xp.asarray(local_frequencies),
+                self.config.coulomb_screening.temperature,
+            )
+        )
+        bose = bose.astype(np.complex128, copy=False)[
+            np.newaxis, :, np.newaxis, np.newaxis
+        ]
+        p_lesser_qw = bose * p_spectral_function
+
+        print(
+            "Environment cache: rank "
+            f"{comm.stack.rank} transforming local RPA P to transport matrices...",
+            flush=True,
+        )
+        p_retarded_matrices = self._build_transport_matrices(
+            environment_config,
+            mesh,
+            p_retarded_qw,
+        )
+        p_lesser_matrices = self._build_transport_matrices(
+            environment_config,
+            mesh,
+            p_lesser_qw,
+        )
+
+        v_ee = self._load_bare_coulomb_matrix(
+            environment_config,
+            matrix_name=screening.coulomb_matrix_name,
+        )
+        v_c = self._load_bare_coulomb_matrix(
+            self.config,
+            matrix_name=self.config.coulomb_screening.coulomb_matrix_name,
+        )
+        v_ce, v_ec = self._load_environment_coupling_matrices(
+            central_size=v_c.shape[0],
+            environment_size=v_ee.shape[0],
+        )
+
+        expected_energies = self.screening_energies.size
+        for local_index, global_index in enumerate(range(energy_offset, energy_stop)):
+            if (
+                local_energy_count <= 4
+                or local_index == 0
+                or local_index == local_energy_count - 1
+                or (local_index + 1) % max(1, local_energy_count // 4) == 0
+            ):
+                print(
+                    "Environment cache: rank "
+                    f"{comm.stack.rank} dressing local RPA interaction "
+                    f"{local_index + 1}/{local_energy_count} "
+                    f"(global {global_index + 1}/{expected_energies})...",
+                    flush=True,
+                )
+
+            dressed = solve_environment_dressed_interaction(
+                v_c=v_c,
+                v_ee=v_ee,
+                v_ce=v_ce,
+                v_ec=v_ec,
+                p_ee_retarded=p_retarded_matrices[local_index].toarray(),
+                p_ee_lesser=p_lesser_matrices[local_index].toarray(),
+            )
+            if w_retarded is not None:
+                w_retarded.stack[(local_index,)] = sparse.coo_matrix(dressed.retarded)
+            w_lesser.stack[(local_index,)] = sparse.coo_matrix(dressed.lesser)
+            w_greater.stack[(local_index,)] = sparse.coo_matrix(
+                _compute_environment_greater(dressed.retarded, dressed.lesser)
+            )
+
+        self._cached_local_buffer_ids = (
+            id(w_retarded) if w_retarded is not None else None,
+            id(w_lesser),
+            id(w_greater),
+        )
 
     @property
     def _stack_rank(self) -> int:
@@ -397,7 +714,7 @@ class EquilibriumRPAScreeningBridge:
         )
         return v_ee, p_retarded_matrices, p_lesser_matrices
 
-    def _build_mesh(self) -> BrillouinZoneMesh:
+    def _build_mesh(self, frequencies: np.ndarray | None = None) -> BrillouinZoneMesh:
         screening = self.config.environment_screening
         base_mesh = build_uniform_brillouin_zone_mesh(
             num_k_points=screening.num_k_points,
@@ -410,7 +727,11 @@ class EquilibriumRPAScreeningBridge:
         return BrillouinZoneMesh(
             k_points=base_mesh.k_points,
             q_points=base_mesh.q_points,
-            frequencies=self.screening_energies,
+            frequencies=(
+                self.screening_energies
+                if frequencies is None
+                else np.asarray(frequencies, dtype=np.float64)
+            ),
         )
 
     def _build_transport_matrices(
@@ -457,13 +778,27 @@ class EquilibriumRPAScreeningBridge:
                 block_index[periodic_axis] = translation + max_translation
                 unit_cells[tuple(block_index)] = block
 
-            # Match the device-side transport-cell construction by trimming the
-            # Fourier-reconstructed translation range back to the configured
-            # neighbor-cell cutoff before expanding into a transport matrix.
-            unit_cells = trim_tight_binding_matrix(
-                tight_binding_matrix=unit_cells,
-                neighbor_cell_cutoff=config.device.neighbor_cell_cutoff,
+            # The RPA bridge reconstructs translation blocks only along the
+            # selected periodic/transport axis. Transverse directions are already
+            # folded into the q-resolved response, so requesting their real-space
+            # neighbor cutoffs here would require blocks that were never built.
+            neighbor_cell_cutoff = np.zeros(3, dtype=int)
+            requested_cutoff = np.asarray(config.device.neighbor_cell_cutoff, dtype=int)
+            neighbor_cell_cutoff[periodic_axis] = requested_cutoff[periodic_axis]
+            if max_translation < neighbor_cell_cutoff[periodic_axis]:
+                raise ValueError(
+                    "RPA q-grid contains too few translation blocks for the requested "
+                    "transport-axis neighbor cutoff. "
+                    f"Need at least {2 * neighbor_cell_cutoff[periodic_axis] + 1} "
+                    f"q points, got {nq}."
+                )
+            trim_slices = [slice(None), slice(None), slice(None)]
+            axis_cutoff = int(neighbor_cell_cutoff[periodic_axis])
+            center = max_translation
+            trim_slices[periodic_axis] = slice(
+                center - axis_cutoff, center + axis_cutoff + 1
             )
+            unit_cells = unit_cells[tuple(trim_slices)]
             matrix_sparray, __, __ = _create_matrix_from_unit_cells(
                 config, unit_cells
             )
@@ -547,6 +882,20 @@ class EquilibriumRPAScreeningBridge:
         *,
         matrix_name: str,
     ) -> np.ndarray:
+        cache_dir = config.output_dir / "environment"
+        cache_path = cache_dir / f"{matrix_name}_epsilon_{config.coulomb_screening.epsilon_r:g}_dense.npy"
+        if cache_path.is_file():
+            print(
+                f"Environment cache: loading dense Coulomb matrix from {cache_path}...",
+                flush=True,
+            )
+            dense = np.load(cache_path)
+            print(
+                f"Environment cache: loaded cached dense Coulomb matrix with shape {dense.shape}.",
+                flush=True,
+            )
+            return np.asarray(dense, dtype=np.complex128)
+
         print(
             f"Environment cache: load_matrix start for '{matrix_name}' from {config.input_dir}...",
             flush=True,
@@ -576,6 +925,9 @@ class EquilibriumRPAScreeningBridge:
             f"Environment cache: dense conversion finished with shape {dense.shape}.",
             flush=True,
         )
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Environment cache: saving dense Coulomb matrix to {cache_path}...", flush=True)
+        np.save(cache_path, dense)
         return dense
 
     def _load_environment_coupling_matrices(
@@ -590,16 +942,24 @@ class EquilibriumRPAScreeningBridge:
                 np.zeros((central_size, environment_size), dtype=np.complex128),
                 np.zeros((environment_size, central_size), dtype=np.complex128),
             )
-        return (
-            self._load_coupling_matrix(
-                coupling.v_ce_file,
-                shape=(central_size, environment_size),
-            ),
-            self._load_coupling_matrix(
-                coupling.v_ec_file,
-                shape=(environment_size, central_size),
-            ),
+        v_ce = self._load_coupling_matrix(
+            coupling.v_ce_file,
+            shape=(central_size, environment_size),
         )
+        v_ec = self._load_coupling_matrix(
+            coupling.v_ec_file,
+            shape=(environment_size, central_size),
+        )
+        if coupling.strength != 1.0:
+            scale = np.sqrt(float(coupling.strength))
+            v_ce = scale * v_ce
+            v_ec = scale * v_ec
+            print(
+                "Environment cache: scaled coupling matrices by "
+                f"sqrt(strength)={scale:g} (strength={coupling.strength:g}).",
+                flush=True,
+            )
+        return v_ce, v_ec
 
     def _load_coupling_matrix(
         self,

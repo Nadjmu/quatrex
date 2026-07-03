@@ -224,7 +224,7 @@ input_dir = "environment_export"
     assert config.coulomb_screening.dielectric_method == "negf"
 
 
-def test_negf_environment_screening_requires_saved_export(tmp_path):
+def test_negf_environment_screening_compute_requires_environment(tmp_path):
     input_dir = tmp_path / "inputs"
     input_dir.mkdir()
 
@@ -259,5 +259,5 @@ source = "compute"
 """.strip()
     )
 
-    with pytest.raises(ValueError, match="currently requires source='file'"):
+    with pytest.raises(ValueError, match="requires an enabled \\[environment\\] section"):
         parse_config(config_path)

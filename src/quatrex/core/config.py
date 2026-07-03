@@ -938,6 +938,12 @@ class EnvironmentCouplingConfig(BaseModel):
     mode: Literal["zero", "file"] = "zero"
     v_ce_file: Path | None = None
     v_ec_file: Path | None = None
+    strength: NonNegativeFloat = 1.0
+    """Scale factor for the central/environment Coulomb coupling.
+
+    The physical default is 1.0. Values below 1.0 are useful for continuation
+    and diagnostics when turning on environment feedback self-consistently.
+    """
 
 
 class LyapunovComputeConfig(BaseModel):
@@ -1454,14 +1460,15 @@ class QuatrexConfig(BaseModel):
         )
 
         if screening.method == "negf":
-            if screening.source != "file":
-                raise ValueError(
-                    "environment.screening.method='negf' currently requires source='file'. "
-                    "Run the environment export first, then load the saved arrays."
-                )
-            if screening.input_dir is None:
+            if screening.source == "file" and screening.input_dir is None:
                 raise ValueError(
                     "environment.screening.source='file' requires environment.screening.input_dir."
+                )
+            if screening.source == "compute" and (
+                self.environment is None or not self.environment.enabled
+            ):
+                raise ValueError(
+                    "environment.screening.method='negf' with source='compute' requires an enabled [environment] section."
                 )
             return self
 

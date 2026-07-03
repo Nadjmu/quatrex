@@ -193,6 +193,8 @@ def export_environment_screening(
     p_lesser = _gather_dense_stack(data.p_lesser)
     p_greater = _gather_dense_stack(data.p_greater)
 
+    # load_matrix is collective, so all MPI ranks must participate. Keep the
+    # subsequent gathered dense solve and shared-file writes on rank 0 only.
     log("Loading environment bare Coulomb matrix v_ee.")
     coulomb_matrix, __ = load_matrix(
         config=environment_config,
@@ -205,14 +207,14 @@ def export_environment_screening(
     coulomb_matrix._data /= environment_config.coulomb_screening.epsilon_r
     v_ee = get_host(coulomb_matrix.to_dense()[0])
 
-    log("Computing epsilon_E^-1 from v_ee and P_ee^R.")
-    epsilon_inverse_retarded = _compute_epsilon_inverse_retarded(
-        v_ee=v_ee,
-        p_retarded=p_retarded,
-    )
-
     export_dir = environment_config.output_dir
     if comm.rank == 0:
+        log("Computing epsilon_E^-1 from v_ee and P_ee^R.")
+        epsilon_inverse_retarded = _compute_epsilon_inverse_retarded(
+            v_ee=v_ee,
+            p_retarded=p_retarded,
+        )
+
         log(f"Writing environment export arrays to {export_dir}.")
         export_dir.mkdir(parents=True, exist_ok=True)
         np.save(export_dir / "p_ee_retarded.npy", p_retarded)

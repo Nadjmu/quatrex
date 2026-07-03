@@ -14,18 +14,25 @@ def homogenize(matrix: DSDBSparse) -> None:
         The matrix to homogenize.
     """
 
-    raise NotImplementedError()
-    # assert xp.all(matrix.block_sizes == matrix.block_sizes[0])
-    # if matrix.distribution_state != "stack":
-    #     raise ValueError("Matrix must be in stack distribution")
+    if matrix.distribution_state != "stack":
+        raise ValueError("Matrix must be in stack distribution")
 
-    # for i in range(len(matrix.block_sizes) - 2):
-    #     matrix.blocks[i + 1, i + 1] = matrix.blocks[0, 0]
-    #     matrix.blocks[i + 1, i + 2] = matrix.blocks[0, 1]
-    #     matrix.blocks[i + 2, i + 1] = matrix.blocks[1, 0]
+    if matrix.num_blocks < 2:
+        return
 
-    # matrix.blocks[-1, -1] = matrix.blocks[0, 0]
-    # matrix.blocks[-1, -2] = matrix.blocks[1, 0]
+    if not xp.all(matrix.block_sizes == matrix.block_sizes[0]):
+        raise ValueError("Homogenization requires equal block sizes")
+
+    diagonal_block = matrix.blocks[0, 0]
+    upper_block = matrix.blocks[0, 1]
+    lower_block = matrix.blocks[1, 0]
+
+    for i in range(matrix.num_blocks - 1):
+        matrix.blocks[i, i] = diagonal_block
+        matrix.blocks[i, i + 1] = upper_block
+        matrix.blocks[i + 1, i] = lower_block
+
+    matrix.blocks[matrix.num_blocks - 1, matrix.num_blocks - 1] = diagonal_block
 
 
 def compute_sparsity_pattern(

@@ -134,13 +134,18 @@ def product_sparsity_pattern_dsdbsparse(
         if spillover:
             # NOTE: The following only works if b is BTD.
             if start_block == 0:
-                # Left spillover
+                # Left spillover. For short smoke-test devices, the requested
+                # spillover block can lie outside the available block range.
                 for i in range(a_num_diag // 2):
+                    if i + 1 >= num_blocks:
+                        continue
                     c_[i, 0] += a_[i + 1, 0] @ b_[0, 1]
 
             if end_block == num_blocks:
-                # Right spillover
+                # Right spillover.
                 for i in range(a_num_diag // 2):
+                    if num_blocks - i - 2 < 0:
+                        continue
                     c_[num_blocks - i - 1, num_blocks - 1] += (
                         a_[num_blocks - i - 2, num_blocks - 1]
                         @ b_[num_blocks - 1, num_blocks - 2]

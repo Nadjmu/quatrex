@@ -427,13 +427,13 @@ class BlockMatrix(dict):
         if key in self.local_keys:
             key = (key[0] - self.origin[0], key[1] - self.origin[1])
             return self.blocks[key]
-        rank = comm.block.rank if comm.block is not None else 0
-        print(f"Something bad happened: {rank=}, {key=}, {self.origin=}")
-        # return None
+        row, col = key
+        if 0 <= row < self.dsdbsparse.num_blocks and 0 <= col < self.dsdbsparse.num_blocks:
+            return xp.zeros(
+                (int(self.dsdbsparse.block_sizes[row]), int(self.dsdbsparse.block_sizes[col])),
+                dtype=self.dsdbsparse.dtype,
+            )
         raise KeyError(key)
-        # return xp.zeros((int(self.dbsparse.block_sizes[key[0]]),
-        #                  int(self.dbsparse.block_sizes[key[1]])),
-        #                 dtype=self.dbsparse.local_data.dtype)
 
     def __setitem__(self, key, val):
         if key in self.local_keys:

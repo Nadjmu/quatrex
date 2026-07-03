@@ -1,18 +1,14 @@
 simulation_dir = "."
-input_dir = "/usr/scratch/mont-fort11/awinka/for_cal/hBN/inputs"
+input_dir = "./inputs"
 output_dir = "./outputs_hBN"
 
 formalism = "negf" # "negf" or "wf"
 
 [device]
-structure_file = "lattice.xyz"
-transport_direction = "x"
+transport_direction = "z"
 construct_from_unit_cell = true
-num_transport_cells = 3
-neighbor_cell_cutoff = [2, 2, 0]
-kpoint_grid = [1, 1, 1]
-kpoint_shift = [0.0, 0.0, 0.0]
-orthogonal_basis = true
+num_transport_cells = 12
+neighbor_cell_cutoff = [0, 0, 2]
 
 [scba] # ===============================================================
 max_iterations = 2
@@ -41,19 +37,21 @@ save_profiling_results = true
 
 
 [electron] # ===========================================================
-fermi_level = -1.75 # eV
-left_fermi_level = -1.75 # eV
-right_fermi_level = -1.75 # eV
+# Keep the top-level device settings consistent with the CNT example; the
+# export step solves the enabled [environment] subsystem below.
+fermi_level = -1.7                      # eV
+left_fermi_level = -1.65                  # eV
+right_fermi_level = -1.75                 # eV
 flatband = false
 
-conduction_band_edge = 0.5 # eV 
-valence_band_edge = -3.9   # eV
+conduction_band_edge = 0.5 # eV
+valence_band_edge = -3.9    # eV
 band_edge_tracking = "eigenvalues"
 
 # Energy grid.
 energy_window_min = -14
 energy_window_max = 12
-energy_window_num = 1001
+energy_window_num = 100
 
 solver.algorithm = "rgf"
 solver.max_batch_size = 1000
@@ -119,3 +117,15 @@ interaction_cutoff = 5.5     # Å
 model = "pseudo-scattering"
 phonon_energy = 50e-3
 deformation_potential = 5e-3
+
+[environment]
+enabled = true
+input_dir = "/usr/scratch/mont-fort11/awinka/for_cal/hBN/inputs"
+structure_file = "lattice.xyz"
+transport_direction = "x"
+construct_from_unit_cell = true
+num_transport_cells = 3
+neighbor_cell_cutoff = [2, 2, 0]
+kpoint_grid = [1, 1, 1]
+kpoint_shift = [0.0, 0.0, 0.0]
+orthogonal_basis = true

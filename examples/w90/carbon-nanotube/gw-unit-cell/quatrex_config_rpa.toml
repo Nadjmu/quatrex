@@ -39,13 +39,14 @@ save_profiling_results = true
 [electron] # ===========================================================
 # 0.2 V Potential difference.
 left_fermi_level = -3.6  # eV
-right_fermi_level = -3.8 # eV
+right_fermi_level = -3.6 # eV
 
 fermi_level = -3.6                        # eV
 conduction_band_edge = -3.566382123573606 # eV
 valence_band_edge = -4.174109778287768    # eV
 
 band_edge_tracking = "eigenvalues"
+flatband = true
 
 # Energy grid.
 energy_window_min = -10
