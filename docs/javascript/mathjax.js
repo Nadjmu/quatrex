@@ -5,6 +5,7 @@ window.MathJax = {
     displayMath: [["\\[", "\\]"]],
     processEscapes: true,
     processEnvironments: true,
+    tags: 'ams',
     packages: { "[+]": ["boldsymbol"] }
   },
   options: {
