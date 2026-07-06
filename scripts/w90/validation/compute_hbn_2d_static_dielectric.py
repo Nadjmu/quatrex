@@ -154,7 +154,6 @@ def main() -> None:
 
     lattice = read_lattice(args.input_dir / "lattice.xyz")
     reciprocal = 2.0 * np.pi * np.linalg.inv(lattice).T
-    b1 = reciprocal[0]
 
     k1 = np.arange(args.nk1, dtype=np.float64) / args.nk1 - 0.5
     k2 = np.arange(args.nk2, dtype=np.float64) / args.nk2 - 0.5
