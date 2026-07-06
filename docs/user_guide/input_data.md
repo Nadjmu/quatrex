@@ -7,8 +7,8 @@ given system, these matrices can be obtained via empirical tight-binding
 models or from first-principles calculations, such as density functional
 theory (DFT).
 
-`quatrex` then reads the provided input Hamiltonian and overlap matrices
-in a tight-binding-like format from
+When running a simulation, `quatrex` will then read the provided input
+Hamiltonian and overlap matrices in a tight-binding-like format from
 [HDF5](https://www.hdfgroup.org/solutions/hdf5/) files. This data is
 essentially a dictionary of hopping terms, where each term is a matrix
 containing the elements connecting orbitals in the respective image cell
@@ -68,9 +68,10 @@ plane-wave DFT codes, one can use the [Wannier90](https://wannier.org/)
 package to project the electronic structure onto a basis of
 maximally-localized Wannier functions. Besides the enforced
 orthonormality, this gives one the added benefit of being able to select
-only a submanifold of the full electronic structure, which can
-significantly reduce the size of the Hamiltonian and overlap matrices,
-and thus the computational cost of the transport simulation.
+only a submanifold of the full electronic structure (e.g. around the
+Fermi level), which can significantly reduce the size of the Hamiltonian
+and overlap matrices, and thus the computational cost of the transport
+simulation.
 
 Wannier90 outputs the Hamiltonian when the [`write_hr`
 option](https://wannier90.readthedocs.io/en/latest/user_guide/wannier90/parameters/#logical-write_hr)

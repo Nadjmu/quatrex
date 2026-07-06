@@ -92,6 +92,15 @@ uv pip install --editable .[<dev|docs|gpu>]
   `zensical`, `mkdocstrings-python`, `griffe`, and `tabulate`.
 - **`gpu`**: Includes `cupy` package for basic GPU support.
 
+!!! warning "No meshing support on `aarch64`"
+    The [`mesh` subcommand of
+    `quatrex`](../user_guide/cli/#quatrex-mesh) is currently not
+    supported on `linux-aarch64` systems, as the `gmsh` package does not
+    provide pre-built binaries for this platform and also cannot be
+    built from source. You can still use `quatrex` for running
+    simulations on such systems, but you will not be able to generate
+    and visualize the device mesh.
+
 ## Installation on HPC systems
 
 Installing `quatrex` on HPC systems is also quite straightforward using

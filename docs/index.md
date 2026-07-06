@@ -8,7 +8,6 @@ hide:
 
 Welcome to the documentation for `quatrex`!
 
-
 <div class="grid cards" markdown>
 
 - :material-download:{ .lg .middle } **Installation Instructions**

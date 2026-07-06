@@ -10,18 +10,25 @@ domain and can provide or absorb charge carriers. As long as the
 contacts are sufficiently far from the active region of the device, this
 is usually a good approximation.
 
-![image](/images/obc/contact_device.png)
+![image](../../assets/images/obc/contact_device.png)
+/// caption
+Figure 1: Device with semi-infinite contacts where charge carriers are
+injected and extracted.
+///
 
-*Figure 1: Device with semi-infinite contacts where charge carriers are injected and extracted.*
+
 
 In `quatrex`, the electronic structure of the contacts is extracted
 directly from the provided Kohn-Sham Hamiltonian and overlap matrix. The
 contact matrix elements are selected based on the geometry of the system
 and the provided configuration.
 
-![image](/images/obc/connecting_blocks.svg)
-
-*Figure 2: The left contact blocks of the carbon nanotube system. For this example, the contacts are simply the left and right most blocks since the system is created by repeating the wannier centers.*
+![image](../../assets/images/obc/connecting_blocks.svg)
+/// caption
+Figure 2: The left contact blocks of the carbon nanotube system. For
+this example, the contacts are simply the left and right most blocks
+since the system is created by repeating the wannier centers.
+///
 
 Since these open contacts can be understood as "re-normalizing" the dynamics of the system, they enter the Dyson and Keldysh equations through the open boundary *self-energies* $\mathbf{\Sigma}^{R,\lessgtr}_{obc}$.
 

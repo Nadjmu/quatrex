@@ -5,6 +5,9 @@ as inputs for `quatrex` and how to perform different kinds of transport
 simulations for a roughly 10 nm long (8, 0) single-wall carbon nanotube
 (CNT).
 
+{{ mol3d("../../assets/structures/carbon-nanotube.xyz", style={"stick": {"radius":
+-1}, "sphere": {"scale": 0.25}}) }}
+
 ## Geometry and electronic structure
 
 ## Computing the transmission function

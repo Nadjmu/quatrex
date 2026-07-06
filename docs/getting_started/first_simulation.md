@@ -2,7 +2,7 @@
 
 After [installing `quatrex`](installation.md), you can run a simple
 simulation using one of the provided example setups. The examples are
-located in the `examples` directory of the `quatrex` source code.
+located in the `examples` directory of the `quatrex` repository.
 
 As a first toy example, you can consider a [QTBM
 calculation](../user_guide/methodology/qtbm.md) for a ~25 nm long chain
@@ -17,8 +17,7 @@ section](../user_guide/examples.md) of the user guide.
 
 ## Inputs
 
-
-The electronic structure was computed using
+The electronic structure of this chain of atoms was computed using
 [CP2K](https://www.cp2k.org/) with the DZVP-MOLOPT basis set and the PBE
 exchange-correlation functional. The resulting device structure
 (`structure.xyz`), Hamiltonian (`hamiltonian.h5`), and overlap matrix
@@ -31,7 +30,7 @@ directory.
     Some preliminary procedures for constructing these input files are
     described in the [input data section](../user_guide/input_data.md).
 
-{{ mol3d("../images/carbon-chain.xyz") }}
+{{ mol3d("../assets/structures/carbon-chain.xyz") }}
 
 Besides electronic structure data, `quatrex` requires a configuration
 file in [TOML format](https://toml.io/en/) that specifies the simulation

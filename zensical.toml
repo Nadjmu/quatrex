@@ -34,7 +34,7 @@ nav = [
                 { "Device" = "user_guide/parameters/device.md" },
                 { "Contact" = "user_guide/parameters/contact.md" },
                 { "SCSP" = "user_guide/parameters/scsp.md" },
-                { "Poisson" = "user_guide/parameters/poisson.md" },
+                { "Electrostatics" = "user_guide/parameters/electrostatics.md" },
                 { "SCBA" = "user_guide/parameters/scba.md" },
                 { "QTBM" = "user_guide/parameters/qtbm.md" },
                 { "Solver" = "user_guide/parameters/solver.md" },
@@ -46,8 +46,8 @@ nav = [
                     { "Photon" = "user_guide/parameters/photon.md" },
                 ] },
                 { "Boundary Conditions" = [
-                    { "Lyapunov" = "user_guide/parameters/lyapunov.md" },
                     { "OBC" = "user_guide/parameters/obc.md" },
+                    { "Lyapunov" = "user_guide/parameters/lyapunov.md" },
                     { "Memoizer" = "user_guide/parameters/memoizer.md" },
                 ] },
                 { "Performance" = [
@@ -227,7 +227,7 @@ nav = [
     font.code = "Fira Code"
 
     custom_dir = "docs/overrides"
-    favicon = "images/favicon.svg"
+    favicon = "assets/logo/favicon.svg"
     icon.repo = "fontawesome/brands/github"
 
     features = [
@@ -238,6 +238,7 @@ nav = [
         "navigation.top",
         "navigation.tracking",
         "content.code.copy",
+        "content.code.annotate",
     ]
 
         [[project.theme.palette]]
@@ -301,6 +302,7 @@ nav = [
     check_paths = true
     [project.markdown_extensions.zensical.extensions.macros]
     module_name = "docs/scripts/macros"
+    [project.markdown_extensions.pymdownx.blocks.caption]
 
 
     [project.plugins.mkdocstrings.handlers.python]

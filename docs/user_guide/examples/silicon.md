@@ -1,5 +1,7 @@
 # Bulk Silicon
 
+{{ mol3d("../../assets/structures/si.xyz") }}
+
 ## Geometry and electronic structure
 
 ...

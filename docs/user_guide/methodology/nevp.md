@@ -51,7 +51,7 @@ Linearization of the polynomial eigenvalue problem is the simplest solution meth
 
 Instead of linearization, contour integral methods can be used to solve the polynomial eigenvalue problem. The idea is to use a contour integral to project the system onto a subspace and then solve a smaller eigenvalue problem. These methods can be more efficient, but require more complex implementation and parameter tuning. Many different contour integral methods exist, but we currently support Beyn's method, but we plan to provide more methods in the future.
 
-<img src="/images/nevp/contour.svg" width="50%"/>
+![image](../../assets/images/obc/contour.svg)
 
 *Figure 1: Annular contour used in the contour integral method.*
 

@@ -1,8 +1,8 @@
 <div align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./docs/images/logo_text_dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="./docs/images/logo_text_light.svg">
-    <img alt="quatrex logo" src="./docs/images/logo_text_light.svg" width="33%">
+    <source media="(prefers-color-scheme: dark)" srcset="./docs/assets/logo/logo_text_dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./docs/assets/logo/logo_text_light.svg">
+    <img alt="quatrex logo" src="./docs/assets/logo/logo_text_light.svg" width="33%">
   </picture>
   <br><br>
 </div>
@@ -81,8 +81,8 @@ This project is licensed under the [BSD 3-Clause License](LICENSE).
 
 ## Acknowledgments
 
-This research was funded by the Swiss National Science Foundation (SNSF)
-under [grant number 209358
+The work on `quatrex` is funded by the Swiss National Science Foundation
+(SNSF) under [grant number 209358
 (QuaTrEx)](https://data.snf.ch/grants/grant/209358) and [grant number
 205602 (NCCR
 MARVEL)](https://www.snf.ch/en/teeBfD4ffpkMsP53/page/nccr/marvel), and
