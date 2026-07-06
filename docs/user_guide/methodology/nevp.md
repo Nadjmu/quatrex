@@ -11,7 +11,7 @@ $$
 A polynomial eigenvalue problem needs to be solved when using the `spectral` methods for the open boundary conditions. The goal is to find the eigenvalues $\lambda$ and eigenvectors $\mathbf{v}$ that satisfy Equation $\ref{eq:poly_eig}$.
 
 !!! info "Eigenvalue Problem Solver"
-    The method for the polynomial eigenvalue problem can be set through the parameter [`nevp_solver`](../parameters/nevp.md#nevp_solver).
+    The method for the polynomial eigenvalue problem can be set through the parameter [`nevp_solver`](../parameters/obc.md#nevp_solver).
 
 ## Periodicity
 
@@ -84,7 +84,7 @@ TODO, describe them after including them in `quatrex`.
 
 As previously mentioned, only propagating and decaying modes are needed. Further, the modes should decay and propagate away from the device. 
 
-A first filtering step is done for all the modes where it is checked that the residual is smaller than a threshold (see [`residual_threshold`](../parameters/obc.md#residual_threshold) and [`residual_normalization`](../parameters/obc.md#residual_normalization)). This ensures that the modes are indeed eigenmodes of the system. The remaining modes are then filtered into decaying and propagating modes.
+A first filtering step is done for all the modes where it is checked that the residual is smaller than a threshold (see [`residual_tolerance`](../parameters/obc.md#residual_tolerance) and [`residual_normalization`](../parameters/obc.md#residual_normalization)). This ensures that the modes are indeed eigenmodes of the system. The remaining modes are then filtered into decaying and propagating modes.
 
 
 Decaying modes are filtered by three criteria:

@@ -63,7 +63,7 @@ $$
 
 For [NEGF](negf.md), we also need to compute $\mathbf{\Sigma}^{\lessgtr}_{obc}$. In the case of the electron system, this is done through the fluctuation-dissipation theorem, resulting in Equations $\ref{eq:lesser_greater_boundary_self_energy1}$ to $\ref{eq:lesser_greater_boundary_self_energy3}$. The inputs are $\mathbf{g}^R$ and the occupancy $\frac{1}{1 + e^{\frac{E - E_f - \mu}{k_B T}}}$ with the energy $E$, Fermi level $E_f$, chemical potential $\mu$, Boltzmann constant $k_B$, and temperature $T$.
 
-In the case of the screened Coulomb system, the theorem does not hold, and a more complex Lyapunov problem $\mathbf{w}^{\lessgtr} = \mathbf{q}^{\lessgtr} − \mathbf{a}\mathbf{w}^{\lessgtr}\mathbf{a}^{H},$ needs to be solved, which will be discussed in [Lyapunov](lyapunov.md).
+In the case of the screened Coulomb system, the theorem does not hold, and a more complex Lyapunov problem $\mathbf{w}^{\lessgtr} = \mathbf{q}^{\lessgtr} − \mathbf{a}\mathbf{w}^{\lessgtr}\mathbf{a}^{H}$ needs to be solved, which will be discussed in [Lyapunov](lyapunov.md).
 
 ## Solution Approaches
 
@@ -79,7 +79,7 @@ One can differentiate between iterative and direct methods to solve the fixed po
 
 Generally, iterative approaches can struggle with convergence, but their implementation is simpler. The problem is that not all energies converge the same way, and some energies may not converge at all. This is especially true for energies close to Van Hove singularities.
 
-#### Fixed-point Iterations
+#### Fixed-Point Iterations
 
 $$
 \begin{equation}
@@ -133,7 +133,7 @@ The construction of $\mathbf{g}^R$ in terms of the eigenpairs is given in Equati
 
 ### Memoization
 
-Lastly, the [`memoizer`](../parameters/memoizer.md) can be used to accelerate `NEGF` simulations when there is limited change between iterations. It works by storing $\mathbf{g}^R$ of the previous SCBA iteration and trying to refine it with cheap fixed-point iterations. If the residual after a single fixed-point step is low enough (e.g., below a certain threshold), the solver call is skipped and a fixed number of iterations is performed instead.
+Lastly, the [`memoizer`](../parameters/memoizer.md) can be used to accelerate `NEGF` simulations when there is limited change between iterations. It works by storing $\mathbf{g}^R$ of the previous SCBA iteration and trying to refine it with cheap fixed-point iterations. If the residual after a single fixed-point step is low enough (e.g., below a certain threshold), the solver call is skipped and a fixed number of iterations is performed instead. The method can be efficient, but requires more memory. We plan to compress the stored $\mathbf{g}^R$ guess to reduce the memory footprint.
 
 The above behaviour is when the [`mode`](../parameters/memoizer.md#mode) parameter is set to `auto` which is the default. The other modes except `off` should be used with caution, as they may lead to unstable behaviour. Simulations using `force-after-first`, meaning a single iteration of a real solver and then always refining, worked, but resulted in OBC convergence warnings which usually stopped after a few iterations. It is not studied how these different convergence paths differ.
 

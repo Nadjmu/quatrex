@@ -73,7 +73,7 @@ nav = [
             { "Open Boundary Conditions" = "user_guide/methodology/obc.md" },
             { "Quantum Transmitting Boundary Method" = "user_guide/methodology/qtbm.md" },
             { "Polynomial Eigenvalue Problem" = "user_guide/methodology/nevp.md" },
-            { "Lyapunov Problem" = "user_guide/methodology/Lyapunov.md" },
+            { "Lyapunov Problem" = "user_guide/methodology/lyapunov.md" },
             { "Non-Equilibrium Green's Functions" = "user_guide/methodology/negf.md" },
             { "Electrostatics" = "user_guide/methodology/electrostatics.md" },
         ] },
