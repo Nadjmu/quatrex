@@ -785,7 +785,7 @@ class OutputConfig(BaseModel):
     coulomb_screening_density: bool = False
 
     save_scba_variables: bool = False
-    num_nnz_samples_scba_variables: PositiveInt = (
+    num_nnz_samples_scba_variables: PositiveInt | Literal["all"] = (
         100  # used if save_scba_variables is True
     )
 

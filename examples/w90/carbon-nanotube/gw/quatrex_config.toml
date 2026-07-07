@@ -32,6 +32,7 @@ self_energy_density = true
 save_profiling_results = true
 
 save_scba_variables = true
+num_nnz_samples_scba_variables = '10'    # num or 'all'
 
 
 [electron] # ===========================================================

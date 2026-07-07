@@ -99,9 +99,10 @@ class SCBAContainer:
         self.sigma_retarded[iteration, :, :] = np.load(sigma_retarded_file)
 
     def load_sample_indices(self, data_dir: str):
-        filename = f"{data_dir}/scba_variables_sample_indices.npy"
+        filename = f"{data_dir}/scba_variables_meta_data.npz"
         if os.path.exists(filename):
-            self.sample_indices = np.load(filename)
+            meta_data = np.load(filename, allow_pickle=True)
+            self.sample_indices = meta_data["sample_indices"]
         else:
             print(
                 f"Warning: sample indices file {filename} not found. Sample indices will be None."
