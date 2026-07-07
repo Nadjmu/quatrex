@@ -38,6 +38,9 @@ class ElectrostaticSolver:
     ----------
     config : QuatrexConfig
         The configuration object.
+    transport_solver : QTBM | SCBA
+        The transport solver, which may be needed to determine the
+        contact potential constraints.
 
     """
 
@@ -285,12 +288,6 @@ class ElectrostaticSolver:
         specified in the configuration, such as using a zero potential,
         loading from a file, or solving an initial guess from the
         constraints.
-
-        Parameters
-        ----------
-        transport_solver : TransportSolver
-            The transport solver, which may be needed to solve an
-            initial guess from the constraints.
 
         Returns
         -------

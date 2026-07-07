@@ -95,7 +95,7 @@ class OMENDensityModel(DensityModel):
 
     Parameters
     ----------
-    charge_density : NDArray
+    density : NDArray
         The charge density.
     potential : NDArray
         The potential.

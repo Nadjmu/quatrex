@@ -13,7 +13,7 @@ of carbon atoms, which you can find under
 ```
 
 For other example simulations, please refer to the [examples
-section](../user_guide/examples.md) of the user guide.
+section](../user_guide/examples/index.md) of the user guide.
 
 ## Inputs
 
