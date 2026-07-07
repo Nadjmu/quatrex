@@ -576,9 +576,8 @@ class SCBA(TransportSolver):
 
         if self.config.outputs.save_scba_variables:
             # all ranks load the random sample indices and perform gather
-            self.nnz_sample_indices = np.load(
-                f"{self.archive_file_prefix}_sample_indices.npy"
-            )
+            meta_data = np.load(f"{self.archive_file_prefix}_meta_data.npz", allow_pickle=True)
+            self.nnz_sample_indices = meta_data["sample_indices"]
 
             g_lesser_concat = gather_array_stack(
                 self.data.g_lesser.data, global_comm, self.nnz_sample_indices
@@ -625,9 +624,8 @@ class SCBA(TransportSolver):
 
         if self.config.outputs.save_scba_variables:
             # all ranks load the random sample indices and perform gather
-            self.nnz_sample_indices = np.load(
-                f"{self.archive_file_prefix}_sample_indices.npy"
-            )
+            meta_data = np.load(f"{self.archive_file_prefix}_meta_data.npz", allow_pickle=True)
+            self.nnz_sample_indices = meta_data["sample_indices"]
 
             p_lesser_concat = gather_array_stack(
                 self.data.p_lesser.data, global_comm, self.nnz_sample_indices
@@ -825,27 +823,29 @@ class SCBA(TransportSolver):
         if self.config.outputs.save_scba_variables:
             self.archive_file_prefix = self.config.output_dir / "scba_variables"
 
-            # random samples must be less than the total number of non-zero elements
-            num_random_samples = min(
-                self.config.outputs.num_nnz_samples_scba_variables,
-                self.data.g_lesser.data.shape[1],
-            )
-
             # only rank 0 generate random indices and saves it, for the other ranks to use
             if comm.rank == 0:
-                # generate unique random sample indices between 0-43824 (number of non-zero indices)
-                rng = np.random.default_rng(42)
-                sample_indices = rng.choice(
-                    self.data.g_lesser.data.shape[1],
-                    size=num_random_samples,
-                    replace=False,
-                )
-                sample_indices = np.sort(sample_indices)
+                num_nnz = self.data.g_lesser.data.shape[1]
+                if self.config.outputs.num_nnz_samples_scba_variables is 'all':
+                    num_random_samples = num_nnz
+                    sample_indices = np.arange(num_random_samples)
+                else:
+                    # random samples must be less than the total number of non-zero elements
+                    num_random_samples = min(
+                        self.config.outputs.num_nnz_samples_scba_variables,
+                        num_nnz,
+                    )
+                    # generate unique random sample indices between 0-43824 (number of non-zero indices)
+                    rng = np.random.default_rng(42)
+                    sample_indices = rng.choice(
+                        self.data.g_lesser.data.shape[1],
+                        size=num_random_samples,
+                        replace=False,
+                    )
+                    sample_indices = np.sort(sample_indices)
+                np.savez(f"{self.archive_file_prefix}_meta_data.npz", sample_indices=sample_indices, num_nnz = num_nnz)
+                print(f"Saving {num_random_samples} nnz samples for SCBA variable visualization.", flush=True)
 
-                # save indices
-                np.save(
-                    f"{self.archive_file_prefix}_sample_indices.npy", sample_indices
-                )
 
         for i in range(self.config.scba.max_iterations):
             self.iteration = i
