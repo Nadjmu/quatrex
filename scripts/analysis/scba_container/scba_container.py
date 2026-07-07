@@ -52,6 +52,10 @@ class SCBAContainer:
         )
 
         self.sample_indices = None
+        self.rows = None
+        self.cols = None
+        self.nrows = None
+        self.ncols = None
 
         self.energies = np.linspace(
             energy_window_min, energy_window_max, energy_window_num, endpoint=True
@@ -107,6 +111,11 @@ class SCBAContainer:
             print(
                 f"Warning: sample indices file {filename} not found. Sample indices will be None."
             )
+        self.rows = meta_data["rows"] if "rows" in meta_data else None
+        self.cols = meta_data["cols"] if "cols" in meta_data else None
+
+        self.nrows = meta_data["nrows"] if "nrows" in meta_data else None
+        self.ncols = meta_data["ncols"] if "ncols" in meta_data else None
 
     def load_adaptive_grids(self, data_dir: str):
         if os.path.exists(f"{data_dir}/adaptive_electron_energies_for_g_sigma.npy"):
