@@ -101,7 +101,7 @@ class SCSPConfig(BaseModel):
     """Maximum number of previous potentials and residuals to store for
     the DIIS extrapolation.
 
-    Only used if `mixer` is set to "diis".
+    Only used if [`mixer`](#mixer) is set to "diis".
 
     """
 
@@ -109,7 +109,7 @@ class SCSPConfig(BaseModel):
     """Regularization parameter for the least-squares problem in the
     DIIS method to ensure numerical stability.
 
-    Only used if `mixer` is set to "diis".
+    Only used if [`mixer`](#mixer) is set to "diis".
 
     """
 
@@ -121,7 +121,7 @@ class SCSPConfig(BaseModel):
     then repeat this cycle. If set to 1 (the default), the Pulay mixing
     is performed at every iteration.
 
-    Only used if `mixer` is set to "diis".
+    Only used if [`mixer`](#mixer) is set to "diis".
 
     """
 
@@ -130,7 +130,8 @@ class QTBMConfig(BaseModel):
     """Parameters for the quantum transmitting boundary method (QTBM).
 
     !!! note
-        Only used in simulations where `formalism = "wf"`.
+        Only used in simulations where
+        [`formalism`](quatrex#formalism) is set to "wf".
 
     """
 
@@ -147,17 +148,21 @@ class QTBMConfig(BaseModel):
 
     low_rank_obc: bool = False
     """Whether to use reduced rank for the boundary self-energies.
-    
-    If set to True, boundary self-energies are moved to the
-    right-hand-side of the linear system, which greatly reduces fill-in
-    during factorization.
 
-    The system matrix becomes Hermitian or even real symmetric in
-    gamma-only simulations. Therefore, the `low_rank_obc` parameter can
-    only be used in combination with direct solvers that can exploit the
-    symmetry, i.e., `direct_solver="cudss"` on GPU,
-    `direct_solver="pardiso"` on CPU, and `direct_solver="thomas"` on
-    both CPU and GPU.
+    If set to True, boundary self-energies are moved to the right-hand-side of
+    the linear system, which greatly reduces fill-in during factorization.
+
+    The system matrix becomes Hermitian or even real symmetric in gamma-only
+    simulations. Therefore, the `low_rank_obc` parameter can only be used in
+    combination with direct solvers that can exploit the symmetry, i.e.,
+    [`direct_solver`](solver#direct_solver)="cudss" on GPU,
+    [`direct_solver`](solver#direct_solver)="pardiso" on CPU, and
+    [`direct_solver`](solver#direct_solver)="thomas" on both CPU and GPU.
+
+    !!! warning
+        Potentially the system matrix can become very ill-conditioned if an
+        energy is too close to a Van Hove singularity. Without low rank, the
+        OBCs regularize the system matrix.
 
     """
 
@@ -167,10 +172,11 @@ class SCBAConfig(BaseModel):
     loop.
 
     This is the main loop that computes the self-energies and Green's
-    functions in simulations where `formalism = "negf"`.
+    functions in simulations where [`formalism`](quatrex#formalism)
+    is set to "negf".
 
-    See the [section on NEGF](../methodology/negf.md)
-    in the user guide for more information on the SCBA loop.
+    See the [section on NEGF](../methodology/negf.md) in the user guide
+    for more information on the SCBA loop.
 
     """
 
@@ -253,13 +259,17 @@ class SCBAConfig(BaseModel):
     - The imaginary part of the retarded self-energy from any previous
       computation is discarded.
 
-    This happens before the anti-Hermitian part of the retarded
-    self-energy is computed from the lesser and greater parts as
+    $$
+    \begin{equation}
+    \mathbf{\Sigma}^R_{AH} = \frac{1}{2i} (
+    \mathbf{\Sigma}^> - \mathbf{\Sigma}^< )
+    \label{eq:retarded_self_energy_from_lesser_greater}
+    \end{equation}
+    $$
 
-    $$
-    \mathbf{\Sigma}^R_{AH} = \frac{1}{2i} ( \mathbf{\Sigma}^> -
-    \mathbf{\Sigma}^< )
-    $$
+    This happens before the anti-Hermitian part of the retarded
+    self-energy is computed from the lesser and greater parts as in
+    Equation $\ref{eq:retarded_self_energy_from_lesser_greater}$.
 
     """
 
@@ -296,7 +306,8 @@ class ElectrostaticsConfig(BaseModel):
     max_iterations: PositiveInt = 20
     """The maximum number of inner iterations for the root-finding scheme.
 
-    Only used if `solving_scheme` is set to "root-finding".
+    Only used if [`solving_scheme`](#solving_scheme) is set to
+    "root-finding".
 
     """
 
@@ -306,7 +317,8 @@ class ElectrostaticsConfig(BaseModel):
     This is defined as the infinity norm of the potential update in the
     root-finding scheme.
 
-    Only used if `solving_scheme` is set to "root-finding".
+    Only used if [`solving_scheme`](#solving_scheme) is set to
+    "root-finding".
 
     """
 
@@ -321,7 +333,8 @@ class ElectrostaticsConfig(BaseModel):
       = 2`. However, it uses slightly different physical constants,
       i.e., not the CODATA values used everywhere else in `quatrex`.
 
-    Only used if `solving_scheme` is set to "root-finding".
+    Only used if [`solving_scheme`](#solving_scheme) is set to
+    "root-finding".
 
     """
 
@@ -333,8 +346,9 @@ class ElectrostaticsConfig(BaseModel):
     of the system. For example, a 2D density model might actually work
     best for systems of all dimensionalities.
 
-    Only used if `solving_scheme` is set to "root-finding" and
-    `density_model` is set to "single-band".
+    Only used if [`solving_scheme`](#solving_scheme) is set to
+    "root-finding" and [`density_model`](#density_model) is set to
+    "single-band".
 
     """
 
@@ -347,7 +361,8 @@ class ElectrostaticsConfig(BaseModel):
         expected to work best at regimes close to equilibrium where the
         potential does not vary too much.
     - `"file"`: Loads the initial guess from a file. The file should be
-        located in the `input_dir` and named `potential.npy`.
+        located in the [`input_dir`](quatrex#input_dir) and named
+        `potential.npy`.
 
     """
 
@@ -411,7 +426,7 @@ class MemoizerConfig(BaseModel):
     """The relative tolerance on fixed-point residuals for memoization.
 
     !!! note
-        Only used if `mode` is set to `"auto"`.
+        Only used if [`mode`](#mode) is set to `"auto"`.
 
     """
 
@@ -419,7 +434,7 @@ class MemoizerConfig(BaseModel):
     """The absolute tolerance on fixed-point residuals for memoization.
 
     !!! note
-        Only used if `mode` is set to `"auto"`.
+        Only used if [`mode`](#mode) is set to `"auto"`.
 
     """
 
@@ -440,7 +455,7 @@ class MemoizerConfig(BaseModel):
     use memoization.
 
     !!! note
-        Only used if `mode` is set to `"auto"`.
+        Only used if [`mode`](#mode) is set to `"auto"`.
 
     """
 
@@ -475,8 +490,8 @@ class SolverConfig(BaseModel):
     """Whether to compute the current via the Meir-Wingreen formula.
 
     This is only supported for the `"rgf"` algorithm. If not set, it is
-    automatically determined based on the algorithm. (i.e. `True` for
-    `"rgf"` and `False` for `"inv"`)
+    automatically determined based on the [`algorithm`](#algorithm).
+    (i.e. `True` for `"rgf"` and `False` for `"inv"`)
 
     If `True`, the current is computed between each layer and from/to
     the leads. This way of computing the current is usually preferable
@@ -503,10 +518,10 @@ class SolverConfig(BaseModel):
     If set to `"auto"`, the solver is automatically chosen based on the
     matrix type and the available direct solver libraries.
 
-    In runs with `low_rank_obc = true`, the system matrix will be
-    Hermitian or even real and symmetric in gamma-only simulations. In
-    those cases, libraries that can exploit the symmetry are preferred,
-    i.e., cuDSS on GPU and PARDISO on CPU.
+    In runs with [`low_rank_obc`](qtbm#low_rank_obc) = true, the system
+    matrix will be Hermitian or even real and symmetric in gamma-only
+    simulations. In those cases, libraries that can exploit the symmetry
+    are preferred, i.e., cuDSS on GPU and PARDISO on CPU.
 
     On GPU, SuperLU is the only fallback option if cuDSS is not
     available. On CPU, if PARDISO is not available, the fallback options
@@ -591,7 +606,7 @@ class OBCConfig(BaseModel):
     = 0,
     $$
 
-    where $b$ is the number of `block_sections`, and
+    where $b$ is the number of [`block_sections`](#block_sections), and
     $\hat{\mathbf{m}}_{n}$ are potentially reduced coupling matrices.
 
     From selected eigenvalues $\lambda = e^{i k}$ and eigenvectors
@@ -599,9 +614,9 @@ class OBCConfig(BaseModel):
 
     - `"beyn"`: Uses the Beyn's contour integral method[^beyn] to solve
       the NEVP and find the eigenpairs within a specified contour in the
-      complex plane. Also see the `r_o`, `r_i`, `m_0`, and
-      `num_quad_points` parameters for configuration of the contour
-      integral method.
+      complex plane. Also see the [`r_o`](#r_o), [`r_i`](#r_i),
+      [`m_0`](#m_0), and [`num_quad_points`](#num_quad_points)
+      parameters for configuration of the contour integral method.
 
     - `"full"`: Uses a full dense eigensolver to solve for all
       eigenvalues, linearizing the original polynomial problem. This
@@ -609,7 +624,7 @@ class OBCConfig(BaseModel):
       block sectioning or exploiting periodicity.
 
     !!! note
-        Only used if `algorithm` is set to `"spectral"`.
+        Only used if [`algorithm`](#algorithm) is set to `"spectral"`.
 
     [^beyn]: W.-J. Beyn, An integral method for solving nonlinear
         eigenvalue problems, Linear Algebra and its Applications, 2012,
@@ -628,10 +643,10 @@ class OBCConfig(BaseModel):
     block-tridiagonal tiling of the system matrix. These *transport
     blocks* are sometimes constructed from multiple unit cells.
 
-    With the `block_sections` parameter, one can specify how many unit
-    cells are merged into a single transport block. This is then used
-    when `nevp_solver` is set to `"beyn"` to reduce the size of the
-    contact NEVP.
+    With the [`block_sections`](#block_sections) parameter, one can
+    specify how many unit cells are merged into a single transport
+    block. This is then used when [`nevp_solver`](#nevp_solver) is set
+    to `"beyn"` to reduce the size of the contact NEVP.
 
     For example, if the transport cell is constructed from two unit
     cells along the transport direction, setting `block_sections = 2`
@@ -664,8 +679,8 @@ class OBCConfig(BaseModel):
     functions and can be neglected. These modes should be filtered out
     as including them can lead to numerical instabilities.
 
-    If `max_decay` is not set, it is computed from the outer contour
-    radius as `1.5 * log(r_o)`.
+    If `max_decay` is not set, it is computed from the [outer contour
+    radius](#r_o) as `1.5 * log(r_o)`.
 
     """
 
@@ -677,7 +692,7 @@ class OBCConfig(BaseModel):
     functions, especially if not enough eigenpairs are considered.
 
     !!! note
-        Only used if `algorithm` is set to `"spectral"`.
+        Only used if [`algorithm`](#algorithm) is set to `"spectral"`.
 
     """
 
@@ -709,7 +724,7 @@ class OBCConfig(BaseModel):
     discarded.
 
     !!! note
-        Only used if `algorithm` is set to `"spectral"`.
+        Only used if [`algorithm`](#algorithm) is set to `"spectral"`.
 
     """
 
@@ -735,9 +750,10 @@ class OBCConfig(BaseModel):
     $$
 
     !!! note
-        This parameter is only used if the `formalism = "wf"`.
-        Otherwise, the memoizer is responsible for residual checking and
-        issuing warnings.
+        This parameter is only used if the
+        [`formalism`](quatrex#formalism) = `"wf"`. Otherwise, the
+        memoizer is responsible for residual checking and issuing
+        warnings.
 
     """
 
@@ -746,12 +762,13 @@ class OBCConfig(BaseModel):
     propagating ones.
 
     Modes that are very close to the unit circle could get misclassified
-    via the `min_decay` and `min_propagation` conditions, i.e., when
-    their decay rate is smaller than `min_decay` but their
+    via the [`min_decay`](#min_decay) and
+    [`min_propagation`](#min_propagation) conditions, i.e., when their
+    decay rate is smaller than [`min_decay`](#min_decay) but their
     propagation/decay ratio is not pronounced enough. Modes with decay
     rates smaller than this value are considered as perfectly
     propagating modes, even if the propagation/decay ratio is not above
-    the `min_propagation` threshold.
+    the [`min_propagation`](#min_propagation) threshold.
 
     """
 
@@ -878,6 +895,11 @@ class LyapunovConfig(BaseModel):
 
     If set to `True`, the sparsity pattern is only computed once during
     the first SCBA iteration and reused for subsequent iterations.
+
+    !!! warning
+
+        There is currently a bug and this parameter should always be set
+        to `False`.
 
     """
 
@@ -1029,15 +1051,6 @@ class ElectronConfig(BaseModel):
     obc: OBCConfig = OBCConfig()
     """Parameters concerning the open boundary conditions."""
 
-    lyapunov: LyapunovConfig = LyapunovConfig()
-    """Parameters concerning the Lyapunov solver.
-
-    !!! warning
-        The Lyapunov solver is not used in the electronic subsystem
-        solver.
-
-    """
-
     eta_obc: NonNegativeFloat = 0  # eV
     """Small imaginary value to add to the energy when computing the
     OBCs.
@@ -1107,7 +1120,8 @@ class ElectronConfig(BaseModel):
     """The number of energy points in the energy grid used for electronic
     quantities.
 
-    Either `energy_window_num` or `energy_window_num_per_rank` can be
+    Either `energy_window_num` or
+    [`energy_window_num_per_rank`](#energy_window_num_per_rank) can be
     set to determine the total number of energy points.
 
     """
@@ -1115,8 +1129,9 @@ class ElectronConfig(BaseModel):
     """The number of energy points per rank in the energy grid used for
     electronic quantities.
 
-    Either `energy_window_num` or `energy_window_num_per_rank` can be
-    set to determine the total number of energy points.
+    Either [`energy_window_num`](#energy_window_num) or
+    `energy_window_num_per_rank`) can be set to determine the total
+    number of energy points.
 
     """
 
@@ -1239,35 +1254,12 @@ class CoulombScreeningConfig(BaseModel):
     lyapunov: LyapunovConfig = LyapunovConfig()
     """Parameters concerning the Lyapunov solver."""
 
-    temperature: PositiveFloat = 300.0  # K
-    """The temperature of the system.
-
-    !!! warning
-        The temperature in the Coulomb screening solver is not used. The
-        (contact) particle densities are computed via the Lyapunov
-        solver.
-
-    """
-
     epsilon_r: PositiveFloat = 1.0
     """The relative permittivity of the system.
 
     The Coulomb matrix is scaled by this value. It is primarily useful
     as a way to scale the strength of the Coulomb interaction and to
     better fit the model to experimental results.
-
-    """
-
-    left_temperature: PositiveFloat | None = None
-    """The temperature of the left contact.
-
-    If not set, it is assumed to be the same as `temperature`.
-
-    """
-    right_temperature: PositiveFloat | None = None
-    """The temperature of the right contact.
-
-    If not set, it is assumed to be the same as `temperature`.
 
     """
 
@@ -1367,8 +1359,9 @@ class CoulombScreeningConfig(BaseModel):
     The Hermitian part is computed using a Hilbert transform. For the
     Coulomb screening self-energy, this Hilbert transform can lead to
     errors at the edges of the energy window. The
-    `apply_hilbert_correction` option can be used to apply a correction
-    to the Hilbert transform to mitigate these errors.
+    [`apply_hilbert_correction`](#apply_hilbert_correction) option can
+    be used to apply a correction to the Hilbert transform to mitigate
+    these errors.
 
     """
 
@@ -1463,9 +1456,10 @@ class PhononConfig(BaseModel):
     \omega) + N_{ph} G^{\lessgtr}(E + \hbar \omega) \right],
     $$
 
-    where $D$ is the `deformation_potential`, $\hbar \omega$ is the
-    `phonon_energy`, and $N_{ph}$ is the phonon occupation number given
-    by the Bose-Einstein distribution at the specified `temperature`.
+    where $D$ is the [`deformation_potential`](#deformation_potential),
+    $\hbar \omega$ is the [`phonon_energy`](#phonon_energy), and
+    $N_{ph}$ is the phonon occupation number given by the Bose-Einstein
+    distribution at the specified [`temperature`](#temperature).
 
     """
 
@@ -1577,12 +1571,12 @@ class OutputConfig(BaseModel):
     """The file to save the timing results to.
 
     The timing results are saved in the format specified by
-    `profiling_save_format`.
+    [`profiling_save_format`](#profiling_save_format).
 
-    If `save_profiling_results` is `True`, and the `profiling_path` is
-    not set, the file name is inferred from the SLURM output file if
-    running in a SLURM context. Otherwise, the default name
-    `quatrex_times.out` is used.
+    If [`save_profiling_results`](#save_profiling_results) is `True`,
+    and the `profiling_path` is not set, the file name is inferred from
+    the SLURM output file if running in a SLURM context. Otherwise, the
+    default name `quatrex_times.out` is used.
 
     """
 
@@ -1671,10 +1665,11 @@ class DeviceConfig(BaseModel):
     that only the unit cell itself is considered.
 
     Along the transport direction, at least one neighboring cell must be
-    included if `construct_from_unit_cell` is `True`. If
-    `construct_from_unit_cell` is `False`, including neighboring cells
-    in transport direction is not allowed, since the device should
-    already be upscaled in that case.
+    included if [`construct_from_unit_cell`](#construct_from_unit_cell)
+    is `True`. If
+    [`construct_from_unit_cell`](#construct_from_unit_cell) is `False`,
+    including neighboring cells in transport direction is not allowed,
+    since the device should already be upscaled in that case.
 
     If more neighbor cells are requested than present in the input
     Hamiltonian, a `ValueError` is raised.
@@ -1710,11 +1705,12 @@ class DeviceConfig(BaseModel):
     size of each block along transport direction.
 
     The `block_size` parameter cannot be used in conjunction with
-    `construct_from_unit_cell=True` since the block sizes are determined
-    from the unit cell and the `neighbor_cell_cutoff` in that case.
+    [`construct_from_unit_cell`](#construct_from_unit_cell) = `True`
+    since the block sizes are determined from the unit cell and the
+    `neighbor_cell_cutoff` in that case.
 
-    If `construct_from_unit_cell=False` in NEGF simulations, the block
-    size must be given.
+    If [`construct_from_unit_cell`](#construct_from_unit_cell) = `False`
+    in NEGF simulations, the block size must be given.
 
     """
 
@@ -1842,7 +1838,8 @@ class NEVPConfig(BaseModel):
     When using contour-based NEVP solvers, one needs to project the
     non-linear system onto a linear subspace. This can either be done
     using QR decomposition or by computing a singular value
-    decomposition (SVD), which is controlled by the `use_qr` parameter.
+    decomposition (SVD), which is controlled by the [`use_qr`](#use_qr)
+    parameter.
 
     The `project_compute_location` parameter determines whether to use
     NumPy or CuPy for this computation. The default is NumPy.
@@ -1907,11 +1904,9 @@ class BandEdgeConfig(BaseModel):
     r"""Whether to use eigvalsh when computing the band edges.
 
     The non-linear eigenvalue problem
-    
-    $$
-    \left[\mathbf{H} + \mathbf{\Sigma}^R(E)\right] \boldsymbol{\psi} = E
-    \boldsymbol{\psi},
-    $$
+
+    $$ \left[\mathbf{H} + \mathbf{\Sigma}^R(E)\right] \boldsymbol{\psi}
+    = E \boldsymbol{\psi}, $$
 
     which needs to be solved to compute the band edges is in principle a
     general eigenvalue problem. However, since we only care about real
@@ -1921,7 +1916,8 @@ class BandEdgeConfig(BaseModel):
     non-linear eigenvalue problem, but it is an approximation if
     scattering is included.
 
-    Only relevant if `band_edge_tracking = True`.
+    Only relevant if [`band_edge_tracking`](electron/#band_edge_tracking) =
+    `True`.
 
     """
 
@@ -1931,7 +1927,8 @@ class BandEdgeConfig(BaseModel):
     The eigenvalues can be computed either on the CPU using NumPy or on
     the GPU using CuPy. The default is to use NumPy.
 
-    Only relevant if `band_edge_tracking = True`.
+    Only relevant if [`band_edge_tracking`](electron/#band_edge_tracking) =
+    `True`.
 
     """
 
@@ -1939,7 +1936,8 @@ class BandEdgeConfig(BaseModel):
     """Whether to use pinned memory when transferring data in the
     band-edge tracking computation.
 
-    Only relevant if `band_edge_tracking = True`.
+    Only relevant if [`band_edge_tracking`](electron/#band_edge_tracking) =
+    `True`.
 
     """
 
@@ -1983,7 +1981,7 @@ class ConvolveConfig(BaseModel):
     # and nnz.
     batch_size: PositiveInt | None = None
     """The batch size to use for the FFT convolution.
-    
+
     Since the performing FFT can lead to memory bottlenecks, the
     convolution can be performed in batches. The `batch_size` parameter
     determines the number of matrix elements to compute in each batch.
@@ -2017,7 +2015,7 @@ class CommConfig(BaseModel):
 
     block_comm_size: PositiveInt = 1
     """The number of ranks over which to disctribute matrix blocks.
-    
+
     SCBA supports spatial domain distribution. The matrix blocks can be
     distributed over multiple ranks, which can be useful for extremely
     large systems. The `block_comm_size` parameter determines the number
@@ -2066,17 +2064,21 @@ class ComputeConfig(BaseModel):
     """
     numba_threading_layer: Literal["workqueue", "omp", "tbb"] = "workqueue"
     """The threading layer to use for Numba.
-    
+
     We recommend using the default `"workqueue"` threading layer in
     numba, as we have had issues with correctly limiting the number of
     threads when using the `"omp"` threading layer.
 
     """
 
-    threadpool_api: Literal["blas", "openmp", "tbb"] | None = None
-    """
-    !!! warning
-        The `threadpool_api` parameter is currently not used.
+    threadpool_api: Literal["blas", "openmp"] | None = None
+    """The threadpool API to use for threadpoolctl.
+
+    - If "blas", it will only limit BLAS supported libraries.
+    - If "openmp", it will only limit OpenMP supported libraries.
+        Note that it can affect the number of threads used by the BLAS libraries
+        if they rely on OpenMP.
+    - If None, this will apply to all threadpoolctl supported libraries.
 
     """
 

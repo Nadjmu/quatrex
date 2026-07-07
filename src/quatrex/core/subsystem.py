@@ -48,10 +48,11 @@ class SubsystemSolver(ABC):
         self.obc = self._configure_obc(
             getattr(config, self.system).obc, config.compute.nevp
         )
-        self.lyapunov = self._configure_lyapunov(
-            getattr(config, self.system).lyapunov,
-            config.compute.lyapunov,
-        )
+        if hasattr(getattr(config, self.system), "lyapunov"):
+            self.lyapunov = self._configure_lyapunov(
+                getattr(config, self.system).lyapunov,
+                config.compute.lyapunov,
+            )
         self.solver = self._configure_solver(getattr(config, self.system).solver)
         self.solver_dist = RGFDist(
             max_batch_size=getattr(config, self.system).solver.max_batch_size,
