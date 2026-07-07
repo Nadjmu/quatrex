@@ -163,7 +163,7 @@ def gather_array_stack(
 
     # if not provided, gather all nnz indices
     if sample_indices is None:
-        sample_indices = xp.arange(array.shape[1])
+        sample_indices = xp.arange(array.shape[-1])
 
     # get num of energies per rank (not necessarily evenly distributed)
     # use lowercase gather since local_energy_length is a generic Python object, not an NDArray
@@ -171,7 +171,7 @@ def gather_array_stack(
     comm.barrier()
 
     # only gather the sampled nnz indices, since each rank has all the nnz data for its own energies
-    data = xp.ascontiguousarray(array[:, sample_indices])
+    data = xp.ascontiguousarray(array[..., sample_indices])
     comm.barrier()
 
     gatherbuf = None

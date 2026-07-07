@@ -829,7 +829,7 @@ class SCBA(TransportSolver):
 
             # only rank 0 generate random indices and saves it, for the other ranks to use
             if comm.rank == 0:
-                num_nnz = self.data.g_lesser.data.shape[1]
+                num_nnz = self.data.g_lesser.data.shape[-1]
                 if self.config.outputs.num_nnz_samples_scba_variables == "all":
                     num_random_samples = num_nnz
                     sample_indices = np.arange(num_random_samples)
@@ -842,7 +842,7 @@ class SCBA(TransportSolver):
                     # generate unique random sample indices between 0-43824 (number of non-zero indices)
                     rng = np.random.default_rng(42)
                     sample_indices = rng.choice(
-                        self.data.g_lesser.data.shape[1],
+                        num_nnz,
                         size=num_random_samples,
                         replace=False,
                     )
@@ -861,6 +861,7 @@ class SCBA(TransportSolver):
                     flush=True,
                 )
 
+        comm.barrier()
         for i in range(self.config.scba.max_iterations):
             self.iteration = i
             print(f"Iteration {self.iteration}", flush=True) if comm.rank == 0 else None
