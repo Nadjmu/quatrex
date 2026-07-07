@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the physical constants used."""
+
 from scipy.constants import physical_constants
 
 c_0 = 1e10 * physical_constants["speed of light in vacuum"][0]  # Å / s

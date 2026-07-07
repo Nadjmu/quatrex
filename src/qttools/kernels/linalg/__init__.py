@@ -1,5 +1,6 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes our linear algebra bindings."""
 
 from qttools.kernels.linalg.eig import eig
 from qttools.kernels.linalg.eigvalsh import eigvalsh

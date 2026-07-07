@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes utility functions for inplace operations on sparse matrices."""
+
 import numpy as np
 
 from qttools import NDArray, sparse, xp

@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the Phonon solver class."""
+
 import numpy as np
 
 from quatrex.core.config import QuatrexConfig

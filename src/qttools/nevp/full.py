@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes our NEVP solver based on linearization."""
+
 import warnings
 
 from qttools import NDArray, sparse, xp

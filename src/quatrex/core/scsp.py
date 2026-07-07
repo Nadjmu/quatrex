@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the core class for the self-consistent Schrödinger-Poisson (SCSP) solver."""
+
 import os
 
 import numpy as np

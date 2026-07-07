@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes our Numba general datastructure kernels."""
+
 import numba as nb
 import numpy as np
 from numpy.typing import NDArray

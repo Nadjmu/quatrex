@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes function to construct a Monkhorst-Pack grid of k-points."""
+
 import numpy as np
 
 from qttools import NDArray

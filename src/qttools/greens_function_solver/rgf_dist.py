@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes the distributed selected inversion solver."""
+
 import numpy as np
 
 from qttools import NDArray, xp

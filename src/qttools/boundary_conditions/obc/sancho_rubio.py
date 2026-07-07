@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes a solver for a open boundary condition solver using the Sancho-Rubio iterative scheme."""
+
 import warnings
 
 from qttools import NDArray, xp

@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the scattering self-energy from the bare Fock interaction."""
+
 import numpy as np
 
 from qttools import NDArray, xp

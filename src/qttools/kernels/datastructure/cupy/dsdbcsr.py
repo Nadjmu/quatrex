@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes our CUDA csr datastructure kernels."""
+
 import cupy as cp
 import numpy as np
 

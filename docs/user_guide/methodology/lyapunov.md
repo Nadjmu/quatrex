@@ -14,8 +14,9 @@ $\mathbf{L}^{\lessgtr}_{obc}$) for the screened Coulomb system.
 
 ## Derivation
 
-TODO include derivation of the Lyapunov equation from the derivation of
-RGF with a non-identity right hand side matrix.
+!!! TODO
+    include derivation of the Lyapunov equation from the derivation of
+    RGF with a non-identity right hand side matrix.
 
 ## Sparsity Reduction
 

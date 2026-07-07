@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes the distributed block-accessible CSR matrix data structure."""
+
 import warnings
 
 import numpy as np

@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes utility functions for stack operations."""
+
 from qttools import NDArray
 
 

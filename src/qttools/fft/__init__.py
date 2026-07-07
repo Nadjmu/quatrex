@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes the FFT-based convolution and correlation functions."""
+
 from qttools.fft.ffts import (
     fft_circular_convolve,
     fft_convolve,

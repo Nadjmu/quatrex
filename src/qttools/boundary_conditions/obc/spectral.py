@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes a spectral solver for the open boundary conditions."""
+
 import warnings
 
 import numpy as np

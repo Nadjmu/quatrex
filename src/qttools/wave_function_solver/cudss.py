@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes the cuDSS wave function solver."""
+
 try:
     import cupy as cp
     import nvmath

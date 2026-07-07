@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the configuration classes for the quatrex package."""
+
 import os
 import re
 import subprocess

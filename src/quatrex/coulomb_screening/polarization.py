@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the Polarization class."""
+
 import numpy as np
 from mpi4py.MPI import COMM_WORLD as comm
 

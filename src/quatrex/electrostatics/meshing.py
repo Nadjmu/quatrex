@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the methods to generate a mesh for the device geometry."""
+
 from hashlib import sha256
 from tempfile import NamedTemporaryFile
 

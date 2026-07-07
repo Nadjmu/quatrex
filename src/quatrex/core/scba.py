@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the core classes for the self-consistent Born approximation (SCBA) solver."""
+
 import os
 from dataclasses import dataclass, field
 

@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes utility functions for the solvers."""
+
 from qttools import NDArray, xp
 from qttools.utils.mpi_utils import get_section_sizes
 

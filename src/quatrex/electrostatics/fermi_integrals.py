@@ -1,4 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
+
+"""Includes the methods to compute Fermi integrals and their inverses."""
+
 import numpy as np
 import scipy as sp
 from scipy.optimize import minimize

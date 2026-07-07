@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the abstract base class for subsystem solvers."""
+
 from abc import ABC, abstractmethod
 
 from qttools import NDArray

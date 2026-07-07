@@ -1,5 +1,6 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes method to auto-select the best wave function solver."""
 
 from qttools import xp
 from qttools.comm import comm

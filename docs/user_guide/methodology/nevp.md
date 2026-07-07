@@ -134,7 +134,8 @@ consists of the following steps:
     is faster, but leads to the contour algorithm being less robust.
 
 ## FEAST and FEAST Variants
-TODO, describe them after including them in `quatrex`.
+!!! TODO
+    describe them after including them in `quatrex`.
 
 # Eigenvalue Filter
 

@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the scattering self-energy from the electron-phonon interaction."""
+
 from qttools import NDArray, xp
 from qttools.datastructures import DSDBSparse
 from quatrex.core.config import QuatrexConfig
@@ -8,7 +10,7 @@ from quatrex.core.statistics import bose_einstein
 
 
 class SigmaPhonon(ScatteringSelfEnergy):
-    """Computes the electron-photon self-energy.
+    """Computes the electron-phonon self-energy.
 
     Parameters
     ----------

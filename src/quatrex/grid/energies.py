@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes function to get electron energies based on the configuration."""
+
 import os
 
 from qttools import NDArray, xp

@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes our wave function solvers."""
+
 from qttools import sparse
 from qttools.wave_function_solver.auto_select import auto_select_solver
 from qttools.wave_function_solver.cudss import cuDSS

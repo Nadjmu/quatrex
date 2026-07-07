@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes band edges related functions."""
+
 import warnings
 
 import numpy as np

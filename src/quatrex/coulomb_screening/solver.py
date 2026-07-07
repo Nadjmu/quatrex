@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the Coulomb screening solver class."""
+
 import numpy as np
 
 from qttools import NDArray, sparse, xp
