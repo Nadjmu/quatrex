@@ -576,7 +576,9 @@ class SCBA(TransportSolver):
 
         if self.config.outputs.save_scba_variables:
             # all ranks load the random sample indices and perform gather
-            meta_data = np.load(f"{self.archive_file_prefix}_meta_data.npz", allow_pickle=True)
+            meta_data = np.load(
+                f"{self.archive_file_prefix}_meta_data.npz", allow_pickle=True
+            )
             self.nnz_sample_indices = meta_data["sample_indices"]
 
             g_lesser_concat = gather_array_stack(
@@ -624,7 +626,9 @@ class SCBA(TransportSolver):
 
         if self.config.outputs.save_scba_variables:
             # all ranks load the random sample indices and perform gather
-            meta_data = np.load(f"{self.archive_file_prefix}_meta_data.npz", allow_pickle=True)
+            meta_data = np.load(
+                f"{self.archive_file_prefix}_meta_data.npz", allow_pickle=True
+            )
             self.nnz_sample_indices = meta_data["sample_indices"]
 
             p_lesser_concat = gather_array_stack(
@@ -826,7 +830,7 @@ class SCBA(TransportSolver):
             # only rank 0 generate random indices and saves it, for the other ranks to use
             if comm.rank == 0:
                 num_nnz = self.data.g_lesser.data.shape[1]
-                if self.config.outputs.num_nnz_samples_scba_variables is 'all':
+                if self.config.outputs.num_nnz_samples_scba_variables == "all":
                     num_random_samples = num_nnz
                     sample_indices = np.arange(num_random_samples)
                 else:
@@ -843,9 +847,19 @@ class SCBA(TransportSolver):
                         replace=False,
                     )
                     sample_indices = np.sort(sample_indices)
-                np.savez(f"{self.archive_file_prefix}_meta_data.npz", sample_indices=sample_indices, num_nnz = num_nnz)
-                print(f"Saving {num_random_samples} nnz samples for SCBA variable visualization.", flush=True)
-
+                np.savez(
+                    f"{self.archive_file_prefix}_meta_data.npz",
+                    sample_indices=sample_indices,
+                    num_nnz=num_nnz,
+                    rows=self.data.g_lesser.rows[sample_indices],
+                    cols=self.data.g_lesser.cols[sample_indices],
+                    nrows=self.data.g_lesser.shape[1],
+                    ncols=self.data.g_lesser.shape[2],
+                )
+                print(
+                    f"Saving {num_random_samples} nnz samples for SCBA variable visualization.",
+                    flush=True,
+                )
 
         for i in range(self.config.scba.max_iterations):
             self.iteration = i
