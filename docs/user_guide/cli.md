@@ -23,8 +23,8 @@ quatrex mesh [OPTIONS] CONFIG
 ```
 
 Generates and visualizes the device's electrostatics mesh based on the
-provided configuration. This has to be invoked before running the
-simulation.
+provided configuration. This produces a mesh file and has to be invoked
+before running simulations including electrostatics.
 
 
 | Argument | Description                                  |

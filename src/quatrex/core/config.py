@@ -2159,7 +2159,7 @@ class QuatrexConfig(BaseModel):
 
     # --- Directory paths ----------------------------------------------
     config_dir: Path
-    simulation_dir: Path = Path("./quatrex/")
+    simulation_dir: Path = Path(".")
     """The directory where the simulation is run."""
     input_dir: Path | None = None
     """The directory where the input files are located."""

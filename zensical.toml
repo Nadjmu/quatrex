@@ -50,6 +50,20 @@ nav = [
                     { "Lyapunov" = "user_guide/parameters/lyapunov.md" },
                     { "Memoizer" = "user_guide/parameters/memoizer.md" },
                 ] },
+                { "Device Geometry" = [
+                    { "Geometry" = "user_guide/parameters/geometry.md" },
+                    { "Region" = "user_guide/parameters/region.md" },
+                    { "Shapes" = [
+                        { "Box" = "user_guide/parameters/box.md" },
+                        { "Cylinder" = "user_guide/parameters/cylinder.md" },
+                        { "Rectangle" = "user_guide/parameters/rectangle.md" },
+                        { "Tube" = "user_guide/parameters/tube.md" },
+                        { "Union" = "user_guide/parameters/shape_union.md" },
+                        { "Difference" = "user_guide/parameters/shape_difference.md" },
+                    ] },
+                    { "Volume Properties" = "user_guide/parameters/volume_properties.md" },
+                    { "Surface Properties" = "user_guide/parameters/surface_properties.md" },
+                ] },
                 { "Performance" = [
                     { "Compute" = "user_guide/parameters/compute.md" },
                     { "Convolve" = "user_guide/parameters/convolve.md" },
@@ -65,7 +79,7 @@ nav = [
             "user_guide/examples/index.md",
             "user_guide/examples/cnt.md",
             "user_guide/examples/mos2.md",
-            "user_guide/examples/silicon.md",
+            # "user_guide/examples/silicon.md",
         ] },
         { "Methodology" = [
             "user_guide/methodology/index.md",

@@ -5,314 +5,263 @@ as inputs for `quatrex` and how to perform different kinds of transport
 simulations for a roughly 10 nm long (8, 0) single-wall carbon nanotube
 (CNT).
 
-{{ mol3d("../../assets/structures/carbon-nanotube.xyz", style={"stick":
-{"radius": -1}, "sphere": {"scale": 0.25}}) }}
-
 ## Geometry and electronic structure
 
-To generate the electronic structure of a CNT, the following steps are
-required:
+We can create the geometry of the CNT using the
+[`ase`](https://wiki.fysik.dtu.dk/ase/) Python package, which has a
+built-in function to generate nanotubes
+([`ase.build.nanotube`](https://docs.ase-lib.org/ase/build/build.html#ase.build.nanotube)).
+After exporting the geometry to a [POSCAR
+file](https://vasp.at/wiki/POSCAR), one can set up a DFT calculation
+using VASP to obtain the electronic structure in plane-wave basis. VASP
+is then run with the [`LWANNIER90 =
+.TRUE.`](https://vasp.at/wiki/LWANNIER90) flag to generate the necessary
+input files for Wannier90. Projecting onto initial guesses of one $p_z$
+orbital per carbon atom, we then run Wannier90 and get the Hamiltonian
+in the Wannier basis, which is used as input for `quatrex`.
 
-- Geometry generation with `ase`.
-- Geometry relaxation with `vasp`.
-- Self-consistent field (SCF) calculation with `vasp`.
-- Wannierization with `wannier90` through `vasp`.
+A procedure for generating `quatrex` input data from Wannier90 outputs
+is described in the [electronic structure data section](../input_data)
+The resulting device structure (`structure.xyz`) and Hamiltonian
+(`hamiltonian.h5`) are stored in the
+`./examples/w90/carbon-nanotube/inputs` directory.
 
-Each of these steps is described in detail below. Each step requires
-specific input files from the previous step and should be run in the
-order presented and in separate folders.
+You can find more detailed information on the input data provenance in
+the `README.md` file in the example directory
+`./examples/w90/carbon-nanotube/`
 
-### Geometry
+Here you can see the resulting Wannier centers of the CNT structure:
 
-Create a new folder for the geometry generation and change into it:
+{{ mol3d("../../assets/structures/carbon-nanotube.xyz", style={"stick": {"radius":
+-1}, "sphere": {"scale": 0.25}}) }}
 
-```bash
-mkdir geometry
-cd geometry
+The actual orbital coordinates are stored in an `.xyz` file that looks
+like
+```xyz
+768
+Lattice="102.84851504839999 0.0 0.0 0.0 50.0 0.0 0.0 0.0 50.0" Properties=species:S:1:pos:R:3 pbc="F F F"
+X        0.72770969      21.80861750      25.06696100
+X        2.01508769      22.02025450      25.89201500
+X        0.15518369      22.76798050      27.19112700
+X        4.05541969      25.00283250      27.35868900
+X        4.34182130      25.04734650      28.15860700
+X        2.81802769      26.25013450      27.98060700
+X        4.24380469      27.06711950      27.31367300
+X        2.22266969      27.93073350      26.16808300
+X        1.18530469      28.19138250      25.05384000
+X        2.06710169      27.73589650      23.58711800
+X        0.45901869      27.26246150      22.75888700
+X        2.09800069      26.07841450      22.18612000
+X        4.21870469      24.88363450      21.84139300
+X        1.95921469      24.37907150      22.02629800
+...
 ```
 
-The following Python script generates a (8, 0) armchair carbon nanotube
-which results in a POSCAR structure file for VASP calculations. The
-script uses the `ase` package to create the structure and add vacuum
-space in the X and Y directions to prevent interactions across periodic
-boundaries.
+The band structure of the device around its equilibrium Fermi level is
+captured very well by the Wannierization.
 
-```Python
-from ase.build import nanotube
-from ase.io import write
-
-# 1. Create a (8, 0) armchair carbon nanotube.
-cnt = nanotube(n=8, m=0, length=1, bond=1.42, symbol='C')
-
-# 2. Add vacuum space in the X and Y directions.
-# This prevents the tube from interacting with itself across periodic boundaries.
-# NOTE: 20 is a large vacuum value and could potentially be reduced.
-cnt.center(vacuum=20.0, axis=(0, 1))
-
-# 3. Save it as a VASP POSCAR file for DFT calculations.
-write('POSCAR', cnt, format='vasp')
-```
-
-### Relaxation
-
-Create a new folder for the relaxation, change into it, and copy the
-POSCAR file from the geometry folder:
-
-```bash
-cd ..
-mkdir relaxation
-cd relaxation
-cp ../geometry/POSCAR .
-```
-
-Create the `INCAR` file for the relaxation calculation:
-
-```bash
-cat << 'EOF' > INCAR
-SYSTEM = CNT relaxation
-KPAR = 11
-ENCUT = 520
-EDIFF = 1E-5
-IBRION = 2
-ISIF = 2
-NSW = 200
-ISMEAR = 0
-SIGMA = 0.05
-LWAVE = .FALSE.
-LCHARG = .TRUE.
-PREC = Accurate
-EOF
-```
-
-Create the `KPOINTS` file for the relaxation calculation:
-
-```bash
-cat << 'EOF' > KPOINTS
-KPOINTS for relaxation
-0
-Gamma
-1 1 11
-0 0 0
-EOF
-```
-
-The `POTCAR` file for C and H is required and can be downloaded from the
-VASP portal.
-
-After preparing the input files, run the relaxation calculation with the
-following command:
-
-```bash
-mpiexec -n {num_procs} vasp_std
-```
-
-This will result in a relaxed structure represented in the `CONTCAR`
-file. The `CONTCAR` file can be used as input for the next step, which
-is the electronic structure calculation.
-
-!!! Warning
-    This relaxation step only relaxes the atomic positions and does not
-    relax the cell shape or volume. This would be done running the
-    relaxation with different unit cell sizes and continuing with the
-    energy minimal one.
-
-### SCF
-
-Create a new folder for the SCF calculation, change into it, and copy
-the `CONTCAR`, `POTCAR`, and `KPOINTS` files from the relaxation folder:
-
-```bash
-cd ..
-mkdir scf
-cd scf
-cp ../relaxation/CONTCAR POSCAR
-cp ../relaxation/POTCAR .
-cp ../relaxation/KPOINTS .
-```
-
-Create the `INCAR` file for the SCF calculation:
-
-```bash
-cat << 'EOF' > INCAR
-SYSTEM = CNT static SCF
-ENCUT = 520
-# Parallelization over all k-points
-# (adjust based on number of k-points and available cores)
-KPAR = 11
-EDIFF = 1E-6
-ICHARG = 2
-ISMEAR = 0
-SIGMA = 0.05
-LWAVE = .TRUE.
-LCHARG = .TRUE.
-PREC = Accurate
-EOF
-```
-
-After preparing the input files, run the SCF calculation with the
-following command:
-
-```bash
-mpiexec -n {num_procs} vasp_std
-```
-
-This will result in a converged electronic structure represented in the
-`WAVECAR` and `CHGCAR` files.
-
-### Wannierization
-
-Create a new folder for the Wannierization, change into it, and copy the
-`CONTCAR`, `POTCAR`, `KPOINTS`, and `WAVECAR` files from the relaxation and SCF folders:
-
-```bash
-cd ..
-mkdir wannier
-cd wannier
-cp ../relaxation/CONTCAR POSCAR
-cp ../relaxation/POTCAR .
-cp ../relaxation/KPOINTS .
-cp ../scf/WAVECAR .
-cp ../scf/CHGCAR .
-```
-
-Create the `INCAR` file for the Wannierization calculation:
-
-<details>
-<summary>INCAR file creation</summary>
-
-```bash
-cat << 'EOF' > INCAR
-SYSTEM = CNT wannier projection
-ENCUT = 520
-ALGO = None
-NELM = 1
-LWAVE = .FALSE.
-LCHARG = .FALSE.
-LWANNIER90 = .TRUE.
-LWRITE_UNK = .TRUE.
-NUM_WANN = 32
-# NBANDS must be large enough to include the bands of interest
-WANNIER90_WIN = "
-dis_num_iter = 1000 # Number of disentanglement iterations
-num_iter = 1000     # Number of Wannerisation iterations
-guiding_centres = T # Not possible when an projection block is not specified
-
-translate_home_cell = T
-write_xyz = T
-
-dis_win_min = -13 eV # disentangle window upper
-dis_froz_min = -6 eV # -6 eV # frozen window min
-dis_froz_max = -2 eV # -2 eV # frozen window max
-
-bands_plot = .TRUE.
-bands_plot_format=gnuplot
-bands_num_points = 200
-begin kpoint_path
-   G 0.0 0.0 0 A 0.0 0.0 0.5
-end kpoint_path
-
-wannier_plot=.TRUE.
-wannier_plot_format=xcrysden
-wannier_plot_supercell = 1, 1, 7 
-write_hr = T
-
-# Following projections are for excluded bands
-Begin Projections
-    C:pz
-End Projections
-"
-EOF
-```
-</details>
-
-After preparing the input files, run the Wannierization calculation with
-the following commands:
-
-```bash
-mpiexec -n {num_procs} vasp_std
-mpirun -np 1 wannier90.x wannier90
-```
-
-This will result in a set of Wannier functions and a Hamiltonian in the
-`wannier90_hr.dat` file, which first needs to be preprocessed before it
-can be used as input for the transport simulations. This can be done
-with the following Python script, which parses the contents of the
-`wannier90_hr.dat` file and saves the Hamiltonian in an HDF5 file.
-
-<details>
-<summary>Preprocessing Python script</summary>
-
-```Python
-from pathlib import Path
-import numpy as np
-
-from qttools.utils.hdf5_utils import save_hdf5_dict
-
-def transform_wannier_hr(
-    path: Path, dtype = np.complex128
-) -> None:
-    """Parses the contents of a wannier90 `hr.dat` file.
-
-    Parameters
-    ----------
-    path : Path
-        Path to a `hr.dat` file.
-    dtype : optional
-        The data type for the Hamiltonian matrix elements. Defaults to
-        `numpy.complex128`.
-
-    """
-
-    # Strip info from header.
-    num_wannier_centers, num_hopping_cells = np.loadtxt(path, skiprows=1, max_rows=2, dtype=int)
-    num_wannier_centers, num_hopping_cells = int(num_wannier_centers), int(num_hopping_cells)
-
-    # Read wannier data (skipping degeneracy info). Wannier90 has some
-    # Fortran formatting. Thus, the degeneracy information is arranged
-    # into 15 values per line.
-    degenerate_rows = int(np.ceil(num_hopping_cells / 15.0))
-    wannier_data = np.loadtxt(path, skiprows=3 + degenerate_rows)
-
-    cells = wannier_data[:, :3].astype(int)
-
-    # Add for every unique cell an empty entry to the hamiltonian.
-    hamiltonian = {
-        f"[{cell[0]},{cell[1]},{cell[2]}]": np.zeros((num_wannier_centers, num_wannier_centers), dtype=dtype)
-        for cell in np.unique(cells, axis=0)
-    }
-
-    # Obtain Hamiltonian elements.
-    for line in wannier_data:
-        cell = line[:3].astype(int)
-        key = f"[{cell[0]},{cell[1]},{cell[2]}]"
-        i, j = line[3:5].astype(int)
-        hij_real, hij_imag = line[5:]
-        hamiltonian[key][i - 1, j - 1] = hij_real + 1j * hij_imag
-
-    save_hdf5_dict(
-        filename="hamiltonian.h5",
-        data=hamiltonian,
-    )
-
-transform_wannier_hr(
-    path=Path("wannier90_hr.dat"),
-    dtype=np.complex128,
-)
-```
-</details>
-
-!!! Note
-    The preprocessing will be included in the CLI.
-
+<!-- TODO: Include proof for this -->
 
 ## Computing the transmission function
 
-...
+Say we are interested in seeing the transmission spectrum through this
+CNT. This kind of coherent transport is most efficiently treated in the
+[wavefunction formalism](../user_guide/methodology/qtbm.md), so we set
+`#!toml formalism = "wf"`. We will not be employing a self-consistent
+solution of the Hartree potential for this purpose, so we do not include
+a [`[scsp]`](../parameters/scsp.md) section in the config here.
+
+Next we need to define the contact regions of the device. The whole
+carbon nanotube is made up of 24 repeated unit cells along the transport
+direction `"x"`. From the DFT simulation, we know that each of these
+cells has a length of 4.27615261 Å and from the structure file above, we
+can see that the orbital center with the smallest x-coordinate sits at
+(0.15518369, 22.76798050, 27.19112700). Together, this allows us to
+get a contact definition as follows:
+
+```toml
+[[device.contacts]]
+name = "left"
+origin = [0.1551, 0.0, 0.0]
+lattice_vectors = [[4.27615261, 0, 0], [0, 50, 0], [0, 0, 50]]
+direction = "a"
+fermi_level = -3.6
+```
+
+The Fermi level is the one from DFT. Similarly for the right contact, we
+set
+
+```toml
+[[device.contacts]]
+name = "right"
+origin = [102.694, 0.0, 0.0]
+lattice_vectors = [[-4.27615261, 0, 0], [0, 50, 0], [0, 0, 50]]
+direction = "a"
+fermi_level = -3.601
+```
+
+Here we added a small chemical potential difference of 1 meV to get a
+small current flowing across the device. We will compute the
+transmission function at 1000 energy points between -6.5 eV and -1.0 eV,
+which will yield an energy grid of 5.5 meV
+
+```toml
+energy_window_min = -6.5
+energy_window_max = -1.0
+energy_window_num = 1000
+```
+
+Finally, for QTBM we need to employ the [spectral OBC
+algorithm](../methodology/obc/#spectral-method). For robustness, and
+since this is a very small system, we choose the `#!toml obc.nevp_solver
+= "full"`.
+
+??? example "Full configuration for coherent transport simulation"
+    This is what the full configuration file for this simulation run
+    will look like
+
+    ```toml
+    formalism = "wf"
+
+    [device]
+    transport_direction = "x"
+
+        [[device.contacts]]
+        name = "left"
+        origin = [0.1551, 0.0, 0.0]
+        lattice_vectors = [[4.27615261, 0, 0], [0, 50, 0], [0, 0, 50]]
+        direction = "a"
+        fermi_level = -3.6
+
+        [[device.contacts]]
+        name = "right"
+        origin = [102.694, 0.0, 0.0]
+        lattice_vectors = [[-4.27615261, 0, 0], [0, 50, 0], [0, 0, 50]]
+        direction = "a"
+        fermi_level = -3.601
+
+    [electron]
+
+    energy_window_min = -6.5
+    energy_window_max = -1.0
+    energy_window_num = 1000
+
+
+    obc.algorithm = "spectral"
+    obc.nevp_solver = "full"
+    ```
+
+You can run this simulation by invoking
+
+```bash
+quatrex run <path/to/config.toml>
+```
+
+After `quatrex` completes, you will find the [file
+`transmission_lr.npy`](../simulation_output/#transmission-function) in
+the output folder.
+
+<!-- TODO: Include picture of transmission -->
 
 ## Including phonon pseudo-scattering
 
-...
+Next we may want to introduce a small amount of scattering with a phonon
+model. To accomplish this, we need to move beyond the wavefunction
+picture and set `#!toml formalism = "negf"`.
 
-## Band gap renormalization via the GW approximation
+The self-consistent Born approximation (SCBA) is used to ensure
+consistency between the scattering self-energy and the Green's function.
+The SCBA loop, including only phonon pseudo-scattering, is typically
+very stable, so we do not need any under-relaxation here (i.e. `#!toml
+mixing_factor = 1.0`). The `[scba]` section of the config will look like
+this:
 
-...
+```toml
+[scba]
+max_iterations = 15
+mixing_factor = 1.0
+phonon = true
+```
+
+!!! warning "Differences between `"wf"` and `"negf"` inputs"
+    Currently, an important difference between simulations employing the
+    `"wf"` formalism and those using `"negf"` is the way the contacts
+    are defined in the config:
+
+    - In `"wf"` simulations they are inferred from real-space contact cell
+    definitions ([`[[device.contacts]]`](../parameters/contact.md)) and more
+    than two contacts are supported
+    - In `"negf"` calculations, contact matrix elements are taken from a user-prescribed
+    block-tiling ([`block_size`](../parameters/device/#block_size)) and only
+    two-terminal devices can be treated.
+
+    The reason for this is that the two formalisms were developed
+    independently of one another. We are actively working on further
+    consolidating input files
+
+As stated above, the full structure, encompassing 768 Wannier orbitals,
+is made up of 24 transport cells that contain 32 orbitals each. The
+`#!toml [device]` section of the config therefore now looks like this:
+
+```toml
+[device]
+transport_direction = 'x'
+block_size = 32
+```
+
+Lastly, besides the `#!toml phonon = true` flag in the SCBA section, to
+configure the actual phonon interaction, we can set the following
+parameters:
+
+```toml
+[phonon]
+interaction_cutoff = 5.0 # Angstrom
+
+model = "pseudo-scattering"
+phonon_energy = 40e-3         # eV
+deformation_potential = 15e-3 # eV
+```
+
+??? example "Full configuration for phonon pseudo-scattering"
+    This is what the full configuration file for this simulation run
+    will look like.
+
+    ```toml
+    formalism = "negf"
+
+    [scba]
+    max_iterations = 15
+    mixing_factor = 1.0
+    phonon = true
+
+    [device]
+    transport_direction = 'x'
+    block_size = 32
+
+    [electron]
+    left_contact.name = "left"
+    left_contact.fermi_level = -3.6
+
+    right_contact.name = "right"
+    right_contact.fermi_level = -3.601
+
+    energy_window_min = -6.5
+    energy_window_max = -1.0
+    energy_window_num = 1000
+
+    obc.algorithm = "spectral"
+    obc.nevp_solver = "full"
+
+
+    [phonon]
+    interaction_cutoff = 5.0 # Angstrom
+
+    model = "pseudo-scattering"
+    phonon_energy = 40e-3         # eV
+    deformation_potential = 15e-3 # eV
+    ```
+
+After running the simulation (`quatrex run <path/to/config.toml>`),
+among other quantities, you will find the [spectral device
+current](../simulation_output#spectral-current) in the outputs, taking
+into account thermal scattering.

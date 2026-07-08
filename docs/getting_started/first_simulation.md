@@ -58,6 +58,9 @@ or even parallelize over energies using multiple MPI processes:
 mpirun -n 4 quatrex run ./examples/cp2k/carbon-chain/qtbm/quatrex_config.toml
 ```
 
+More information about the command line interface of `quatrex` can be
+found in the [user guide](../user_guide/cli.md).
+
 ## Outputs
 
 After the simulation completes, the results are stored as `numpy` arrays

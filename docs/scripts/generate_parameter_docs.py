@@ -10,6 +10,12 @@ import griffe
 from pydantic import BaseModel
 from tabulate import tabulate
 
+frontmatter_tag = """---
+tags:
+    - Parameters
+---
+"""
+
 class_template = """{description}"""
 
 entry_template = """
@@ -131,7 +137,8 @@ def generate_model_hierarchy(
             .lower()
             .removesuffix("_config")
         )
-        lines.append(f"{'    ' * _depth}<a href='{config_section}/'>{label}</a>")
+        indentation = "    " * _depth
+        lines.append(f"{indentation}<a href='{config_section}/'>{label}</a>")
 
     if max_depth is not None and _depth >= max_depth:
         return "\n".join(lines)
@@ -164,6 +171,13 @@ def generate_parameter_docs():
     quatrex_config_module = quatrex_module.get_member("core.config")
     class_members = quatrex_config_module.filter_members(
         lambda m: isinstance(m, griffe.Class)
+    )
+
+    geometry_config_module = griffe.load("quatrex.electrostatics.geometry_config")
+    class_members.update(
+        geometry_config_module.filter_members(
+            lambda m: isinstance(m, griffe.Class) and not m.name.startswith("_")
+        )
     )
 
     # Generate a markdown file for each config class, and add an entry to
@@ -207,7 +221,13 @@ def generate_parameter_docs():
         # Append an entry to the index page for this config class, with
         # links and info for each parameter.
         with open(index_path, "a") as f:
-            print(f"### `{class_member.name}`\n", file=f)
+            print(f"### [`{class_member.name}`](./{config_section}/)\n", file=f)
+            short_description = (
+                ""
+                if class_member.docstring is None
+                else class_member.docstring.value.splitlines()[0]
+            )
+            print(f"{short_description}\n", file=f)
             print(tabulate(doc_info, headers="firstrow", tablefmt="github"), file=f)
             print("\n\n", file=f)
 
@@ -219,6 +239,7 @@ def generate_parameter_docs():
 
         # Write a markdown file for each config class.
         with open(parameters_dir / f"{config_section}.md", "w") as f:
+            print(frontmatter_tag, file=f)
             f.write(class_doc)
 
 
@@ -226,6 +247,7 @@ if __name__ == "__main__":
     # Set up the index page for the parameters section.
     index_path.parent.mkdir(parents=True, exist_ok=True)
     with open(index_path, "w") as f:
+        print(frontmatter_tag, file=f)
         print("# Simulation Parameters\n", file=f)
         print("\n\n", file=f)
 

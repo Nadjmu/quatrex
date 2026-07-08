@@ -7,6 +7,13 @@ src_dir = root_dir / "src"
 api_dir = root_dir / "docs" / "api"
 
 
+frontmatter_tag = """---
+tags:
+    - API
+---
+"""
+
+
 for path in sorted(src_dir.rglob("*.py")):
     module_path = path.relative_to(src_dir).with_suffix("")
     if "config" in module_path.parts or "cli" in module_path.parts:
@@ -26,6 +33,7 @@ for path in sorted(src_dir.rglob("*.py")):
 
     full_doc_path.parent.mkdir(parents=True, exist_ok=True)
     with open(full_doc_path, "w") as fd:
+        print(frontmatter_tag, file=fd)
         print("# " + parts[-1], file=fd)
         print("\n\n", file=fd)
         identifier = ".".join(parts)

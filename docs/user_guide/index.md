@@ -9,7 +9,7 @@ have a look at the more detailed [example setups](./examples/).
 
 ## In This Section
 
-- **[Input Data Generation](input_data.md)** — How to generate the
+- **[Electronic Structure Data](input_data.md)** — How to acquire the
   required electronic structure data (Hamiltonian and overlap matrices)
   for a given system.
 - **[Command Line Interface](cli.md)** — How to run `quatrex`
