@@ -77,9 +77,9 @@ blocks: $\mathbf{m}_{x} = \mathbf{I}_{x} -
 
 $$
 \begin{align}
-\mathbf{\gamma} &= j \left(\mathbf{\Sigma}^R - \left[\mathbf{\Sigma}^R\right]^H \right) \label{eq:lesser_greater_boundary_self_energy1} \\
-\mathbf{\Sigma}^{<} &= j \mathbf{\gamma} \left[\frac{1}{1 + e^{\frac{E - E_f - \mu}{k_B T}}} \right] \label{eq:lesser_greater_boundary_self_energy2}\\
-\mathbf{\Sigma}^{>} &= j \mathbf{\gamma} \left[\frac{1}{1 + e^{\frac{E - E_f - \mu}{k_B T}}} - 1\right] \label{eq:lesser_greater_boundary_self_energy3}\\
+\boldsymbol{\gamma} &= j \left(\mathbf{\Sigma}^R - \left[\mathbf{\Sigma}^R\right]^H \right) \label{eq:lesser_greater_boundary_self_energy1} \\
+\mathbf{\Sigma}^{<} &= j \boldsymbol{\gamma} \left[\frac{1}{1 + e^{\frac{E - E_f - \mu}{k_B T}}} \right] \label{eq:lesser_greater_boundary_self_energy2}\\
+\mathbf{\Sigma}^{>} &= j \boldsymbol{\gamma} \left[\frac{1}{1 + e^{\frac{E - E_f - \mu}{k_B T}}} - 1\right] \label{eq:lesser_greater_boundary_self_energy3}\\
 \end{align}
 $$
 
@@ -154,8 +154,8 @@ iteration.
 #### Sancho-Rubio
 
 Alternatively to simple fixed-point iteration, the Sancho-Rubio method
-is a well developed iteration scheme that accelerates convergence. The
-method achieves an exponential convergence rate, but still requires the
+is a well developed iteration scheme that accelerates convergence [^1]. 
+The method achieves an exponential convergence rate, but still requires the
 problem to be well-posed. To stabilize the method, a small complex value
 should be added to the boundary blocks which can be done by setting
 [`eta_obc`](../parameters/electron.md#eta_obc) for the electron solver.
@@ -164,6 +164,10 @@ The following other parameters affect our implementation:
 
 - [`max_iterations`](../parameters/obc.md#max_iterations)
 - [`convergence_tol`](../parameters/obc.md#convergence_tol)
+
+[^1]: Sancho, M. P. L., Sancho, J. M. L., & Rubio, J. (1984). Quick iterative
+scheme for the calculation of transfer matrices: application to Mo (100).
+Journal of Physics F Metal Physics, 14(5), 1205–1215.
 
 ### Direct
 
@@ -197,14 +201,14 @@ $$
 
 The construction of $\mathbf{g}^R$ in terms of the eigenpairs is given
 in Equation $\ref{eq:g_construction}$ where $\mathbf{V}$ and
-$\mathbf{\Lambda}$ are the matrices of eigenvectors and eigenvalues,
-respectively. Only the reflected modes contribute to $\mathbf{g}^R$.
+$\mathbf{\Lambda}$ are the matrices of eigenvectors and eigenvalues of 
+$\ref{eq:poly_eig}$, respectively. Only the reflected modes contribute to $\mathbf{g}^R$.
 Thus, the filtering step is essential to get a accurate result. The
 [NEVP](nevp.md) page elaborates on the possible eigenvalue solver and on
 the filtering step. Further details about the method can be found in
-[^1].
+[^2].
 
-[^1]: Brück, Sascha. Ab-initio quantum transport simulations for
+[^2]: Brück, Sascha. Ab-initio quantum transport simulations for
     nanoelectronic devices. Diss. ETH Zurich, 2017.
 
 ### Memoization

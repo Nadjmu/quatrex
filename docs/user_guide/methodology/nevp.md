@@ -62,8 +62,7 @@ Linearization of the polynomial eigenvalue problem is the simplest
 solution method. There are many ways to linearize the problem, but we
 currently implement the method described in [^1]. This has one advantage
 that the resulting system is normal ($\mathbf{A}\vec{x} = \lambda
-\vec{x}$) and not general ($\mathbf{A}\vec{x} = \lambda \mathbf{B}
-\vec{x}$) which is computationally more efficient. After linearization,
+\vec{x}$). After linearization,
 the problem can be solved using the standard BLAS `geev` function.
 
 !!! info "EIG Best Performance"
@@ -82,9 +81,8 @@ Instead of linearization, contour integral methods can be used to solve
 the polynomial eigenvalue problem. The idea is to use a contour integral
 to project the system onto a subspace and then solve a smaller
 eigenvalue problem. These methods can be more efficient, but require
-more complex implementation and parameter tuning. Many different contour
-integral methods exist, but we currently support Beyn's method, but we
-plan to provide more methods in the future.
+more complex implementation and parameter tuning. While many different contour
+integral methods exist, we currently support only Beyn's method.
 
 ![image](../../assets/images/obc/contour.svg)
 /// caption
@@ -92,15 +90,15 @@ Figure 1: Annular contour used in the contour integral method.
 ///
 
 As mentioned in [`obc`](obc.md) only the reflected modes contribute to
-$\mathbf{g}^R$. The reflected modes separate into two groups,
-propagating and decaying modes. Propagating modes have a magnitude of 1
-and are located on the unit circle, while decaying modes have a
-magnitude larger than 1. Thus, an annulus around the origin is
-sufficient to capture all relevant eigenvalues which is shown in Figure
-1. The anulus should be chosen with an inner radius slightly smaller
+$\mathbf{g}^R$. In particular, reflected modes are characterized
+by eigenvalues with $|\lambda| \geq 1$. Furthermore, reflected modes with high
+$|\lambda|$ values are not strongly contributing to $\mathbf{g}^R$. Thus,
+by plotting the eigenvalues on a complex plane (Figure 1), an annulus around
+the origin can be identified and it is sufficient to capture all relevant eigenvalues.
+The annulus should be chosen with an inner radius slightly smaller
 than 1 and a "large" outer radius. Choosing the outer radius too large
-can lead to the contour method not converging, while choosing it too
-small can lead to missing relevant eigenvalues. Further, the number of
+can lead to the contour method not converging, while choosing it too small
+can lead to missing relevant eigenvalues. Further, the number of
 quadrature points and the subspace guess size needs to be chosen. Both
 parameters are not trivial to choose and a method to determine them
 automatically is currently in development. 
