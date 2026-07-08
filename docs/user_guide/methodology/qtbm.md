@@ -32,11 +32,11 @@ non-zero only on the orbitals belonging to a contact (see
 and $\boldsymbol{\Psi}(E)$ corresponds to a single carrier injected
 from one of the contacts, so a device with several contacts and
 several open channels per contact is solved as a single linear system
-with multiple right-hand sides. Because the same boundary self-energies
-$\mathbf{\Sigma}_{obc}(E)$ discussed in [OBC](obc.md) are reused here,
-QTBM always relies on the `spectral` OBC algorithm, since the injection
-vectors themselves come from the eigenpairs of the polynomial
-eigenvalue problem (see [NEVP](nevp.md)).
+with multiple right-hand sides. The same boundary self-energies
+$\mathbf{\Sigma}_{obc}(E)$ discussed in [OBC](obc.md) are reused here.
+However, QTBM always relies on the `spectral` OBC algorithm,
+since the injection vectors directly derive from the eigenpairs of 
+the polynomial eigenvalue problem (see [NEVP](nevp.md)), 
 
 ## Injection Vectors
 
@@ -69,6 +69,11 @@ of the semi-infinite contact induces on the finite device once the
 contact degrees of freedom have been eliminated in favor of
 $\mathbf{\Sigma}_{obc}$.
 
+!!! info "Energy Batching"
+    OBCs are processed in energy batches whose size
+    is controlled by
+    [`max_batch_size`](../parameters/qtbm.md#max_batch_size).
+
 ## Assembling and Solving the Linear System
 
 For every $k$-point and energy, the device Hamiltonian and overlap
@@ -82,64 +87,77 @@ modes of all contacts simultaneously with a direct solver (see
 [Solver](../parameters/solver.md)). Reusing a single factorization
 across all right-hand-side columns is what makes QTBM cheap compared to
 computing the full $\mathbf{G}^R(E)$: the number of columns to solve
-for is the number of open channels, which is typically much smaller
+for is the number injected modes, which is typically much smaller
 than the number of orbitals in the device.
 
 If a contact's periodic cell is repeated $n_y \times n_z$ times in the
-two transverse directions (for example when the device is built from a
-Wannierized supercell of a smaller periodic structure), the boundary
+two transverse directions, the boundary
 self-energy and injection vectors of the small unit cell are computed
 on a Monkhorst-Pack grid of transverse wavevectors and Bloch-summed
 back up to the size of the full contact block before being inserted
 into the device-sized system matrix.
 
-!!! info "Energy Batching"
-    To limit memory usage, energies are processed in batches whose size
-    is controlled by
-    [`max_batch_size`](../parameters/qtbm.md#max_batch_size).
-
 ## Low-Rank Open Boundary Formulation
-
-$$
-\begin{equation}
-\boldsymbol{\Psi}_{inj} \mathrel{+}=
-\boldsymbol{\Psi}_{refl}
-\left[\boldsymbol{\Lambda}_{refl} - \mathbf{V}^{-1}_{refl}
-\boldsymbol{\Psi}_{refl}\right]^{-1}
-\mathbf{V}^{-1}_{refl} \boldsymbol{\Psi}_{inj}
-\label{eq:low_rank_correction}
-\end{equation}
-$$
 
 Explicitly forming and inserting the dense boundary self-energy
 $\mathbf{\Sigma}_{obc} = \mathbf{m}_{-1} \mathbf{g}^R \mathbf{m}_{+1}$,
 whose surface Green's function $\mathbf{g}^R$ is built from the filtered
 eigenpairs (see Equations $\ref{eq:retarded_boundary_self_energy}$ and
 $\ref{eq:g_construction}$ in [OBC](obc.md)), into the system matrix
-introduces fill-in over the
-contact block and breaks the Hermitian symmetry that the bare system
-matrix $E\mathbf{S} - \mathbf{H}$ would otherwise have. When
+introduces fill-in over the contact block and breaks the Hermitian
+symmetry that the bare system matrix $E\mathbf{S} - \mathbf{H}$ would
+otherwise have. When
 [`low_rank_obc`](../parameters/qtbm.md#low_rank_obc) is enabled, the
-self-energy is never assembled. Instead, the reflected modes are added
-as extra right-hand-side columns of the bare (Hermitian) system through
-the same $-\mathbf{m}_{-1}$ projection used for the injection vectors,
-and their eigenvalues $\boldsymbol{\Lambda}_{refl}$ and pseudo-inverse
-$\mathbf{V}^{-1}_{refl}$ then enter the correction of Equation
-$\ref{eq:low_rank_correction}$, which is applied afterwards to recover
-the true injected-mode wavefunction.
+self-energy is never assembled. Instead, the bare (Hermitian) system is
+solved with both the injection vectors and the reflected modes as
+right-hand-side columns,
 
-In Equation $\ref{eq:low_rank_correction}$, $\boldsymbol{\Psi}_{inj}$ and
-$\boldsymbol{\Psi}_{refl}$ are the solutions of the *bare* system for the
-injection and reflected-mode right-hand-side blocks, respectively (not
-the modes themselves); the right-hand side is evaluated with the bare
-$\boldsymbol{\Psi}_{inj}$ and the result overwrites it in place. The
-correction is a Woodbury update that inverts the same boundary
-self-energy in its low-rank reflected-mode representation,
+$$
+\begin{equation}
+\left[E\mathbf{S} - \mathbf{H}\right]
+\begin{bmatrix} \boldsymbol{\Psi}^{(0)}_{inj} & \boldsymbol{\Psi}_{refl} \end{bmatrix}
+=
+\begin{bmatrix} \mathbf{Q}_{inj} & \mathbf{Q}_{refl} \end{bmatrix},
+\qquad
+\mathbf{Q}_{refl} = -\mathbf{m}_{-1} \mathbf{V}_{refl}
+\label{eq:low_rank_system}
+\end{equation}
+$$
+
+where $\mathbf{Q}_{inj}$ collects the injection vectors of Equation
+$\ref{eq:injection_vector}$ and $\mathbf{Q}_{refl}$ projects the
+reflected modes $\mathbf{V}_{refl}$ through the same $-\mathbf{m}_{-1}$
+coupling block. The bare system matrix on the left-hand side of Equation
+$\ref{eq:low_rank_system}$ carries no boundary self-energy; the open
+boundaries enter only through the extra right-hand-side columns. Its
+solution $\boldsymbol{\Psi}^{(0)}_{inj}$ is therefore not yet the true
+injected-mode wavefunction, and $\boldsymbol{\Psi}_{refl}$ is the bare
+response to the reflected-mode columns (not the modes themselves).
+
+The true injected-mode wavefunction $\boldsymbol{\Psi}_{inj}$ is then
+recovered from these bare solutions through the correction
+
+$$
+\begin{equation}
+\boldsymbol{\Psi}_{inj} =
+\boldsymbol{\Psi}^{(0)}_{inj} +
+\boldsymbol{\Psi}_{refl}
+\left[\boldsymbol{\Lambda}_{refl} - \mathbf{V}^{-1}_{refl}
+\boldsymbol{\Psi}_{refl}\right]^{-1}
+\mathbf{V}^{-1}_{refl} \boldsymbol{\Psi}^{(0)}_{inj}
+\label{eq:low_rank_correction}
+\end{equation}
+$$
+
+where $\boldsymbol{\Lambda}_{refl}$ and $\mathbf{V}^{-1}_{refl}$ are the
+eigenvalues and pseudo-inverse of the reflected modes. Equation
+$\ref{eq:low_rank_correction}$ is a Woodbury update that includes the
+boundary self-energy in its low-rank reflected-mode representation,
 $\mathbf{\Sigma}_{obc} = -\mathbf{m}_{-1} \mathbf{V}_{refl}
 \boldsymbol{\Lambda}^{-1}_{refl} \mathbf{V}^{-1}_{refl}$, whose rank $k$
 is the number of reflected modes. It therefore only requires solving a
 dense linear system of size $k$, which is typically much smaller than
-the number of device orbitals.
+the number of contact orbitals.
 
 Keeping the system matrix Hermitian (or, in $\Gamma$-point-only
 simulations with a real Hamiltonian, real symmetric) allows the use of
