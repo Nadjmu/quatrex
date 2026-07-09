@@ -259,5 +259,7 @@ source = "compute"
 """.strip()
     )
 
-    with pytest.raises(ValueError, match="requires an enabled \\[environment\\] section"):
+    with pytest.raises(
+        ValueError, match="requires an enabled \\[environment\\] section"
+    ):
         parse_config(config_path)

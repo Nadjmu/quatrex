@@ -23,7 +23,6 @@ from quatrex.coulomb_screening.dielectric_screening.rpa_compute import (
     build_uniform_brillouin_zone_mesh,
 )
 
-
 # Use representative nonzero q values. The density response at exactly q=0
 # vanishes for this orthogonal density vertex.
 Q_FRACTIONS = (0.25, 0.50)
@@ -138,9 +137,7 @@ def periodic_gf_bubble_trace(
         )
         result[q_index] = np.interp(
             frequencies, convolution_frequency, positive_bubble.real
-        ) + 1j * np.interp(
-            frequencies, convolution_frequency, positive_bubble.imag
-        )
+        ) + 1j * np.interp(frequencies, convolution_frequency, positive_bubble.imag)
 
     return result
 
@@ -170,14 +167,8 @@ def periodic_band_sum_rpa_trace(
             np.abs(shifted_eigenvectors) ** 2,
             optimize=True,
         )
-        delta_e = (
-            shifted_eigenvalues[:, np.newaxis, :]
-            - eigenvalues[:, :, np.newaxis]
-        )
-        delta_f = (
-            shifted_occupations[:, np.newaxis, :]
-            - occupations[:, :, np.newaxis]
-        )
+        delta_e = shifted_eigenvalues[:, np.newaxis, :] - eigenvalues[:, :, np.newaxis]
+        delta_f = shifted_occupations[:, np.newaxis, :] - occupations[:, :, np.newaxis]
         numerator = delta_f * trace_vertex
         result[q_index] = (
             state_multiplicity
@@ -338,12 +329,13 @@ def main() -> None:
         summary_axes = np.asarray([summary_axes])
 
     for index, q_fraction in enumerate(q_points * screening.lattice_constant / np.pi):
-        scale = np.vdot(gf_trace[index], rpa_trace[index]).real / np.vdot(
-            gf_trace[index], gf_trace[index]
-        ).real
-        relative_error = np.linalg.norm(gf_trace[index] - rpa_trace[index]) / np.linalg.norm(
-            rpa_trace[index]
+        scale = (
+            np.vdot(gf_trace[index], rpa_trace[index]).real
+            / np.vdot(gf_trace[index], gf_trace[index]).real
         )
+        relative_error = np.linalg.norm(
+            gf_trace[index] - rpa_trace[index]
+        ) / np.linalg.norm(rpa_trace[index])
         scaled_error = np.linalg.norm(
             scale * gf_trace[index] - rpa_trace[index]
         ) / np.linalg.norm(rpa_trace[index])
@@ -355,12 +347,13 @@ def main() -> None:
         imag_relative_error = np.linalg.norm(
             gf_trace[index].imag - rpa_trace[index].imag
         ) / np.linalg.norm(rpa_trace[index].imag)
-        imag_scale = np.vdot(
-            gf_trace[index].imag, rpa_trace[index].imag
-        ).real / np.vdot(gf_trace[index].imag, gf_trace[index].imag).real
-        imag_correlation = np.corrcoef(
-            gf_trace[index].imag, rpa_trace[index].imag
-        )[0, 1]
+        imag_scale = (
+            np.vdot(gf_trace[index].imag, rpa_trace[index].imag).real
+            / np.vdot(gf_trace[index].imag, gf_trace[index].imag).real
+        )
+        imag_correlation = np.corrcoef(gf_trace[index].imag, rpa_trace[index].imag)[
+            0, 1
+        ]
         print(
             f"q/pi={q_fraction:.2f} imaginary response: "
             f"relative error={imag_relative_error:.6e}, "

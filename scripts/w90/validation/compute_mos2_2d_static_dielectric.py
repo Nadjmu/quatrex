@@ -11,10 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.io import loadmat
 
-
-TRANSLATION_PATTERN = re.compile(
-    r"^\[\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*\]$"
-)
+TRANSLATION_PATTERN = re.compile(r"^\[\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*\]$")
 KB_EV_PER_K = 8.617333262145e-5
 E2_EV_ANGSTROM = 14.3996454784255
 
@@ -95,18 +92,12 @@ def scalar_head_polarization(
     occupations_grid = occupations.reshape(nk1, nk2, norb)
 
     shifted_energies = np.roll(energies_grid, -q_shift, axis=0).reshape(-1, norb)
-    shifted_vectors = np.roll(vectors_grid, -q_shift, axis=0).reshape(
-        -1, norb, norb
-    )
-    shifted_occupations = np.roll(occupations_grid, -q_shift, axis=0).reshape(
-        -1, norb
-    )
+    shifted_vectors = np.roll(vectors_grid, -q_shift, axis=0).reshape(-1, norb, norb)
+    shifted_occupations = np.roll(occupations_grid, -q_shift, axis=0).reshape(-1, norb)
     overlaps = np.einsum(
         "kib,kic->kbc", eigenvectors.conj(), shifted_vectors, optimize=True
     )
-    energy_difference = (
-        shifted_energies[:, np.newaxis, :] - energies[:, :, np.newaxis]
-    )
+    energy_difference = shifted_energies[:, np.newaxis, :] - energies[:, :, np.newaxis]
     occupation_difference = (
         shifted_occupations[:, np.newaxis, :] - occupations[:, :, np.newaxis]
     )
@@ -169,9 +160,7 @@ def main() -> None:
     cell_area = float(np.linalg.norm(np.cross(lattice[0], lattice[1])))
     polarization_total = norb * p_head
     alpha_by_q = (
-        -E2_EV_ANGSTROM
-        * polarization_total.real
-        / (cell_area * q_magnitudes**2)
+        -E2_EV_ANGSTROM * polarization_total.real / (cell_area * q_magnitudes**2)
     )
     fit_count = min(args.fit_points, shifts.size)
     slope, alpha_2d = np.polyfit(
@@ -179,13 +168,9 @@ def main() -> None:
     )
     fitted = alpha_2d + slope * q_magnitudes[:fit_count] ** 2
     residual = alpha_by_q[:fit_count] - fitted
-    denominator = np.sum(
-        (alpha_by_q[:fit_count] - alpha_by_q[:fit_count].mean()) ** 2
-    )
+    denominator = np.sum((alpha_by_q[:fit_count] - alpha_by_q[:fit_count].mean()) ** 2)
     r_squared = 1.0 - np.sum(residual**2) / denominator
-    effective_epsilon = (
-        1.0 + 4.0 * np.pi * alpha_2d / args.effective_thickness
-    )
+    effective_epsilon = 1.0 + 4.0 * np.pi * alpha_2d / args.effective_thickness
 
     args.output_prefix.parent.mkdir(parents=True, exist_ok=True)
     np.savez(

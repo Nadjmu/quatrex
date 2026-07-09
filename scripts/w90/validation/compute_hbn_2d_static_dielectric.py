@@ -28,10 +28,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.io import loadmat
 
-
-TRANSLATION_PATTERN = re.compile(
-    r"^\[\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*\]$"
-)
+TRANSLATION_PATTERN = re.compile(r"^\[\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*\]$")
 KB_EV_PER_K = 8.617333262145e-5
 E2_EV_ANGSTROM = 14.3996454784255
 
@@ -73,7 +70,9 @@ def read_lattice(path: Path) -> np.ndarray:
     return np.fromstring(match.group(1), sep=" ", dtype=np.float64).reshape(3, 3)
 
 
-def fermi(energies: np.ndarray, chemical_potential: float, temperature: float) -> np.ndarray:
+def fermi(
+    energies: np.ndarray, chemical_potential: float, temperature: float
+) -> np.ndarray:
     if temperature == 0.0:
         result = np.zeros_like(energies)
         result[energies < chemical_potential] = 1.0
@@ -114,29 +113,19 @@ def scalar_head_polarization(
     occupations_grid = occupations.reshape(nk1, nk2, norb)
 
     shifted_energies = np.roll(energies_grid, -q_shift, axis=0).reshape(-1, norb)
-    shifted_vectors = np.roll(vectors_grid, -q_shift, axis=0).reshape(
-        -1, norb, norb
-    )
-    shifted_occupations = np.roll(occupations_grid, -q_shift, axis=0).reshape(
-        -1, norb
-    )
+    shifted_vectors = np.roll(vectors_grid, -q_shift, axis=0).reshape(-1, norb, norb)
+    shifted_occupations = np.roll(occupations_grid, -q_shift, axis=0).reshape(-1, norb)
 
     overlaps = np.einsum(
         "kib,kic->kbc", eigenvectors.conj(), shifted_vectors, optimize=True
     )
     form_factors = np.abs(overlaps) ** 2
-    energy_difference = (
-        shifted_energies[:, np.newaxis, :]
-        - energies[:, :, np.newaxis]
-    )
+    energy_difference = shifted_energies[:, np.newaxis, :] - energies[:, :, np.newaxis]
     occupation_difference = (
-        shifted_occupations[:, np.newaxis, :]
-        - occupations[:, :, np.newaxis]
+        shifted_occupations[:, np.newaxis, :] - occupations[:, :, np.newaxis]
     )
     polarization_total_density = np.sum(
-        occupation_difference
-        * form_factors
-        / (energy_difference - 1j * broadening),
+        occupation_difference * form_factors / (energy_difference - 1j * broadening),
         dtype=np.complex128,
     )
     polarization_total_density *= spin_degeneracy / energies.shape[0]
@@ -215,9 +204,7 @@ def main() -> None:
     cell_area = float(np.linalg.norm(np.cross(lattice[0], lattice[1])))
     polarization_total = norb * p_head
     alpha_2d_by_q = (
-        -E2_EV_ANGSTROM
-        * polarization_total.real
-        / (cell_area * q_magnitudes**2)
+        -E2_EV_ANGSTROM * polarization_total.real / (cell_area * q_magnitudes**2)
     )
     alpha_q2_slope, alpha_2d = np.polyfit(
         q_magnitudes[:fit_count] ** 2,
@@ -266,9 +253,7 @@ def main() -> None:
         "supercell_epsilon_electronic": float(supercell_epsilon),
         "smallest_q_inverse_angstrom": float(q_magnitudes[0]),
         "smallest_q_alpha_2d_angstrom": float(alpha_2d_by_q[0]),
-        "scope": (
-            "2D head-only electronic RPA; local-field and ionic terms excluded"
-        ),
+        "scope": ("2D head-only electronic RPA; local-field and ionic terms excluded"),
     }
     args.output_prefix.with_suffix(".json").write_text(
         json.dumps(summary, indent=2) + "\n"

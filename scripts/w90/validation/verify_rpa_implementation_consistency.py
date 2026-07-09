@@ -25,7 +25,6 @@ from quatrex.coulomb_screening.dielectric_screening.rpa_compute import (
     compute_rpa_polarization_matrix_from_bands,
 )
 
-
 W90_ROOT = Path("/home/sem26f25/quatrex/examples/w90")
 
 MATERIALS = {

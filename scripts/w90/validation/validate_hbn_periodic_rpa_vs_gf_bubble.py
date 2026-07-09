@@ -23,7 +23,6 @@ from quatrex.coulomb_screening.dielectric_screening.rpa_compute import (
     compute_rpa_polarization_matrix_from_bands,
 )
 
-
 CONFIG = Path(
     "/home/sem26f25/quatrex/examples/w90/data_analysis/comparison_configs/hbn/"
     "quatrex_config_hbn_rpa_export.toml"
@@ -167,9 +166,7 @@ def main() -> None:
         mesh.frequencies,
         chemical_potential=screening.chemical_potential,
         temperature=screening.temperature,
-        state_multiplicity=(
-            screening.spin_degeneracy * screening.valley_degeneracy
-        ),
+        state_multiplicity=(screening.spin_degeneracy * screening.valley_degeneracy),
         broadening=2.0 * ELECTRON_BROADENING_EV,
         frequency_axis="real",
     )
@@ -245,12 +242,13 @@ def main() -> None:
         summary_axes = np.asarray([summary_axes])
 
     for index, q_fraction in enumerate(q_points * screening.lattice_constant / np.pi):
-        scale = np.vdot(gf_trace[index], rpa_trace[index]).real / np.vdot(
-            gf_trace[index], gf_trace[index]
-        ).real
-        relative_error = np.linalg.norm(gf_trace[index] - rpa_trace[index]) / np.linalg.norm(
-            rpa_trace[index]
+        scale = (
+            np.vdot(gf_trace[index], rpa_trace[index]).real
+            / np.vdot(gf_trace[index], gf_trace[index]).real
         )
+        relative_error = np.linalg.norm(
+            gf_trace[index] - rpa_trace[index]
+        ) / np.linalg.norm(rpa_trace[index])
         scaled_error = np.linalg.norm(
             scale * gf_trace[index] - rpa_trace[index]
         ) / np.linalg.norm(rpa_trace[index])
@@ -262,12 +260,13 @@ def main() -> None:
         imag_relative_error = np.linalg.norm(
             gf_trace[index].imag - rpa_trace[index].imag
         ) / np.linalg.norm(rpa_trace[index].imag)
-        imag_scale = np.vdot(
-            gf_trace[index].imag, rpa_trace[index].imag
-        ).real / np.vdot(gf_trace[index].imag, gf_trace[index].imag).real
-        imag_correlation = np.corrcoef(
-            gf_trace[index].imag, rpa_trace[index].imag
-        )[0, 1]
+        imag_scale = (
+            np.vdot(gf_trace[index].imag, rpa_trace[index].imag).real
+            / np.vdot(gf_trace[index].imag, gf_trace[index].imag).real
+        )
+        imag_correlation = np.corrcoef(gf_trace[index].imag, rpa_trace[index].imag)[
+            0, 1
+        ]
         print(
             f"q/pi={q_fraction:.2f} imaginary response: "
             f"relative error={imag_relative_error:.6e}, "

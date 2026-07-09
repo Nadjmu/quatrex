@@ -62,7 +62,9 @@ RPA_COMPUTE = (
     / "rpa_compute.py"
 )
 
-spec = importlib.util.spec_from_file_location("quatrex_rpa_compute_validation", RPA_COMPUTE)
+spec = importlib.util.spec_from_file_location(
+    "quatrex_rpa_compute_validation", RPA_COMPUTE
+)
 if spec is None or spec.loader is None:
     raise ImportError(f"Could not load RPA helpers from {RPA_COMPUTE}.")
 rpa_compute = importlib.util.module_from_spec(spec)
@@ -147,7 +149,9 @@ def _compute_dielectric_response(args: argparse.Namespace):
         periodic_axis=args.axis,
         lattice_constant=args.lattice_constant,
     )
-    coulomb_matrices = np.asarray(coulomb_matrices, dtype=np.complex128) / args.epsilon_r
+    coulomb_matrices = (
+        np.asarray(coulomb_matrices, dtype=np.complex128) / args.epsilon_r
+    )
 
     nq, norb, _ = coulomb_matrices.shape
     nw = mesh.frequencies.size
@@ -157,15 +161,25 @@ def _compute_dielectric_response(args: argparse.Namespace):
 
     for q_index in range(nq):
         for frequency_index in range(nw):
-            epsilon_matrix = identity - polarization[q_index, frequency_index] * coulomb_matrices[q_index]
+            epsilon_matrix = (
+                identity
+                - polarization[q_index, frequency_index] * coulomb_matrices[q_index]
+            )
             epsilon[q_index, frequency_index] = epsilon_matrix
-            epsilon_inverse_trace[q_index, frequency_index] = np.trace(
-                np.linalg.solve(epsilon_matrix, identity)
-            ) / norb
+            epsilon_inverse_trace[q_index, frequency_index] = (
+                np.trace(np.linalg.solve(epsilon_matrix, identity)) / norb
+            )
 
     epsilon_eff = np.trace(epsilon, axis1=-2, axis2=-1) / norb
     loss = -np.imag(epsilon_inverse_trace)
-    return mesh.q_points, mesh.frequencies, polarization, coulomb_matrices, epsilon_eff, loss
+    return (
+        mesh.q_points,
+        mesh.frequencies,
+        polarization,
+        coulomb_matrices,
+        epsilon_eff,
+        loss,
+    )
 
 
 def _make_plots(
@@ -266,14 +280,18 @@ def main() -> None:
 
     print(f"Hamiltonian: {args.hamiltonian.resolve()}")
     print(f"Coulomb matrix: {args.coulomb.resolve()}")
-    print(f"RPA dielectric grid: nk={args.num_k}, nq={args.num_q}, nw={args.num_frequency}")
+    print(
+        f"RPA dielectric grid: nk={args.num_k}, nq={args.num_q}, nw={args.num_frequency}"
+    )
     print(
         "Peak loss at "
         f"q/pi={q_points[peak_loss_index[0]] / np.pi:.4g}, "
         f"omega={frequencies[peak_loss_index[1]]:.4g} eV, "
         f"loss={loss[peak_loss_index]:.6g}"
     )
-    print(f"Max |epsilon_eff - 1| at q=0: {np.max(np.abs(epsilon_eff[zero_q_index] - 1.0)):.6e}")
+    print(
+        f"Max |epsilon_eff - 1| at q=0: {np.max(np.abs(epsilon_eff[zero_q_index] - 1.0)):.6e}"
+    )
     print(f"Median finite-q loss: {np.median(finite_q_loss):.6e}")
     print(f"Wrote data: {data_path.resolve()}")
 

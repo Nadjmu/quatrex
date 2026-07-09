@@ -1,5 +1,6 @@
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -13,7 +14,11 @@ W90_ROOT = _find_repo_root(Path(__file__).resolve()) / "examples" / "w90"
 ROOT = W90_ROOT / "carbon-nanotube" / "gw-unit-cell"
 
 
-pairs = [("p_retarded_diagonal_1.npy", "polarization"), ("electron_ldos_1.npy", "ldos"), ("electron_density_1.npy", "electron density")]
+pairs = [
+    ("p_retarded_diagonal_1.npy", "polarization"),
+    ("electron_ldos_1.npy", "ldos"),
+    ("electron_density_1.npy", "electron density"),
+]
 for filename, label in pairs:
     a = np.load(ROOT / "outputs" / filename)
     b = np.load(ROOT / "outputs_negf_environment" / filename)

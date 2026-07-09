@@ -58,7 +58,9 @@ RPA_COMPUTE = (
     / "rpa_compute.py"
 )
 
-spec = importlib.util.spec_from_file_location("quatrex_rpa_compute_validation", RPA_COMPUTE)
+spec = importlib.util.spec_from_file_location(
+    "quatrex_rpa_compute_validation", RPA_COMPUTE
+)
 if spec is None or spec.loader is None:
     raise ImportError(f"Could not load RPA helpers from {RPA_COMPUTE}.")
 rpa_compute = importlib.util.module_from_spec(spec)
@@ -306,11 +308,17 @@ def main() -> None:
     print(f"Hamiltonian: {args.hamiltonian.resolve()}")
     print(f"RPA grid: nk={args.num_k}, nq={args.num_q}, nw={args.num_frequency}")
     print(f"Baseline mu={args.fermi_level:g} eV, T={args.temperature:g} K")
-    print(f"Max |P| at q/pi={q_points[peak_index[0]] / np.pi:.4g}, omega={frequencies[peak_index[1]]:.4g} eV")
+    print(
+        f"Max |P| at q/pi={q_points[peak_index[0]] / np.pi:.4g}, omega={frequencies[peak_index[1]]:.4g} eV"
+    )
     print(f"||P(q=0)|| / median ||P(q!=0)|| = {zero_q_relative:.6e}")
     print(f"Median relative q-step change = {smoothness:.6e}")
-    print(f"Relative change when mu -> {args.doped_fermi_level:g} eV: {doping_change:.6e}")
-    print(f"Relative change when T -> {args.hot_temperature:g} K: {temperature_change:.6e}")
+    print(
+        f"Relative change when mu -> {args.doped_fermi_level:g} eV: {doping_change:.6e}"
+    )
+    print(
+        f"Relative change when T -> {args.hot_temperature:g} K: {temperature_change:.6e}"
+    )
 
     _make_plots(
         output_prefix=args.output_prefix,

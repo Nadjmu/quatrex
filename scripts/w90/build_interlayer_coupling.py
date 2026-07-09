@@ -29,7 +29,12 @@ SOURCE = Path(
     "/usr/scratch/mont-fort11/awinka/for_cal/hBN_MoS2_heterostructure/inputs_dielectric/interlayer_coulomb_matrix.mat"
 )
 OUT_DIR = (
-    REPO_ROOT / "examples" / "w90" / "mos2" / "dielectric_environment" / "inputs_coupling"
+    REPO_ROOT
+    / "examples"
+    / "w90"
+    / "mos2"
+    / "dielectric_environment"
+    / "inputs_coupling"
 )
 
 TRANSPORT_DIRECTION = "x"
@@ -48,7 +53,9 @@ def parse_key(key: str) -> tuple[int, int, int]:
 
 def load_unit_cells(path: Path) -> np.ndarray:
     data = sio.loadmat(path)
-    blocks = {parse_key(key): value for key, value in data.items() if not key.startswith("__")}
+    blocks = {
+        parse_key(key): value for key, value in data.items() if not key.startswith("__")
+    }
     coords = np.array(list(blocks))
     min_coords = coords.min(axis=0)
     max_coords = coords.max(axis=0)
@@ -78,8 +85,13 @@ def get_cross_transport_block(
         row = []
         for device_cell in local_shifts:
             index = tuple(device_cell - env_cell + global_shift_array)
-            if any(abs(value) > unit_cells.shape[axis] // 2 for axis, value in enumerate(index)):
-                block = np.zeros((env_orbitals, device_orbitals), dtype=unit_cells.dtype)
+            if any(
+                abs(value) > unit_cells.shape[axis] // 2
+                for axis, value in enumerate(index)
+            ):
+                block = np.zeros(
+                    (env_orbitals, device_orbitals), dtype=unit_cells.dtype
+                )
             else:
                 block = unit_cells[index]
             row.append(block)
@@ -118,7 +130,9 @@ def assemble_cross_matrix(unit_cells: np.ndarray) -> np.ndarray:
     for block_index in range(NUM_TRANSPORT_CELLS):
         env0 = block_index * env_block_size
         dev0 = block_index * device_block_size
-        out[env0 : env0 + env_block_size, dev0 : dev0 + device_block_size] += onsite_block
+        out[
+            env0 : env0 + env_block_size, dev0 : dev0 + device_block_size
+        ] += onsite_block
 
         if block_index + 1 < NUM_TRANSPORT_CELLS:
             out[
@@ -127,7 +141,9 @@ def assemble_cross_matrix(unit_cells: np.ndarray) -> np.ndarray:
             ] += lower_block
             out[
                 env0 : env0 + env_block_size,
-                (block_index + 1) * device_block_size : (block_index + 2) * device_block_size,
+                (block_index + 1)
+                * device_block_size : (block_index + 2)
+                * device_block_size,
             ] += upper_block
 
     return out
@@ -157,8 +173,12 @@ def main() -> None:
         np.save(OUT_DIR / f"v_ec_{suffix}.npy", v_ec_scaled)
         np.save(OUT_DIR / f"v_ce_{suffix}.npy", v_ce_scaled)
         print(f"epsilon_r scaling: {epsilon_r:g}")
-        print(f"saved v_ec_{suffix}: {v_ec_scaled.shape}, maxabs={np.max(np.abs(v_ec_scaled))}")
-        print(f"saved v_ce_{suffix}: {v_ce_scaled.shape}, maxabs={np.max(np.abs(v_ce_scaled))}")
+        print(
+            f"saved v_ec_{suffix}: {v_ec_scaled.shape}, maxabs={np.max(np.abs(v_ec_scaled))}"
+        )
+        print(
+            f"saved v_ce_{suffix}: {v_ce_scaled.shape}, maxabs={np.max(np.abs(v_ce_scaled))}"
+        )
 
 
 if __name__ == "__main__":

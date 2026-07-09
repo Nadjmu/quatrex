@@ -126,7 +126,9 @@ def main() -> None:
         handle.write(f"valley_degeneracy: {args.valley_degeneracy}\n")
 
     print(f"Wrote raw RPA debug export to {output_dir.resolve()}")
-    print(f"polarization_retarded_qw.npy shape: {np.asarray(result.polarization).shape}")
+    print(
+        f"polarization_retarded_qw.npy shape: {np.asarray(result.polarization).shape}"
+    )
 
 
 if __name__ == "__main__":

@@ -55,7 +55,9 @@ RPA_COMPUTE = (
     / "rpa_compute.py"
 )
 
-spec = importlib.util.spec_from_file_location("quatrex_rpa_compute_validation", RPA_COMPUTE)
+spec = importlib.util.spec_from_file_location(
+    "quatrex_rpa_compute_validation", RPA_COMPUTE
+)
 if spec is None or spec.loader is None:
     raise ImportError(f"Could not load RPA helpers from {RPA_COMPUTE}.")
 rpa_compute = importlib.util.module_from_spec(spec)
@@ -166,7 +168,9 @@ def _path_distances(
     if lattice_xyz is None:
         cartesian_k_points = reduced_k_points
     else:
-        reciprocal_vectors = _reciprocal_lattice_vectors(_read_lattice_vectors(lattice_xyz))
+        reciprocal_vectors = _reciprocal_lattice_vectors(
+            _read_lattice_vectors(lattice_xyz)
+        )
         cartesian_k_points = reduced_k_points @ reciprocal_vectors[:2, :2]
 
     segment_lengths = np.linalg.norm(np.diff(cartesian_k_points, axis=0), axis=1)
@@ -407,8 +411,7 @@ def main() -> None:
         )
     else:
         reduced_k_points, tick_indices, tick_labels = _build_hexagonal_path(
-            path_name=args.path,
-            points_per_segment=args.path_points
+            path_name=args.path, points_per_segment=args.path_points
         )
         k_points = _path_distances(reduced_k_points, lattice_xyz=args.lattice_xyz)
         plot_k_points = k_points
@@ -448,7 +451,9 @@ def main() -> None:
     band_indices = np.arange(plot_eigenvalues.shape[1])
     if args.frontier_bands is not None:
         if reference_energy is None:
-            raise ValueError("--frontier-bands requires --fermi-level or --reference-energy.")
+            raise ValueError(
+                "--frontier-bands requires --fermi-level or --reference-energy."
+            )
         band_indices = _frontier_band_indices(
             bands.eigenvalues,
             reference_energy=reference_energy,
@@ -491,15 +496,11 @@ def main() -> None:
             k_points=k_points,
             eigenvalues=bands.eigenvalues,
             periodic_axis=np.array(-1 if axis is None else axis),
-            reduced_k_points=np.array([])
-            if reduced_k_points is None
-            else reduced_k_points,
-            tick_positions=np.array([])
-            if tick_positions is None
-            else tick_positions,
-            tick_labels=np.array([])
-            if tick_labels is None
-            else np.array(tick_labels),
+            reduced_k_points=(
+                np.array([]) if reduced_k_points is None else reduced_k_points
+            ),
+            tick_positions=np.array([]) if tick_positions is None else tick_positions,
+            tick_labels=np.array([]) if tick_labels is None else np.array(tick_labels),
             plotted_band_indices=band_indices,
             track_bands=np.array(args.track_bands),
             plotted_eigenvalues=plot_eigenvalues,

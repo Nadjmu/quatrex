@@ -59,7 +59,9 @@ RPA_COMPUTE = (
     / "rpa_compute.py"
 )
 
-spec = importlib.util.spec_from_file_location("quatrex_rpa_compute_validation", RPA_COMPUTE)
+spec = importlib.util.spec_from_file_location(
+    "quatrex_rpa_compute_validation", RPA_COMPUTE
+)
 if spec is None or spec.loader is None:
     raise ImportError(f"Could not load RPA helpers from {RPA_COMPUTE}.")
 rpa_compute = importlib.util.module_from_spec(spec)
@@ -176,7 +178,9 @@ def _compute(args: argparse.Namespace):
         periodic_axis=args.axis,
         lattice_constant=args.lattice_constant,
     )
-    coulomb_matrices = np.asarray(coulomb_matrices, dtype=np.complex128) / args.epsilon_r
+    coulomb_matrices = (
+        np.asarray(coulomb_matrices, dtype=np.complex128) / args.epsilon_r
+    )
     v_eff = _project_coulomb(coulomb_matrices, args.projection)
 
     epsilon_eff = 1.0 - v_eff[:, np.newaxis] * polarization
@@ -209,7 +213,9 @@ def _make_plots(
         (loss_eff, r"$-\mathrm{Im}\,1/\epsilon_\mathrm{eff}$", "magma"),
     ]
     for ax, (field, title, cmap) in zip(axes, fields, strict=True):
-        image = ax.imshow(field, origin="lower", aspect="auto", extent=extent, cmap=cmap)
+        image = ax.imshow(
+            field, origin="lower", aspect="auto", extent=extent, cmap=cmap
+        )
         ax.set_title(title)
         ax.set_xlabel(r"$\omega$ (eV)")
         ax.set_ylabel(r"$q / \pi$")
@@ -283,7 +289,9 @@ def main() -> None:
     peak = np.unravel_index(int(np.argmax(loss_eff)), loss_eff.shape)
     zero_q = _nearest_index(q_points, 0.0)
     print(f"Projection: {args.projection}")
-    print(f"v_eff min/max/median: {np.min(v_eff):.6g}, {np.max(v_eff):.6g}, {np.median(v_eff):.6g}")
+    print(
+        f"v_eff min/max/median: {np.min(v_eff):.6g}, {np.max(v_eff):.6g}, {np.median(v_eff):.6g}"
+    )
     print(
         "Peak effective loss at "
         f"q/pi={q_points[peak[0]] / np.pi:.4g}, "
@@ -291,7 +299,9 @@ def main() -> None:
         f"loss={loss_eff[peak]:.6g}"
     )
     print(f"Fraction loss < 0: {np.mean(loss_eff < -1e-12):.6g}")
-    print(f"Max |epsilon_eff - 1| at q=0: {np.max(np.abs(epsilon_eff[zero_q] - 1.0)):.6e}")
+    print(
+        f"Max |epsilon_eff - 1| at q=0: {np.max(np.abs(epsilon_eff[zero_q] - 1.0)):.6e}"
+    )
     print(f"Wrote data: {data_path.resolve()}")
 
 

@@ -59,7 +59,9 @@ RPA_COMPUTE = (
     / "rpa_compute.py"
 )
 
-spec = importlib.util.spec_from_file_location("quatrex_rpa_compute_validation", RPA_COMPUTE)
+spec = importlib.util.spec_from_file_location(
+    "quatrex_rpa_compute_validation", RPA_COMPUTE
+)
 if spec is None or spec.loader is None:
     raise ImportError(f"Could not load RPA helpers from {RPA_COMPUTE}.")
 rpa_compute = importlib.util.module_from_spec(spec)
@@ -73,7 +75,9 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Validate dielectric sign convention with a two-level RPA model."
     )
-    parser.add_argument("--gap", type=float, default=2.0, help="Transition energy in eV.")
+    parser.add_argument(
+        "--gap", type=float, default=2.0, help="Transition energy in eV."
+    )
     parser.add_argument("--broadening", type=float, default=0.05)
     parser.add_argument("--coulomb", type=float, default=1.0)
     parser.add_argument("--max-frequency", type=float, default=4.0)

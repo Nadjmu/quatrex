@@ -313,9 +313,7 @@ class EquilibriumRPAScreeningBridge:
                 v_ee=v_ee,
                 v_ce=v_ce,
                 v_ec=v_ec,
-                p_ee_retarded=np.asarray(
-                    p_retarded[global_index], dtype=np.complex128
-                ),
+                p_ee_retarded=np.asarray(p_retarded[global_index], dtype=np.complex128),
                 p_ee_lesser=np.asarray(p_lesser[global_index], dtype=np.complex128),
             )
             if w_retarded is not None:
@@ -385,14 +383,16 @@ class EquilibriumRPAScreeningBridge:
             f"{comm.stack.rank} computing matrix-valued RPA P(q,w)...",
             flush=True,
         )
-        polarization_result = self._solver.polarization_solver.solve_matrix_from_translation_blocks(
-            translation_blocks=inputs.hamiltonian_blocks,
-            mesh=mesh,
-            chemical_potential=chemical_potential,
-            temperature=self.config.coulomb_screening.temperature,
-            periodic_axis=screening.periodic_axis,
-            lattice_constant=screening.lattice_constant,
-            broadening=screening.broadening,
+        polarization_result = (
+            self._solver.polarization_solver.solve_matrix_from_translation_blocks(
+                translation_blocks=inputs.hamiltonian_blocks,
+                mesh=mesh,
+                chemical_potential=chemical_potential,
+                temperature=self.config.coulomb_screening.temperature,
+                periodic_axis=screening.periodic_axis,
+                lattice_constant=screening.lattice_constant,
+                broadening=screening.broadening,
+            )
         )
         p_retarded_qw = np.asarray(
             polarization_result.polarization,
@@ -403,9 +403,7 @@ class EquilibriumRPAScreeningBridge:
                 "RPA environment screening requires matrix_valued_polarization=True."
             )
 
-        p_spectral_function = p_retarded_qw - np.swapaxes(
-            p_retarded_qw.conj(), -1, -2
-        )
+        p_spectral_function = p_retarded_qw - np.swapaxes(p_retarded_qw.conj(), -1, -2)
         bose = np.asarray(
             bose_einstein(
                 xp.asarray(local_frequencies),
@@ -795,9 +793,7 @@ class EquilibriumRPAScreeningBridge:
                 center - axis_cutoff, center + axis_cutoff + 1
             )
             unit_cells = unit_cells[tuple(trim_slices)]
-            matrix_sparray, __, __ = _create_matrix_from_unit_cells(
-                config, unit_cells
-            )
+            matrix_sparray, __, __ = _create_matrix_from_unit_cells(config, unit_cells)
             matrices.append(matrix_sparray.astype(xp.complex128))
 
         return matrices
@@ -879,7 +875,10 @@ class EquilibriumRPAScreeningBridge:
         matrix_name: str,
     ) -> np.ndarray:
         cache_dir = config.output_dir / "environment"
-        cache_path = cache_dir / f"{matrix_name}_epsilon_{config.coulomb_screening.epsilon_r:g}_dense.npy"
+        cache_path = (
+            cache_dir
+            / f"{matrix_name}_epsilon_{config.coulomb_screening.epsilon_r:g}_dense.npy"
+        )
         if cache_path.is_file():
             print(
                 f"Environment cache: loading dense Coulomb matrix from {cache_path}...",
@@ -922,7 +921,10 @@ class EquilibriumRPAScreeningBridge:
             flush=True,
         )
         cache_dir.mkdir(parents=True, exist_ok=True)
-        print(f"Environment cache: saving dense Coulomb matrix to {cache_path}...", flush=True)
+        print(
+            f"Environment cache: saving dense Coulomb matrix to {cache_path}...",
+            flush=True,
+        )
         np.save(cache_path, dense)
         return dense
 

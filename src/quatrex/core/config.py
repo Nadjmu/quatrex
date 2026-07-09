@@ -1456,7 +1456,8 @@ class QuatrexConfig(BaseModel):
             return self
 
         uses_explicit_environment_screening = (
-            self.environment is not None and self.environment.screening.method is not None
+            self.environment is not None
+            and self.environment.screening.method is not None
         )
 
         if screening.method == "negf":

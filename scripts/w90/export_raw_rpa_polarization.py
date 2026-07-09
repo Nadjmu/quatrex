@@ -9,6 +9,7 @@ import numpy as np
 try:
     from mpi4py.MPI import COMM_WORLD as global_comm
 except ModuleNotFoundError:
+
     class _SerialComm:
         rank = 0
 
@@ -17,8 +18,10 @@ except ModuleNotFoundError:
 try:
     from qttools.utils.mpi_utils import distributed_load
 except ModuleNotFoundError:
+
     def distributed_load(path: Path) -> np.ndarray:
         return np.load(path)
+
 
 from quatrex.core.config import parse_config
 from quatrex.coulomb_screening.dielectric_screening.equilibrium_screening import (
@@ -133,7 +136,9 @@ def export_raw_rpa(config_path: Path) -> Path:
         output_dir.mkdir(parents=True, exist_ok=True)
         np.save(
             output_dir / "polarization_retarded_qw.npy",
-            np.asarray(grid_result.polarization_result.polarization, dtype=np.complex128),
+            np.asarray(
+                grid_result.polarization_result.polarization, dtype=np.complex128
+            ),
         )
         np.save(output_dir / "frequencies_eV.npy", np.asarray(mesh.frequencies))
         np.save(output_dir / "q_points.npy", np.asarray(mesh.q_points))
@@ -150,7 +155,9 @@ def export_raw_rpa(config_path: Path) -> Path:
                 f"{np.asarray(grid_result.polarization_result.polarization).shape}\n"
             )
             f.write("Frequencies are stored in eV.\n")
-            f.write("q_points and k_points are stored in reciprocal-lattice units used by the solver.\n")
+            f.write(
+                "q_points and k_points are stored in reciprocal-lattice units used by the solver.\n"
+            )
 
     return output_dir
 
