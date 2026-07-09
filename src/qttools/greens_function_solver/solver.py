@@ -95,6 +95,8 @@ class GFSolver(ABC):
             Whether to compute and return the current for each layer via
             the Meir-Wingreen formula. By default False.
 
+        Returns
+        -------
         None | NDArray
             If `return_current` is True, returns the
             current for each layer.
