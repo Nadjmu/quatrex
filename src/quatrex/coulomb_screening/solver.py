@@ -692,6 +692,15 @@ class CoulombScreeningSolver(SubsystemSolver):
         w_lesser_diag = w_lesser.diagonal()
         w_greater_diag = w_greater.diagonal()
 
+        w_lesser_diag = comm.block.all_gather_v(
+            w_lesser_diag,
+            axis=-1,
+        )
+        w_greater_diag = comm.block.all_gather_v(
+            w_greater_diag,
+            axis=-1,
+        )
+
         block_sizes = w_lesser.block_sizes
         block_offsets = w_lesser.block_offsets
         for i, (bzs, boff) in enumerate(zip(block_sizes, block_offsets)):

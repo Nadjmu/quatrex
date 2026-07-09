@@ -598,7 +598,10 @@ class TestAccess:
         dense = dsdbsparse.to_dense()
 
         reference = xp.diagonal(dense, axis1=-2, axis2=-1)
-        assert xp.allclose(reference, dsdbsparse.diagonal())
+        diagonal = dsdbsparse.diagonal()
+        diagonal = comm.block.all_gather_v(diagonal, axis=-1)
+
+        assert xp.allclose(reference, diagonal)
 
 
 @pytest.mark.mpi(min_size=2)

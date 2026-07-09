@@ -905,6 +905,9 @@ class DSDBCOO(DSDBSparse):
 
         This is dumb, unless used for testing and debugging.
 
+        !!! Warning:
+            This create a very large dense matrix.
+
         Returns
         -------
         arr : NDArray

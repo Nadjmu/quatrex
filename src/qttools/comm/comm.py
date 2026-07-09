@@ -123,6 +123,8 @@ def pad_buffer(buffer: NDArray, global_size: int, comm_size: int, axis: int) -> 
     NDArray
         The padded buffer.
     """
+    if axis < 0:
+        axis = buffer.ndim + axis
 
     padding_width = global_size // comm_size - buffer.shape[axis]
 

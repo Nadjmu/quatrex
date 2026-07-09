@@ -687,19 +687,32 @@ class ElectronSolver(SubsystemSolver):
 
         """
         self.system_matrix.data = 0.0
+
         if self.overlap is None:
-            self.system_matrix.fill_diagonal(1.0)
+            offset = self.system_matrix.global_block_offset
+            num_diag = self.system_matrix.num_local_diag
+
+            diagonal = (self.local_energies[batch_slice] + 1j * self.eta)[:, np.newaxis]
+            diagonal = (
+                diagonal - self.potential[offset : offset + num_diag][np.newaxis, :]
+            )
+
+            # Add singleton dimensions to match the system matrix shape.
+            num_kpoint_dims = len(self.system_matrix.global_stack_shape) - 1
+            if num_kpoint_dims > 0:
+                new_shape = (
+                    (diagonal.shape[0],) + (1,) * num_kpoint_dims + (diagonal.shape[1],)
+                )
+                diagonal = diagonal.reshape(new_shape)
+
+            self.system_matrix.fill_diagonal(diagonal)
         else:
             self._add_overlap()
+            scale_stack(
+                self.system_matrix.data,
+                self.local_energies[batch_slice] + 1j * self.eta,
+            )
 
-        scale_stack(
-            self.system_matrix.data,
-            self.local_energies[batch_slice] + 1j * self.eta,
-        )
-
-        if self.overlap is None:
-            self.system_matrix -= sparse.diags(self.potential, format="csr")
-        else:
             self._apply_potential()
 
         self._subtract_hamiltonian_and_self_energy(
@@ -721,6 +734,8 @@ class ElectronSolver(SubsystemSolver):
         g_lesser, g_greater, g_retarded = out
 
         g_retarded_diag = g_retarded.diagonal()
+        g_retarded_diag = comm.block.all_gather_v(g_retarded_diag, axis=-1)
+
         block_sizes = g_retarded.block_sizes
         block_offsets = g_retarded.block_offsets
         local_dos = []

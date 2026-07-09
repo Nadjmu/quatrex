@@ -283,6 +283,13 @@ class DSDBSparse(ABC):
         self.global_block_offset = sum(
             block_sizes[: self.block_section_offsets[comm.block.rank]]
         )
+        self.num_local_diag = sum(
+            block_sizes[
+                self.block_section_offsets[
+                    comm.block.rank
+                ] : self.block_section_offsets[comm.block.rank + 1]
+            ]
+        )
 
         # --- Things concerning block indexing and slicing --------------
 
@@ -548,6 +555,15 @@ class DSDBSparse(ABC):
     def diagonal(self, stack_index: tuple = (Ellipsis,)) -> NDArray:
         """Returns or sets the diagonal elements of the matrix.
 
+        !!! Note:
+            In the block distributed case, this returns the local
+            diagonal elements.
+
+        Parameters
+        ----------
+        stack_index : tuple, optional
+            The index in the stack. Default is (Ellipsis,).
+
         Returns
         -------
         diagonal : NDArray
@@ -573,9 +589,7 @@ class DSDBSparse(ABC):
             local_diagonal[..., self._diag_value_inds] = data_stack[
                 ..., self._diag_inds
             ]
-            return xp.concatenate(
-                comm.block._mpi_comm.allgather(local_diagonal), axis=-1
-            )
+            return local_diagonal
         else:
             if self._diag_inds_nnz is not None:
                 return data_stack[..., self._diag_inds_nnz]
@@ -583,6 +597,13 @@ class DSDBSparse(ABC):
 
     def fill_diagonal(self, val: NDArray, stack_index: tuple = (Ellipsis,)) -> NDArray:
         """Returns or sets the diagonal elements of the matrix.
+
+        Parameters
+        ----------
+        val : NDArray
+            The value(s) to set along the diagonal.
+        stack_index : tuple, optional
+            The index in the stack. Default is (Ellipsis,).
 
         Returns
         -------
