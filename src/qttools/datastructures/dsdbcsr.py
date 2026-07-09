@@ -35,17 +35,17 @@ class DSDBCSR(DSDBSparse):
 
     Parameters
     ----------
-    data : NDArray
-        The local slice of the data. This should be an array of shape
-        `(*local_stack_shape, nnz)`. It is the caller's responsibility
-        to ensure that the data is distributed correctly across the
-        ranks.
+    dtype : xp.dtype[xp.generic]
+        The data type of the matrix.
     cols : NDArray
         The column indices.
     rowptr_map : dict
         The row pointer map.
     block_sizes : NDArray
         The size of each block in the sparse matrix.
+    local_stack_shape : tuple or int
+        The local shape of the stack. If this is an integer, it is
+        interpreted as a one-dimensional stack.
     global_stack_shape : tuple or int
         The global shape of the stack. If this is an integer, it is
         interpreted as a one-dimensional stack.
@@ -55,17 +55,17 @@ class DSDBCSR(DSDBSparse):
     symmetry : bool, optional
         Whether the matrix is symmetric. Default is False.
     symmetry_op : callable, optional
-        The operation to use for the symmetry. Default is
-        `xp.conj`.
+        The operation to use for the symmetry. Default is `xp.conj`.
 
     """
 
     def __init__(
         self,
-        data: NDArray,
+        dtype: xp.dtype[xp.generic],
         cols: NDArray,
         rowptr_map: dict,
         block_sizes: NDArray,
+        local_stack_shape: tuple | int,
         global_stack_shape: tuple,
         return_dense: bool = True,
         symmetry: bool | None = False,
@@ -90,11 +90,13 @@ class DSDBCSR(DSDBSparse):
             )
 
         super().__init__(
-            data,
-            block_sizes,
-            global_stack_shape,
-            index_type,
-            return_dense,
+            dtype=dtype,
+            block_sizes=block_sizes,
+            nnz=len(cols),
+            local_stack_shape=local_stack_shape,
+            global_stack_shape=global_stack_shape,
+            index_type=index_type,
+            return_dense=return_dense,
             symmetry=symmetry,
             symmetry_op=symmetry_op,
         )
@@ -510,19 +512,6 @@ class DSDBCSR(DSDBSparse):
         self._data -= other._data
         return self
 
-    def __neg__(self) -> "DSDBCSR":
-        """Negation of the data."""
-        return DSDBCSR(
-            data=-self.data,
-            cols=self.cols,
-            rowptr_map=self.rowptr_map,
-            block_sizes=self.block_sizes,
-            global_stack_shape=self.global_stack_shape,
-            return_dense=self.return_dense,
-            symmetry=self.symmetry,
-            symmetry_op=self.symmetry_op,
-        )
-
     @DSDBSparse.block_sizes.setter
     def block_sizes(self, block_sizes: NDArray) -> None:
         """Sets new block sizes for the matrix.
@@ -761,30 +750,31 @@ class DSDBCSR(DSDBSparse):
         return rows, self.cols
 
     @classmethod
-    def zeros_like(cls, dsdbsparse: "DSDBSparse") -> "DSDBSparse":
-        """Creates a new DSDBSparse matrix with the same shape and dtype.
+    def empty_like(cls, dsdbsparse: "DSDBCSR") -> "DSDBCSR":
+        """Creates a new DSDBCSR matrix with the same shape and dtype.
 
-        All non-zero elements are set to zero, but the sparsity pattern
-        is preserved.
+        There is no data allocated in the new matrix. The sparsity
+        pattern is the same as the original matrix.
 
         Parameters
         ----------
-        dsdbsparse : DSDBSparse
+        dsdbsparse : DSDBCSR
             The matrix to copy the shape and dtype from.
 
         Returns
         -------
-        DSDBSparse
-            The new DSDBSparse matrix.
+        DSDBCSR
+            The new DSDBCSR matrix.
 
         """
         # TODO: Problem with deepcopy in tests
         # own copy should be provided
         out = cls(
-            data=dsdbsparse.data.copy(),
+            dtype=dsdbsparse.dtype,
             cols=dsdbsparse.cols.copy(),
             rowptr_map=dsdbsparse.rowptr_map.copy(),
             block_sizes=dsdbsparse.block_sizes,
+            local_stack_shape=dsdbsparse.local_stack_shape,
             global_stack_shape=dsdbsparse.global_stack_shape,
             return_dense=dsdbsparse.return_dense,
             symmetry=dsdbsparse.symmetry,
@@ -799,28 +789,33 @@ class DSDBCSR(DSDBSparse):
     @classmethod
     def from_sparray(
         cls,
-        arr: sparse.spmatrix,
+        sparray: sparse.spmatrix,
         block_sizes: NDArray,
         global_stack_shape: tuple,
         symmetry: bool | None = False,
         symmetry_op: Callable = xp.conj,
+        dtype: xp.dtype[xp.generic] = xp.complex128,
+        allocate: bool = True,
     ) -> "DSDBCSR":
-        """Creates a new DSDBSparse matrix from a scipy.sparse array.
+        """Creates a new DSDBCSR matrix from a scipy.sparse array.
 
         Parameters
         ----------
-        arr : sparse.spmatrix
-            The sparse array to convert.
+        sparray : sparse.spmatrix
+            The sparse matrix from which to use the sparsity pattern.
         block_sizes : NDArray
-            The size of all the blocks in the matrix.
+            The block sizes of the block-sparse matrix.
         global_stack_shape : tuple
-            The global shape of the stack of matrices. The provided
-            sparse matrix is replicated across the stack.
+            The global shape of the stack.
         symmetry : bool, optional
             Whether to enforce symmetry in the matrix. Default is False.
         symmetry_op : callable, optional
-            The operation to use for the symmetry. Default is
-            `xp.conj`.
+            The operation to use for the symmetry. Default is `xp.conj`.
+        dtype : xp.dtype, optional
+            The data type of the matrix. Default is `xp.complex128`.
+        allocate : bool, optional
+            Whether to allocate the data of the resulting matrix.
+            Default is True.
 
         Returns
         -------
@@ -834,7 +829,7 @@ class DSDBCSR(DSDBSparse):
         section_size = stack_section_sizes[comm.rank]
         local_stack_shape = (section_size,) + global_stack_shape[1:]
 
-        coo: sparse.coo_matrix = arr.tocoo().copy()
+        coo: sparse.coo_matrix = sparray.tocoo().copy()
 
         # Canonicalizes the COO format.
         coo.sum_duplicates()
@@ -847,20 +842,24 @@ class DSDBCSR(DSDBSparse):
         block_sort_index, rowptr_map = dsdbcsr_kernels.compute_rowptr_map(
             coo.row, coo.col, block_sizes.astype(index_type)
         )
-
-        data = xp.zeros(local_stack_shape + (coo.nnz,), dtype=coo.data.dtype)
-        data[:] = coo.data[block_sort_index]
         cols = coo.col[block_sort_index]
 
-        return cls(
-            data=data,
+        dsdbcsr = cls(
+            dtype=dtype,
             cols=cols,
             rowptr_map=rowptr_map,
             block_sizes=block_sizes,
+            local_stack_shape=local_stack_shape,
             global_stack_shape=global_stack_shape,
             symmetry=symmetry,
             symmetry_op=symmetry_op,
         )
+        if allocate:
+            dsdbcsr.allocate_data()
+            dsdbcsr._data[:] = 0
+            dsdbcsr.data = coo.data[block_sort_index]
+
+        return dsdbcsr
 
     def to_dense(self) -> NDArray:
         """Converts the local data to a dense array.

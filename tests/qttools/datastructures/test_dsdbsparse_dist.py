@@ -98,9 +98,9 @@ def _create_coo_dsdbsparse(
     coo = global_comm.bcast(coo, root=0)
 
     dsdbsparse = dsdbsparse_type_dist.from_sparray(
-        coo,
-        block_sizes,
-        global_stack_shape,
+        sparray=coo,
+        block_sizes=block_sizes,
+        global_stack_shape=global_stack_shape,
         symmetry=symmetry,
         symmetry_op=symmetry_op,
     )
@@ -126,23 +126,26 @@ class TestCreation:
         )
         assert xp.array_equiv(coo.toarray(), dsdbsparse.to_dense())
 
-    def test_zeros_like(
+    def test_empty_like(
         self,
         dsdbsparse_type_dist: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
         symmetry_type: tuple[bool, Callable],
     ):
-        """Tests the creation of a zero DSDBSparse matrix with the same shape as another."""
+        """Tests the creation of a empty DSDBSparse matrix with the same
+        shape as another."""
         _, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type_dist,
             block_sizes,
             global_stack_shape,
             symmetry_type,
         )
-        zeros = dsdbsparse_type_dist.zeros_like(dsdbsparse)
-        assert (zeros.to_dense() == 0).all()
-        assert zeros.shape == dsdbsparse.shape
+        empty = dsdbsparse_type_dist.empty_like(dsdbsparse)
+        empty.allocate_data()
+        empty.data[:] = 0
+        assert (empty.to_dense() == 0).all()
+        assert empty.shape == dsdbsparse.shape
 
 
 @pytest.mark.mpi(min_size=2)
@@ -671,7 +674,7 @@ class TestAccess:
 
         # Create a new DSDBSparse matrix with the updated block sizes.
         dsdbsparse_updated_block_sizes = dsdbsparse_type_dist.from_sparray(
-            coo,
+            sparray=coo,
             block_sizes=updated_block_sizes,
             global_stack_shape=global_stack_shape,
             symmetry=symmetry,

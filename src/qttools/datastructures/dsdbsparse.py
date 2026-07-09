@@ -118,38 +118,43 @@ class BlockConfig(object):
 
 
 class DSDBSparse(ABC):
-    """Base class for Distributed Stack of Distributed Block-accessible Sparse matrices.
+    """Base class for Distributed Stack of Distributed Block-accessible
+    Sparse matrices.
 
     Parameters
     ----------
-    data : NDArray
-        The local slice of the data. This should be an array of shape
-        `(*local_stack_shape, local_nnz)`. It is the caller's
-        responsibility to ensure that the data is distributed correctly
-        across the ranks.
+    dtype : xp.dtype[xp.generic]
+        The data type of the matrix.
     block_sizes : NDArray
         The size of each block in the sparse matrix.
+    nnz : int
+        The number of non-zero elements in the sparse matrix.
+    local_stack_shape : tuple or int
+        The local shape of the stack. If this is an integer, it is
+        interpreted as a one-dimensional stack.
     global_stack_shape : tuple or int
         The global shape of the stack. If this is an integer, it is
         interpreted as a one-dimensional stack.
     index_type : xp.int32 | xp.int64
-        The index type to use for the sparse matrix.
-        This is relevant for the low level kernels to avoid
-        unnecessary type conversions.
+        The index type to use for the sparse matrix. This is relevant
+        for the low level kernels to avoid unnecessary type conversions.
     return_dense : bool, optional
         Whether to return dense arrays when accessing the blocks.
         Default is True.
     symmetry : bool, optional
         Whether the matrix is symmetric. Default is False.
     symmetry_op : Callable, optional
-        The operation to use for symmetrization. Default is
-        `xp.conj`, which is the complex conjugate.
+        The operation to use for symmetrization. Default is `xp.conj`,
+        which is the complex conjugate.
+
     """
 
     def __init__(
         self,
-        data: NDArray,
+        dtype: xp.dtype[xp.generic],
         block_sizes: NDArray,
+        nnz: int,
+        local_stack_shape: tuple | int,
         global_stack_shape: tuple | int,
         index_type: xp.int32 | xp.int64,
         return_dense: bool = True,
@@ -158,23 +163,6 @@ class DSDBSparse(ABC):
     ):
         """Initializes a DSBDSparse matrix."""
 
-        self.index_type = index_type
-
-        # --- Things concerning stack distribution ---------------------
-
-        if isinstance(global_stack_shape, int):
-            global_stack_shape = (global_stack_shape,)
-
-        if global_stack_shape[0] < comm.stack.size:
-            raise ValueError(
-                f"Number of MPI ranks in stack communicator {comm.stack.size} "
-                f"exceeds stack shape {global_stack_shape}."
-            )
-
-        self.global_stack_shape = global_stack_shape
-        self.symmetry = symmetry
-        self.symmetry_op = symmetry_op
-
         # Set the block and stack communicators.
         if comm.block is None or comm.stack is None:
             raise ValueError(
@@ -182,28 +170,74 @@ class DSDBSparse(ABC):
                 "the BLOCK_COMM_SIZE environment variable."
             )
 
+        # Type of the data
+        self.dtype = dtype
+        # Type of the indices
+        self.index_type = index_type
+        self.return_dense = return_dense
+        self.symmetry = symmetry
+        self.symmetry_op = symmetry_op
+        # Per default, we have the data is distributed in stack format.
+        self.distribution_state = "stack"
+        self._data = None
+
+        if not isinstance(local_stack_shape, type(global_stack_shape)):
+            raise ValueError(
+                "local_stack_shape and global_stack_shape must be of the same type."
+            )
+
+        if isinstance(global_stack_shape, int):
+            global_stack_shape = (global_stack_shape,)
+
+        if isinstance(local_stack_shape, int):
+            local_stack_shape = (local_stack_shape,)
+
+        if global_stack_shape[0] < comm.stack.size:
+            raise ValueError(
+                f"Number of MPI ranks in stack communicator {comm.stack.size} "
+                f"exceeds stack shape {global_stack_shape[0]}."
+            )
+
+        self.local_stack_shape = local_stack_shape
+        self.global_stack_shape = global_stack_shape
+
+        # This is the shape of this matrix in the comm.stack.
+        # NOTE: This is the local shape of the stack.
+        self.shape = self.local_stack_shape + (
+            int(sum(block_sizes)),
+            int(sum(block_sizes)),
+        )
+
+        # --- Things concerning stack distribution ---------------------
+
         # Determine how the data is distributed across the stack.
         stack_section_sizes, total_stack_size = get_section_sizes(
             global_stack_shape[0], comm.stack.size, strategy="balanced"
         )
-        self.stack_section_sizes_offset = stack_section_sizes[comm.stack.rank]
         self.stack_section_sizes = stack_section_sizes
         self.total_stack_size = total_stack_size
 
+        self.stack_section_offsets = xp.hstack(
+            ([0], np.cumsum(stack_section_sizes))
+        ).astype(index_type)
+
+        # --- Things concerning nnz distribution ---------------------
+
+        # Determine how the data is distributed across the nnz.
         nnz_section_sizes, total_nnz_size = get_section_sizes(
-            data.shape[-1], comm.stack.size, strategy="greedy"
+            nnz, comm.stack.size, strategy="greedy"
         )
         self.nnz_section_sizes = nnz_section_sizes
+        self.total_nnz_size = total_nnz_size
+
         self.nnz_section_offsets = xp.hstack(
             ([0], np.cumsum(nnz_section_sizes))
         ).astype(index_type)
-        self.total_nnz_size = total_nnz_size
 
-        # Per default, we have the data is distributed in stack format.
-        self.distribution_state = "stack"
+        # --- Things concerning both distributions ---------------------
 
         self.data_slice_stack = (
-            slice(None, int(self.stack_section_sizes_offset)),
+            slice(None, int(self.stack_section_sizes[comm.stack.rank])),
             ...,
             slice(None, int(self.nnz_section_offsets[-1])),
         )
@@ -212,14 +246,6 @@ class DSDBSparse(ABC):
             ...,
             slice(None, int(self.nnz_section_sizes[comm.stack.rank])),
         )
-
-        # Pad local data with zeros to ensure that all ranks have the
-        # same data size for the all-to-all communication.
-        self._data = xp.zeros(
-            (max(stack_section_sizes), *global_stack_shape[1:], total_nnz_size),
-            dtype=data.dtype,
-        )
-        self._data[: data.shape[0], ..., : data.shape[-1]] = data
 
         # For the weird padding convention we use, we need to keep track
         # of this padding mask.
@@ -230,12 +256,8 @@ class DSDBSparse(ABC):
             offset = i * max(stack_section_sizes)
             self._stack_padding_mask[offset : offset + size] = True
 
-        self.stack_shape = data.shape[:-1]
-        self.local_nnz = data.shape[-1]
-        # This is the shape of this matrix in the comm.stack.
-        self.shape = self.stack_shape + (int(sum(block_sizes)), int(sum(block_sizes)))
-
         # --- Things concerning block distribution ---------------------
+
         # Block-sizes is an settable property.
         self.num_blocks = len(block_sizes)
 
@@ -256,11 +278,10 @@ class DSDBSparse(ABC):
             block_sizes[: self.block_section_offsets[comm.block.rank]]
         )
 
+        # --- Things concerning block indexing and slicing --------------
+
         self._block_config: dict[int, BlockConfig] = {}
         self._add_block_config(self.num_blocks, block_sizes, block_offsets)
-
-        self.dtype = data.dtype
-        self.return_dense = return_dense
 
         self._block_indexer = _DSDBlockIndexer(self)
         self._sparse_block_indexer = _DSDBlockIndexer(self, return_dense=False)
@@ -571,11 +592,6 @@ class DSDBSparse(ABC):
     @abstractmethod
     def __isub__(self, other: "DSDBSparse | sparse.spmatrix") -> "DSDBSparse":
         """In-place subtraction of two DSDBSparse matrices."""
-        ...
-
-    @abstractmethod
-    def __neg__(self) -> "DSDBSparse":
-        """Negation of the data."""
         ...
 
     def block_diagonal(self, offset: int = 0) -> list[NDArray]:
@@ -899,23 +915,40 @@ class DSDBSparse(ABC):
     @abstractmethod
     def from_sparray(
         cls,
-        arr: sparse.spmatrix,
+        sparray: sparse.spmatrix,
         block_sizes: NDArray,
         global_stack_shape: tuple,
         symmetry: bool | None = False,
         symmetry_op: Callable = xp.conj,
+        dtype: xp.dtype[xp.generic] = xp.complex128,
+        allocate: bool = True,
     ) -> "DSDBSparse":
         """Creates a new DSDBSparse matrix from a scipy.sparse array.
 
+        This essentially distributed the matrix across the stack and
+        block communicators.
+
+        !!! Note
+            There is no data allocated in the new matrix and only the
+            sparsity pattern is used.
+
         Parameters
         ----------
-        arr : sparse.spmatrix
-            The sparse array to convert.
+        sparray : sparse.spmatrix
+            The sparse matrix from which to use the sparsity pattern.
         block_sizes : NDArray
-            The size of all the blocks in the matrix.
+            The block sizes of the block-sparse matrix.
         global_stack_shape : tuple
-            The global shape of the stack of matrices. The provided
-            sparse matrix is replicated across the stack.
+            The global shape of the stack.
+        symmetry : bool, optional
+            Whether to enforce symmetry in the matrix. Default is False.
+        symmetry_op : callable, optional
+            The operation to use for the symmetry. Default is `xp.conj`.
+        dtype : xp.dtype, optional
+            The data type of the matrix. Default is `xp.complex128`.
+        allocate : bool, optional
+            Whether to allocate the data of the resulting matrix.
+            Default is True.
 
         Returns
         -------
@@ -927,11 +960,12 @@ class DSDBSparse(ABC):
 
     @classmethod
     @abstractmethod
-    def zeros_like(cls, dsdbsparse: "DSDBSparse") -> "DSDBSparse":
-        """Creates a new DSDBSparse matrix with the same shape and dtype.
+    def empty_like(cls, dsdbsparse: "DSDBSparse") -> "DSDBSparse":
+        """Creates a new DSDBSparse matrix with the same shape and
+        dtype.
 
-        All non-zero elements are set to zero, but the sparsity pattern
-        is preserved.
+        There is no data allocated in the new matrix. The sparsity
+        pattern is the same as the original matrix.
 
         Parameters
         ----------
@@ -1086,7 +1120,7 @@ class _DStackIndexer:
         if self._base_index is not None:
             index = _replace_ellipsis(index, self._dsdbsparse.data.ndim)
             composition = _compose(
-                self._dsdbsparse.stack_shape, self._base_index, index
+                self._dsdbsparse.local_stack_shape, self._base_index, index
             )
         else:
             composition = index

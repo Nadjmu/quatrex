@@ -30,15 +30,17 @@ class DSDBCOO(DSDBSparse):
 
     Parameters
     ----------
-    data : NDArray
-        The local slice of the data. This should be an array of shape
-        `(*local_stack_shape, local_nnz)`.
+    dtype : xp.dtype[xp.generic]
+        The data type of the matrix.
     rows : NDArray
         The local row indices of the COO matrix.
     cols : NDArray
         The local column indices of the COO matrix.
     block_sizes : NDArray
         The size of each block in the sparse matrix.
+    local_stack_shape : tuple or int
+        The local shape of the stack. If this is an integer, it is
+        interpreted as a one-dimensional stack.
     global_stack_shape : tuple or int
         The global shape of the stack. If this is an integer, it is
         interpreted as a one-dimensional stack.
@@ -48,18 +50,18 @@ class DSDBCOO(DSDBSparse):
     symmetry : bool, optional
         Whether the matrix is symmetric. Default is False.
     symmetry_op : callable, optional
-        The operation to use for the symmetry. Default is
-        `xp.conj`.
+        The operation to use for the symmetry. Default is `xp.conj`.
 
     """
 
     def __init__(
         self,
-        data: NDArray,
+        dtype: xp.dtype[xp.generic],
         rows: NDArray,
         cols: NDArray,
         block_sizes: NDArray,
-        global_stack_shape: tuple,
+        local_stack_shape: tuple | int,
+        global_stack_shape: tuple | int,
         return_dense: bool = True,
         symmetry: bool | None = False,
         symmetry_op: Callable = xp.conj,
@@ -75,19 +77,26 @@ class DSDBCOO(DSDBSparse):
                 "Row and column indices must have the same dtype "
                 f"but got {rows.dtype} and {cols.dtype}."
             )
+        if len(rows) != len(cols):
+            raise ValueError(
+                "Row and column indices must have the same length "
+                f"but got {len(rows)} and {len(cols)}."
+            )
 
         super().__init__(
-            data,
-            block_sizes,
-            global_stack_shape,
-            index_type,
-            return_dense,
+            dtype=dtype,
+            block_sizes=block_sizes,
+            nnz=len(rows),
+            local_stack_shape=local_stack_shape,
+            global_stack_shape=global_stack_shape,
+            index_type=index_type,
+            return_dense=return_dense,
             symmetry=symmetry,
             symmetry_op=symmetry_op,
         )
 
-        self.rows = xp.asarray(rows, dtype=index_type)
-        self.cols = xp.asarray(cols, dtype=index_type)
+        self.rows = rows
+        self.cols = cols
 
         # NOTE: If the symmetry is not enforced and we want to symmetrize
         # later, we need to check if the sparsity pattern is symmetric now.
@@ -582,19 +591,6 @@ class DSDBCOO(DSDBSparse):
         self._data -= other._data
         return self
 
-    def __neg__(self) -> "DSDBCOO":
-        """Negation of the data."""
-        return DSDBCOO(
-            data=-self.data,
-            rows=self.rows,
-            cols=self.cols,
-            block_sizes=self.block_sizes,
-            global_stack_shape=self.global_stack_shape,
-            return_dense=self.return_dense,
-            symmetry=self.symmetry,
-            symmetry_op=self.symmetry_op,
-        )
-
     @DSDBSparse.block_sizes.setter
     def block_sizes(self, block_sizes: NDArray) -> None:
         """Sets new block sizes for the matrix.
@@ -847,40 +843,35 @@ class DSDBCOO(DSDBSparse):
             )
 
     @classmethod
-    def zeros_like(cls, dsdbsparse: "DSDBCOO") -> "DSDBCOO":
-        """Creates a new DSDBCOO matrix with the same shape and dtype.
+    def empty_like(cls, dsdbsparse: "DSDBCOO") -> "DSDBCOO":
+        """Creates a new DSDBCOO matrix with the same shape and
+        dtype.
 
-        All non-zero elements are set to zero, but the sparsity pattern
-        is preserved.
+        There is no data allocated in the new matrix. The sparsity
+        pattern is the same as the original matrix.
 
         Parameters
         ----------
-        dsdbcoo : DSDBCOO
+        dsdbsparse : DSDBCOO
             The matrix to copy the shape and dtype from.
 
         Returns
         -------
-        dsdbcoo
+        DSDBCOO
             The new DSDBCOO matrix.
 
         """
-        # deepcopy can lead to issues with cupy
-        # segfaults in the tests observed
-        if dsdbsparse._data is None:
-            raise ValueError("Cannot create zeros_like from deallocated DSDBSparse.")
-
-        out = cls(
-            data=dsdbsparse.data,
+        return cls(
+            dtype=dsdbsparse.dtype,
             rows=dsdbsparse.rows,
             cols=dsdbsparse.cols,
             block_sizes=dsdbsparse.block_sizes,
+            local_stack_shape=dsdbsparse.local_stack_shape,
             global_stack_shape=dsdbsparse.global_stack_shape,
             return_dense=dsdbsparse.return_dense,
             symmetry=dsdbsparse.symmetry,
             symmetry_op=dsdbsparse.symmetry_op,
         )
-        out._data[:] = 0
-        return out
 
     @classmethod
     def from_sparray(
@@ -890,16 +881,18 @@ class DSDBCOO(DSDBSparse):
         global_stack_shape: tuple,
         symmetry: bool | None = False,
         symmetry_op: Callable = xp.conj,
+        dtype: xp.dtype[xp.generic] = xp.complex128,
+        allocate: bool = True,
     ) -> "DSDBCOO":
-        """Constructs a DSDBCOO matrix from a COO matrix.
+        """Constructs a DSDBCOO matrix from a sparse matrix.
 
         This essentially distributes the COO matrix across the
         participating ranks.
 
         Parameters
         ----------
-        sparray : sparse.coo_matrix
-            The COO matrix to distribute.
+        sparray : sparse.spmatrix
+            The sparse matrix from which to use the sparsity pattern.
         block_sizes : NDArray
             The block sizes of the block-sparse matrix.
         global_stack_shape : tuple
@@ -907,8 +900,12 @@ class DSDBCOO(DSDBSparse):
         symmetry : bool, optional
             Whether to enforce symmetry in the matrix. Default is False.
         symmetry_op : callable, optional
-            The operation to use for the symmetry. Default is
-            `xp.conj`.
+            The operation to use for the symmetry. Default is `xp.conj`.
+        dtype : xp.dtype, optional
+            The data type of the matrix. Default is `xp.complex128`.
+        allocate : bool, optional
+            Whether to allocate the data of the resulting matrix.
+            Default is True.
 
         Returns
         -------
@@ -927,7 +924,6 @@ class DSDBCOO(DSDBSparse):
         section_size = stack_section_sizes[comm.stack.rank]
         local_stack_shape = (section_size,) + global_stack_shape[1:]
 
-        # coo: sparse.coo_matrix = sparray.tocoo().copy()
         coo: sparse.coo_matrix = sparray.tocoo()
 
         # Canonicalizes the COO format.
@@ -942,7 +938,6 @@ class DSDBCOO(DSDBSparse):
             coo.row, coo.col, block_sizes
         )
 
-        _data = coo.data[block_sort_index]
         _rows = coo.row[block_sort_index]
         _cols = coo.col[block_sort_index]
 
@@ -959,22 +954,26 @@ class DSDBCOO(DSDBSparse):
             (_rows < end_idx) | (_cols < end_idx)
         )
 
-        data = xp.zeros(
-            local_stack_shape + (int(local_mask.sum()),), dtype=coo.data.dtype
-        )
-        data[..., :] = _data[local_mask]
         rows = _rows[local_mask] - start_idx
         cols = _cols[local_mask] - start_idx
 
-        return cls(
-            data=data,
+        dsdbcoo = cls(
+            dtype=dtype,
             rows=rows,
             cols=cols,
             block_sizes=block_sizes,
+            local_stack_shape=local_stack_shape,
             global_stack_shape=global_stack_shape,
             symmetry=symmetry,
             symmetry_op=symmetry_op,
         )
+
+        if allocate:
+            _data = coo.data[block_sort_index]
+            dsdbcoo.allocate_data()
+            dsdbcoo.data = _data[local_mask]
+
+        return dsdbcoo
 
     def to_dense(self):
         """Converts the local data to a dense array.

@@ -1,6 +1,6 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
-from qttools import xp
+from qttools import NDArray, xp
 from qttools.datastructures.dsdbsparse import DSDBSparse
 from qttools.greens_function_solver.solver import GFSolver, OBCBlocks
 from qttools.kernels import linalg
@@ -31,9 +31,9 @@ class Inv(GFSolver):
     def selected_inv(
         self,
         a: DSDBSparse,
+        out: DSDBSparse,
         obc_blocks: OBCBlocks | None = None,
-        out: DSDBSparse | None = None,
-    ) -> None | DSDBSparse:
+    ) -> None:
         """Performs selected inversion of a block-tridiagonal matrix.
 
         This method will densify the matrix, invert it, and then select
@@ -44,17 +44,11 @@ class Inv(GFSolver):
         ----------
         a : DSDBSparse
             Matrix to invert.
+        out : DSDBSparse
+            Preallocated output matrix.
         obc_blocks : OBCBlocks, optional
             OBC blocks for lesser, greater and retarded Green's
             functions. By default None.
-        out : DSDBSparse, optional
-            Preallocated output matrix, by default None.
-
-        Returns
-        -------
-        None | DSDBSparse
-            If `out` is None, returns None. Otherwise, returns the
-            inverted matrix as a DSDBSparse object.
 
         """
         # Get list of batches to perform
@@ -66,14 +60,7 @@ class Inv(GFSolver):
         # Allocate batching buffer
         inv_a = xp.zeros((max(batches_sizes), *a.shape[1:]), dtype=a.dtype)
 
-        # Prepare output
-        return_out = False
-        if out is None:
-            rows, cols = a.spy()
-            out = a.__class__.zeros_like(a)
-            return_out = True
-        else:
-            rows, cols = out.spy()
+        rows, cols = out.spy()
 
         # Perform the inversion in batches
         for i in range(len(batches_sizes)):
@@ -91,19 +78,16 @@ class Inv(GFSolver):
 
             out.data[stack_slice] = inv_a[: batches_sizes[i], ..., rows, cols]
 
-        if return_out:
-            return out
-
     def selected_solve(
         self,
         a: DSDBSparse,
         sigma_lesser: DSDBSparse,
         sigma_greater: DSDBSparse,
+        out: tuple[DSDBSparse, ...],
         obc_blocks: OBCBlocks | None = None,
-        out: tuple[DSDBSparse, ...] | None = None,
         return_retarded: bool = False,
         return_current: bool = False,
-    ) -> None | tuple:
+    ) -> None | NDArray:
         r"""Produces elements of the solution to the congruence equation.
 
         This method produces selected elements of the solution to the
@@ -123,11 +107,11 @@ class Inv(GFSolver):
         sigma_greater : DSDBSparse
             Greater matrix. This matrix is expected to be
             skew-hermitian, i.e. \(\Sigma_{ij} = -\Sigma_{ji}^*\).
+        out : tuple[DSDBSparse, ...]
+            Preallocated output matrices
         obc_blocks : OBCBlocks, optional
             OBC blocks for lesser, greater and retarded Green's
             functions. By default None.
-        out : tuple[DSDBSparse, ...] | None, optional
-            Preallocated output matrices, by default None
         return_retarded : bool, optional
             Wether the retarded Green's function should be returned
             along with lesser and greater, by default False
@@ -138,11 +122,9 @@ class Inv(GFSolver):
 
         Returns
         -------
-        None | tuple
-            If `out` is None, returns None. Otherwise, the solutions are
-            returned as DSBParse matrices. If `return_retarded` is True,
-            returns a tuple with the retarded Green's function as the
-            last element.
+        None | NDArray
+            If `return_current` is True, returns the
+            current for each layer.
 
         """
         if return_current:
@@ -161,22 +143,12 @@ class Inv(GFSolver):
         x_l = xp.zeros((max(batches_sizes), *a.shape[1:]), dtype=a.dtype)
         x_g = xp.zeros((max(batches_sizes), *a.shape[1:]), dtype=a.dtype)
 
-        # Prepare output
-        if out is None:
-            # Allocate output datastructures
-            sel_x_l = a.__class__.zeros_like(a)
-            sel_x_g = a.__class__.zeros_like(a)
-            if return_retarded:
-                sel_x_r = a.__class__.zeros_like(a)
-        else:
-            # Get output datastructures
-            sel_x_l, sel_x_g, *sel_x_r = out
-            if return_retarded:
-                if len(sel_x_r) == 0:
-                    raise ValueError(
-                        "Missing output for the retarded Green's function."
-                    )
-                sel_x_r = sel_x_r[0]
+        # Get output datastructures
+        sel_x_l, sel_x_g, *sel_x_r = out
+        if return_retarded:
+            if len(sel_x_r) == 0:
+                raise ValueError("Missing output for the retarded Green's function.")
+            sel_x_r = sel_x_r[0]
         rows_l, cols_l = sel_x_l.spy()
         rows_g, cols_g = sel_x_g.spy()
         if return_retarded:
@@ -220,8 +192,3 @@ class Inv(GFSolver):
                 sel_x_r.data[stack_slice,] = x_r[
                     : batches_sizes[i], ..., rows_r, cols_r
                 ]
-
-        if return_retarded:
-            return sel_x_l, sel_x_g, sel_x_r
-        else:
-            return sel_x_l, sel_x_g

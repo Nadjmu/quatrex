@@ -680,7 +680,7 @@ def assemble_matrix(
         sparsity_pattern = sparsity_pattern + sparsity_pattern.T
 
     matrix = config.compute.dsdbsparse_type.from_sparray(
-        sparsity_pattern.astype(xp.complex128),
+        sparray=sparsity_pattern.astype(xp.complex128),
         block_sizes=block_sizes,
         global_stack_shape=(comm.stack.size,)
         + tuple([k for k in config.device.kpoint_grid if k > 1]),

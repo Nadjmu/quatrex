@@ -98,12 +98,12 @@ class ElectronSolver(SubsystemSolver):
 
         # Allocate memory for the system matrix.
         self.system_matrix = config.compute.dsdbsparse_type.from_sparray(
-            sparsity_pattern.astype(xp.complex128),
+            sparray=sparsity_pattern.astype(xp.complex128),
             block_sizes=self.block_sizes,
             global_stack_shape=self.energies.shape
             + tuple([int(k) for k in config.device.kpoint_grid if k > 1]),
+            allocate=False,
         )
-        self.system_matrix.free_data()  # Free any previously allocated data
         del sparsity_pattern
 
         self.block_offsets = np.hstack(([0], np.cumsum(self.block_sizes)))

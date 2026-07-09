@@ -100,7 +100,7 @@ class CoulombScreeningSolver(SubsystemSolver):
         # pattern of the system matrix and the l_lesser and l_greater
         # matrices.
         dummy_dsbsparse = config.compute.dsdbsparse_type.from_sparray(
-            sparsity_pattern.astype(xp.float32),
+            sparray=sparsity_pattern.astype(xp.float32),
             block_sizes=self.small_block_sizes,
             global_stack_shape=(comm.size,),
             symmetry=config.scba.symmetric,
@@ -113,12 +113,13 @@ class CoulombScreeningSolver(SubsystemSolver):
         # Allocate memory for the System matrix (1 - V @ P).
         kpoint_grid = config.device.kpoint_grid
         self.system_matrix = config.compute.dsdbsparse_type.from_sparray(
-            v_times_p_sparsity_pattern.astype(xp.complex128),
+            sparray=v_times_p_sparsity_pattern.astype(xp.complex128),
             block_sizes=self.block_sizes,
             global_stack_shape=self.energies.shape
             + tuple([k for k in kpoint_grid if k > 1]),
+            allocate=False,
         )
-        self.system_matrix.free_data()
+
         # Explicitely try to free the memory for the sparsity pattern.
         del v_times_p_sparsity_pattern
 
@@ -132,18 +133,17 @@ class CoulombScreeningSolver(SubsystemSolver):
 
         # Allocate memory for the L_lesser and L_greater matrices.
         self.l_lesser = config.compute.dsdbsparse_type.from_sparray(
-            l_sparsity_pattern.astype(xp.complex128),
+            sparray=l_sparsity_pattern.astype(xp.complex128),
             block_sizes=self.block_sizes,
             global_stack_shape=self.energies.shape
             + tuple([k for k in kpoint_grid if k > 1]),
             symmetry=config.scba.symmetric,
             symmetry_op=lambda a: -a.conj(),
+            allocate=False,
         )
-        self.l_greater = config.compute.dsdbsparse_type.zeros_like(self.l_lesser)
+        self.l_greater = config.compute.dsdbsparse_type.empty_like(self.l_lesser)
         # Explicitely try to free the memory for the sparsity pattern.
         del l_sparsity_pattern
-        self.l_lesser.free_data()
-        self.l_greater.free_data()
 
         # Allocate object for the retarded polarization.
         # This is only used as a temporary assembling the full retarded
@@ -153,12 +153,12 @@ class CoulombScreeningSolver(SubsystemSolver):
         # when doing the product with the Coulomb matrix, but the life time
         # is not during the peak (quadratic solve).
         self.p_retarded = config.compute.dsdbsparse_type.from_sparray(
-            sparsity_pattern.astype(xp.complex128),
+            sparray=sparsity_pattern.astype(xp.complex128),
             block_sizes=self.small_block_sizes,
             global_stack_shape=self.energies.shape
             + tuple([k for k in kpoint_grid if k > 1]),
+            allocate=False,
         )
-        self.p_retarded.free_data()
 
         # Boundary conditions.
         self.left_occupancies = bose_einstein(

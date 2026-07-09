@@ -84,9 +84,9 @@ def _create_coo_dsdbsparse(
         else None
     )
     dsdbsparse = dsdbsparse_type.from_sparray(
-        coo,
-        block_sizes,
-        global_stack_shape,
+        sparray=coo,
+        block_sizes=block_sizes,
+        global_stack_shape=global_stack_shape,
         symmetry=symmetry,
         symmetry_op=symmetry_op,
     )
@@ -460,9 +460,9 @@ class TestArithmetic:
 
         coo.data[:] = xp.random.uniform(size=coo.nnz)
         dsdbsparse_2 = dsdbsparse_type.from_sparray(
-            coo,
-            block_sizes,
-            global_stack_shape,
+            sparray=coo,
+            block_sizes=block_sizes,
+            global_stack_shape=global_stack_shape,
             symmetry=symmetry,
             symmetry_op=symmetry_op,
         )
@@ -525,24 +525,6 @@ class TestArithmetic:
 
         assert xp.allclose(dense * dense, dsdbsparse.to_dense())
 
-    def test_neg(
-        self,
-        dsdbsparse_type: DSDBSparse,
-        block_sizes: NDArray,
-        global_stack_shape: tuple,
-        symmetry_type: tuple[bool, Callable],
-    ):
-        """Tests the negation of a DSDBSparse matrix."""
-        _, dsdbsparse = _create_coo_dsdbsparse(
-            dsdbsparse_type,
-            block_sizes,
-            global_stack_shape,
-            symmetry_type,
-        )
-        dense = dsdbsparse.to_dense()
-
-        assert xp.allclose(-dense, (-dsdbsparse).to_dense())
-
     def test_iadd_stack(
         self,
         dsdbsparse_type: DSDBSparse,
@@ -560,9 +542,9 @@ class TestArithmetic:
         )
         substack_shape = (1,)
         dsdbsparse_substack = dsdbsparse_type.from_sparray(
-            coo,
-            block_sizes,
-            substack_shape,
+            sparray=coo,
+            block_sizes=block_sizes,
+            global_stack_shape=substack_shape,
             symmetry=symmetry_type[0],
             symmetry_op=symmetry_type[1],
         )
@@ -651,9 +633,9 @@ class TestArithmetic:
         )
         substack_shape = (1,)
         dsdbsparse_substack = dsdbsparse_type.from_sparray(
-            coo,
-            block_sizes,
-            substack_shape,
+            sparray=coo,
+            block_sizes=block_sizes,
+            global_stack_shape=substack_shape,
             symmetry=symmetry_type[0],
             symmetry_op=symmetry_type[1],
         )

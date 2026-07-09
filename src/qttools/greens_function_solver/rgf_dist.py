@@ -39,21 +39,18 @@ class RGFDist(GFSolver):
         a: DSDBSparse,
         out: DSDBSparse,
         obc_blocks: OBCBlocks | None = None,
-    ) -> None | DSDBSparse:
+    ) -> None:
         """Performs selected inversion of a block-tridiagonal matrix.
 
         Parameters
         ----------
         a : DSDBSparse
             Matrix to invert.
-        out : DSDBSparse, optional
-            Preallocated output matrix, by default None.
-
-        Returns
-        -------
-        None | DSDBSparse
-            If `out` is None, returns None. Otherwise, returns the
-            inverted matrix as a DSDBSparse object.
+        out : DSDBSparse
+            Preallocated output matrix.
+        obc_blocks : OBCBlocks, optional
+            OBC blocks for lesser, greater and retarded Green's
+            functions. By default None.
 
         """
 
@@ -140,7 +137,7 @@ class RGFDist(GFSolver):
         obc_blocks: OBCBlocks | None = None,
         return_retarded: bool = False,
         return_current: bool = False,
-    ):
+    ) -> None | NDArray:
         r"""Performs selected inversion of a block-tridiagonal matrix.
 
         Can optionally solve the quadratic system associated with the
@@ -157,10 +154,10 @@ class RGFDist(GFSolver):
             Greater matrix. This matrix is expected to be
             skew-hermitian, i.e. \(\Sigma_{ij} = -\Sigma_{ji}^*\).
         out : tuple[DSDBSparse, ...]
-            Preallocated output matrices, by default None
-        obc_blocks : OBCBlocks, optional
+            Preallocated output matrices
+        obc_blocks : dict[int, OBCBlocks], optional
             OBC blocks for lesser, greater and retarded Green's
-            functions. By default None.
+            functions, by default None.
         return_retarded : bool, optional
             Wether the retarded Green's function should be returned
             along with lesser and greater, by default False
@@ -169,6 +166,12 @@ class RGFDist(GFSolver):
             the Meir-Wingreen formula. By default False. Note that this
             is currently only partially supported, and only the boundary
             currents are computed correctly.
+
+        Returns
+        -------
+        None | NDArray
+            If `return_current` is True, returns the
+            current for each layer.
 
         """
 
@@ -438,6 +441,8 @@ class RGFDist(GFSolver):
 
             # Now we need to allreduce the current across the block
             # communicator to get the total current for each layer.
+            # NOTE: We use allreduce instead of allgather since every
+            # rank allocates the full curent
             total_current = xp.empty_like(current)
             comm.block.all_reduce(current, total_current, op="sum")
 
