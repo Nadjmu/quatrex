@@ -74,7 +74,7 @@ def _bd_sandwich(
                 else:
                     ab_ik[k] += a_im @ b_.blocks[m, k]
 
-        if out.symmetry:
+        if out.symmetry is not None:
             range_j_min = i
         else:
             range_j_min = max(i - out_num_diag // 2, 0)

@@ -6,7 +6,7 @@ import numpy as np
 
 from qttools import NDArray, sparse, xp
 from qttools.comm import comm
-from qttools.datastructures.dsdbsparse import DSDBSparse
+from qttools.datastructures.dsdbsparse import DSDBSparse, symmetry_ops
 from qttools.kernels.datastructure import dsdbcoo_kernels, dsdbsparse_kernels
 from qttools.utils.mpi_utils import get_section_sizes
 
@@ -47,10 +47,10 @@ class DSDBCOO(DSDBSparse):
     return_dense : bool, optional
         Whether to return dense arrays when accessing the blocks.
         Default is True.
-    symmetry : bool, optional
-        Whether the matrix is symmetric. Default is False.
-    symmetry_op : callable, optional
-        The operation to use for the symmetry. Default is `xp.conj`.
+    symmetry : str | None, optional
+        The symmetry of the matrix. This can be "symmetric",
+        "hermitian", "skew-symmetric", "skew-hermitian", or None.
+        Default is None.
 
     """
 
@@ -63,8 +63,7 @@ class DSDBCOO(DSDBSparse):
         local_stack_shape: tuple | int,
         global_stack_shape: tuple | int,
         return_dense: bool = True,
-        symmetry: bool | None = False,
-        symmetry_op: Callable = xp.conj,
+        symmetry: str | None = None,
     ):
         """Initializes a DSDBCOO matrix."""
 
@@ -92,7 +91,6 @@ class DSDBCOO(DSDBSparse):
             index_type=index_type,
             return_dense=return_dense,
             symmetry=symmetry,
-            symmetry_op=symmetry_op,
         )
 
         self.rows = rows
@@ -100,7 +98,7 @@ class DSDBCOO(DSDBSparse):
 
         # NOTE: If the symmetry is not enforced and we want to symmetrize
         # later, we need to check if the sparsity pattern is symmetric now.
-        if not symmetry:
+        if symmetry is None:
             self._symmetric_pattern = self._check_sparsity_pattern_symmetric()
 
         self._set_diagonal_indices()
@@ -182,7 +180,7 @@ class DSDBCOO(DSDBSparse):
         rows = rows.astype(dtype)
         cols = cols.astype(dtype)
 
-        if self.symmetry:
+        if self.symmetry is not None:
             # find items in lower triangle and send them to upper triangle
             rows, cols, mask_transposed = _upper_triangle(rows, cols)
             inds, value_inds, max_counts = dsdbcoo_kernels.find_inds(
@@ -219,9 +217,11 @@ class DSDBCOO(DSDBSparse):
 
         arr = xp.zeros(data_stack.shape[:-1] + (rows.size,), dtype=self.dtype)
 
-        if self.symmetry:
+        if self.symmetry is not None:
             arr[..., value_inds] = data_stack[..., inds]
-            arr[..., value_inds_t] = self.symmetry_op(data_stack[..., inds_t])
+            arr[..., value_inds_t] = symmetry_ops[self.symmetry](
+                data_stack[..., inds_t]
+            )
         else:
             arr[..., value_inds] = data_stack[..., inds]
         return xp.squeeze(arr)
@@ -263,7 +263,7 @@ class DSDBCOO(DSDBSparse):
             self_rows = self.rows_nnz
             self_cols = self.cols_nnz
 
-        if self.symmetry:
+        if self.symmetry is not None:
             # items of upper triangle of the matrix
             rows, cols, mask_transposed = _upper_triangle(rows, cols)
 
@@ -288,18 +288,18 @@ class DSDBCOO(DSDBSparse):
         if value.ndim == 0:
 
             self.data[*stack_index][..., inds] = value
-            if self.symmetry:
-                self.data[*stack_index][..., inds[mask_transposed]] = self.symmetry_op(
-                    value
-                )
+            if self.symmetry is not None:
+                self.data[*stack_index][..., inds[mask_transposed]] = symmetry_ops[
+                    self.symmetry
+                ](value)
 
             return
 
         self.data[*stack_index][..., inds] = value[..., value_inds]
-        if self.symmetry:
-            self.data[*stack_index][..., inds[mask_transposed]] = self.symmetry_op(
-                value[..., value_inds[mask_transposed]]
-            )
+        if self.symmetry is not None:
+            self.data[*stack_index][..., inds[mask_transposed]] = symmetry_ops[
+                self.symmetry
+            ](value[..., value_inds[mask_transposed]])
 
         return
 
@@ -372,7 +372,9 @@ class DSDBCOO(DSDBSparse):
         """
         if self.symmetry and (col < row):
             block = self._get_block(arg, row=col, col=row, is_index=is_index)
-            return xp.ascontiguousarray(self.symmetry_op(block.swapaxes(-1, -2)))
+            return xp.ascontiguousarray(
+                symmetry_ops[self.symmetry](block.swapaxes(-1, -2))
+            )
 
         if is_index:
             data_stack = self.data[*arg]
@@ -382,7 +384,7 @@ class DSDBCOO(DSDBSparse):
         block_slice = self._get_block_slice(row, col)
 
         if not self.return_dense:
-            if self.symmetry:
+            if self.symmetry is not None:
                 # TODO: If really needed, this will need some more thinking.
                 raise NotImplementedError(
                     "Sparse blocks with symmetry not implemented."
@@ -415,7 +417,7 @@ class DSDBCOO(DSDBSparse):
             self.local_block_offsets[col],
         )
         if self.symmetry and (col == row):
-            block += self.symmetry_op(block.swapaxes(-1, -2))
+            block += symmetry_ops[self.symmetry](block.swapaxes(-1, -2))
             block[..., *xp.diag_indices(block.shape[-1])] /= 2
 
         return block
@@ -453,7 +455,7 @@ class DSDBCOO(DSDBSparse):
             representation of the block.
 
         """
-        if self.symmetry:
+        if self.symmetry is not None:
             # TODO: If needed, this will need some more thinking.
             raise NotImplementedError("Sparse blocks with symmetry not implemented.")
 
@@ -507,7 +509,7 @@ class DSDBCOO(DSDBSparse):
                 arg,
                 row=col,
                 col=row,
-                block=self.symmetry_op(block.swapaxes(-1, -2)),
+                block=symmetry_ops[self.symmetry](block.swapaxes(-1, -2)),
                 is_index=is_index,
             )
             return
@@ -562,7 +564,10 @@ class DSDBCOO(DSDBSparse):
             ]
             return self
 
-        if self.symmetry != other.symmetry or self.symmetry_op != other.symmetry_op:
+        if (
+            self.symmetry != other.symmetry
+            or symmetry_ops[self.symmetry] != symmetry_ops[other.symmetry]
+        ):
             raise ValueError(
                 "Symmetry and symmetry_op must match for in-place addition."
             )
@@ -582,7 +587,10 @@ class DSDBCOO(DSDBSparse):
             ]
             return self
 
-        if self.symmetry != other.symmetry or self.symmetry_op != other.symmetry_op:
+        if (
+            self.symmetry != other.symmetry
+            or symmetry_ops[self.symmetry] != symmetry_ops[other.symmetry]
+        ):
             raise ValueError(
                 "Symmetry and symmetry_op must match for in-place substraction."
             )
@@ -803,7 +811,7 @@ class DSDBCOO(DSDBSparse):
             Hermitian after calling.
 
         """
-        if self.symmetry:
+        if self.symmetry is not None:
             # Already symmetric, nothing to do.
             return
 
@@ -870,7 +878,6 @@ class DSDBCOO(DSDBSparse):
             global_stack_shape=dsdbsparse.global_stack_shape,
             return_dense=dsdbsparse.return_dense,
             symmetry=dsdbsparse.symmetry,
-            symmetry_op=dsdbsparse.symmetry_op,
         )
 
     @classmethod
@@ -879,8 +886,7 @@ class DSDBCOO(DSDBSparse):
         sparray: sparse.spmatrix,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry: bool | None = False,
-        symmetry_op: Callable = xp.conj,
+        symmetry: str | None = None,
         dtype: xp.dtype[xp.generic] = xp.complex128,
         allocate: bool = True,
     ) -> "DSDBCOO":
@@ -897,10 +903,10 @@ class DSDBCOO(DSDBSparse):
             The block sizes of the block-sparse matrix.
         global_stack_shape : tuple
             The global shape of the stack.
-        symmetry : bool, optional
-            Whether to enforce symmetry in the matrix. Default is False.
-        symmetry_op : callable, optional
-            The operation to use for the symmetry. Default is `xp.conj`.
+        symmetry : str | None, optional
+            The symmetry of the matrix. This can be "symmetric",
+            "hermitian", "skew-symmetric", "skew-hermitian", or None.
+            Default is None.
         dtype : xp.dtype, optional
             The data type of the matrix. Default is `xp.complex128`.
         allocate : bool, optional
@@ -965,7 +971,6 @@ class DSDBCOO(DSDBSparse):
             local_stack_shape=local_stack_shape,
             global_stack_shape=global_stack_shape,
             symmetry=symmetry,
-            symmetry_op=symmetry_op,
         )
 
         if allocate:
@@ -1013,8 +1018,8 @@ class DSDBCOO(DSDBSparse):
         arr = xp.zeros(self.shape, dtype=self.dtype)
         arr[..., rows, cols] = data
 
-        if self.symmetry:
-            arr += self.symmetry_op(arr.swapaxes(-1, -2))
+        if self.symmetry is not None:
+            arr += symmetry_ops[self.symmetry](arr.swapaxes(-1, -2))
             arr[..., *xp.diag_indices(arr.shape[-1])] /= 2
 
         return arr

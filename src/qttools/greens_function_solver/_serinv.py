@@ -711,7 +711,7 @@ class ReducedSystem:
             j = i + 1
             x_out.blocks[i, i] = diag_block_reduced_system[0]
 
-            if not x_out.symmetry:
+            if x_out.symmetry is None:
                 if is_retarded:
                     x_out.blocks[j, i] = lower_block_reduced_system[0]
                 else:
@@ -747,7 +747,7 @@ class ReducedSystem:
             x_out.blocks[0, 0] = x_diag_blocks[0]
             x_out.blocks[i, i] = x_diag_blocks[-1]
 
-            if not x_out.symmetry:
+            if x_out.symmetry is None:
                 if is_retarded:
                     x_out.blocks[j, i] = lower_block_reduced_system[2 * comm.block.rank]
                 else:
@@ -1184,7 +1184,7 @@ def downward_selinv(
                 + xr_ii @ sigma_lesser_ij @ xr_jj_dagger
             )
             xl_out.blocks[i, j] = xl_ij
-            if not xl_out.symmetry:
+            if xl_out.symmetry is None:
                 xl_out.blocks[j, i] = -xl_ij.conj().swapaxes(-2, -1)
             xl_diag_blocks[i] = xl_ii + temp_2x @ a_ij_dagger_xr_ii_dagger + temp_1x
             xl_out.blocks[i, i] = 0.5 * (
@@ -1203,7 +1203,7 @@ def downward_selinv(
                 + xr_ii @ sigma_greater_ij @ xr_jj_dagger
             )
             xg_out.blocks[i, j] = xg_ij
-            if not xg_out.symmetry:
+            if xg_out.symmetry is None:
                 xg_out.blocks[j, i] = -xg_ij.conj().swapaxes(-2, -1)
             xg_diag_blocks[i] = xg_ii + temp_2x @ a_ij_dagger_xr_ii_dagger + temp_1x
             xg_out.blocks[i, i] = 0.5 * (
@@ -1280,7 +1280,7 @@ def upward_selinv(
                 - xl_ii @ a_ji_dagger_xr_jj_dagger
                 + xr_ii @ sigma_lesser_ij @ xr_jj_dagger
             )
-            if not xl_out.symmetry:
+            if xl_out.symmetry is None:
                 xl_out.blocks[i, j] = xl_ij
             xl_out.blocks[j, i] = -xl_ij.conj().swapaxes(-2, -1)
 
@@ -1289,7 +1289,7 @@ def upward_selinv(
                 - xg_ii @ a_ji_dagger_xr_jj_dagger
                 + xr_ii @ sigma_greater_ij @ xr_jj_dagger
             )
-            if not xg_out.symmetry:
+            if xg_out.symmetry is None:
                 xg_out.blocks[i, j] = xg_ij
             xg_out.blocks[j, i] = -xg_ij.conj().swapaxes(-2, -1)
 
@@ -1440,7 +1440,7 @@ def permuted_selinv(
 
             # Streaming/Sparsifying back to DSDBSparse
             xl_out.blocks[i, i + 1] = bl_upper_block
-            if not xl_out.symmetry:
+            if xl_out.symmetry is None:
                 xl_out.blocks[i + 1, i] = -bl_upper_block.conj().swapaxes(-2, -1)
             xl_out.blocks[i, i] = 0.5 * (
                 xl_diag_blocks[i] - xl_diag_blocks[i].conj().swapaxes(-2, -1)
@@ -1496,7 +1496,7 @@ def permuted_selinv(
 
             # Streaming/Sparsifying back to DSDBSparse
             xg_out.blocks[i, i + 1] = bg_upper_block
-            if not xg_out.symmetry:
+            if xg_out.symmetry is None:
                 xg_out.blocks[i + 1, i] = -bg_upper_block.conj().swapaxes(-2, -1)
             xg_out.blocks[i, i] = 0.5 * (
                 xg_diag_blocks[i] - xg_diag_blocks[i].conj().swapaxes(-2, -1)
@@ -1519,10 +1519,10 @@ def permuted_selinv(
         xr_out.blocks[1, 0] = xr_buffer_upper[0]
         xr_out.blocks[0, 1] = xr_buffer_lower[0]
     if selected_solve:
-        if not xl_out.symmetry:
+        if xl_out.symmetry is None:
             xl_out.blocks[1, 0] = xl_buffer_upper[0]
         xl_out.blocks[0, 1] = -xl_buffer_upper[0].conj().swapaxes(-2, -1)
 
-        if not xg_out.symmetry:
+        if xg_out.symmetry is None:
             xg_out.blocks[1, 0] = xg_buffer_upper[0]
         xg_out.blocks[0, 1] = -xg_buffer_upper[0].conj().swapaxes(-2, -1)

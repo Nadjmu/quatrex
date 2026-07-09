@@ -103,8 +103,7 @@ class CoulombScreeningSolver(SubsystemSolver):
             sparray=sparsity_pattern.astype(xp.float32),
             block_sizes=self.small_block_sizes,
             global_stack_shape=(comm.size,),
-            symmetry=config.scba.symmetric,
-            symmetry_op=xp.conj,
+            symmetry="hermitian" if config.scba.symmetric else None,
         )
         v_times_p_sparsity_pattern = _compute_sparsity_pattern(
             dummy_dsbsparse, dummy_dsbsparse, dtype=xp.float32
@@ -137,8 +136,7 @@ class CoulombScreeningSolver(SubsystemSolver):
             block_sizes=self.block_sizes,
             global_stack_shape=self.energies.shape
             + tuple([k for k in kpoint_grid if k > 1]),
-            symmetry=config.scba.symmetric,
-            symmetry_op=lambda a: -a.conj(),
+            symmetry="skew-hermitian" if config.scba.symmetric else None,
             allocate=False,
         )
         self.l_greater = config.compute.dsdbsparse_type.empty_like(self.l_lesser)
@@ -630,7 +628,7 @@ class CoulombScreeningSolver(SubsystemSolver):
             v_10 @ p_01 @ v_00 + v_00 @ p_10 @ v_01 + v_10 @ p_00 @ v_01, inverse_order
         )
         l_.blocks[*upper_inds] += order_block(v_10 @ p_01 @ v_01, inverse_order)
-        if not l_.symmetry:
+        if l_.symmetry is None:
             l_.blocks[*upper_inds[::-1]] += order_block(
                 v_10 @ p_10 @ v_01, inverse_order
             )

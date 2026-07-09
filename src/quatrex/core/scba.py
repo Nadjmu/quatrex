@@ -116,8 +116,7 @@ class SCBAData:
             block_sizes=block_sizes,
             global_stack_shape=electron_energies.shape
             + tuple([k for k in kpoint_grid if k > 1]),
-            symmetry=config.scba.symmetric,
-            symmetry_op=lambda a: -a.conj(),
+            symmetry="skew-hermitian" if config.scba.symmetric else None,
             allocate=False,
         )
         self.g_greater = dsdbsparse_type.empty_like(self.g_lesser)
@@ -130,8 +129,8 @@ class SCBAData:
         self.sigma_retarded_hermitian_prev = dsdbsparse_type.empty_like(self.g_lesser)
         self.sigma_retarded_hermitian = dsdbsparse_type.empty_like(self.g_lesser)
         if config.scba.symmetric:
-            self.sigma_retarded_hermitian.symmetry_op = lambda a: a.conj()
-            self.sigma_retarded_hermitian_prev.symmetry_op = lambda a: a.conj()
+            self.sigma_retarded_hermitian.symmetry = "hermitian"
+            self.sigma_retarded_hermitian_prev.symmetry = "hermitian"
 
         if config.scba.coulomb_screening:
             # NOTE: The polarization has the same sparsity pattern as
@@ -143,7 +142,7 @@ class SCBAData:
             self.p_greater = dsdbsparse_type.empty_like(self.g_lesser)
 
             if config.scba.symmetric:
-                self.p_retarded_hermitian.symmetry_op = lambda a: a.conj()
+                self.p_retarded_hermitian.symmetry = "hermitian"
 
             num_connected_blocks = config.coulomb_screening.num_connected_blocks
             if num_connected_blocks == "auto":
@@ -165,8 +164,7 @@ class SCBAData:
                 block_sizes=coulomb_screening_block_sizes,
                 global_stack_shape=electron_energies.shape
                 + tuple([k for k in kpoint_grid if k > 1]),
-                symmetry=config.scba.symmetric,
-                symmetry_op=lambda a: -a.conj(),
+                symmetry="skew-hermitian" if config.scba.symmetric else None,
                 allocate=False,
             )
             self.w_greater = dsdbsparse_type.empty_like(self.w_lesser)
@@ -300,7 +298,7 @@ class SCBA(TransportSolver):
 
             # Make sure the Coulomb matrix is hermitian.
             # TODO: Check that this is correct for kpoints.
-            if not coulomb_matrix.symmetry:
+            if coulomb_matrix.symmetry is None:
                 coulomb_matrix.symmetrize()
             coulomb_matrix._data /= config.coulomb_screening.epsilon_r
 

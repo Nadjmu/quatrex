@@ -1,14 +1,13 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
 from contextlib import nullcontext
-from typing import Callable
 
 import numpy as np
 import pytest
 
 from qttools import NDArray, sparse, xp
 from qttools.comm import comm
-from qttools.datastructures.dsdbsparse import DSDBSparse, _block_view
+from qttools.datastructures.dsdbsparse import DSDBSparse, _block_view, symmetry_ops
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -40,8 +39,7 @@ def configure_comm():
 def _create_coo(
     sizes: NDArray,
     symmetric_sparsity: bool = False,
-    symmetric: bool = False,
-    symmetry_op: Callable = xp.conj,
+    symmetry: str | None = None,
 ) -> sparse.coo_matrix:
     """Returns a random complex sparse array."""
     size = int(xp.sum(sizes))
@@ -49,10 +47,10 @@ def _create_coo(
     density = rng.uniform(low=0.1, high=0.3)
     coo = sparse.random(size, size, density=density, format="coo").astype(xp.complex128)
     coo.setdiag(rng.uniform(size=size) + 1j * rng.uniform(size=size))
-    if symmetric:
+    if symmetry is not None:
         coo.data += 1j * rng.uniform(size=coo.nnz)
         coo_t = coo.copy()
-        coo_t.data[:] = symmetry_op(coo_t.data)
+        coo_t.data[:] = symmetry_ops[symmetry](coo_t.data)
         coo = coo + coo_t.T
         return coo
     if symmetric_sparsity:
@@ -66,18 +64,16 @@ def _create_coo_dsdbsparse(
     dsdbsparse_type: DSDBSparse,
     block_sizes: NDArray,
     global_stack_shape: tuple,
-    symmetry_type: tuple[bool, Callable],
+    symmetry: str | None,
     symmetric_sparsity: bool = False,
 ) -> tuple[sparse.coo_matrix, DSDBSparse]:
     """Returns a random complex sparse array
     and a DSDBSparse matrix with the same sparsity pattern.
     """
-    symmetry, symmetry_op = symmetry_type
     coo = (
         _create_coo(
             block_sizes,
-            symmetric=symmetry,
-            symmetry_op=symmetry_op,
+            symmetry=symmetry,
             symmetric_sparsity=symmetric_sparsity,
         )
         if comm.rank == 0
@@ -88,7 +84,6 @@ def _create_coo_dsdbsparse(
         block_sizes=block_sizes,
         global_stack_shape=global_stack_shape,
         symmetry=symmetry,
-        symmetry_op=symmetry_op,
     )
     return coo, dsdbsparse
 
@@ -147,7 +142,7 @@ class TestAccess:
         dsdbsparse_type: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
         accessed_element: tuple,
     ):
         """Tests that we can get individual matrix elements."""
@@ -155,7 +150,7 @@ class TestAccess:
             dsdbsparse_type,
             block_sizes,
             global_stack_shape,
-            symmetry_type,
+            symmetry,
         )
         dense = dsdbsparse.to_dense()
 
@@ -167,7 +162,7 @@ class TestAccess:
         dsdbsparse_type: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
         num_inds: int,
     ):
         """Tests that we can get multiple matrix elements at once."""
@@ -175,7 +170,7 @@ class TestAccess:
             dsdbsparse_type,
             block_sizes,
             global_stack_shape,
-            symmetry_type,
+            symmetry,
         )
 
         # Generate a number of unique indices.
@@ -195,16 +190,15 @@ class TestAccess:
         dsdbsparse_type: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
         accessed_element: tuple,
     ):
         """Tests that we can set individual matrix elements."""
-        symmetry, symmetry_op = symmetry_type
         _, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type,
             block_sizes,
             global_stack_shape,
-            symmetry_type,
+            symmetry,
         )
 
         dense = dsdbsparse.to_dense()
@@ -212,7 +206,7 @@ class TestAccess:
         val = 42 + 42j
 
         if symmetry:
-            sym_val = symmetry_op(val)
+            sym_val = symmetry_ops[symmetry](val)
             r, c = accessed_element
             if r == c:
                 val = (val + sym_val) / 2
@@ -240,14 +234,14 @@ class TestAccess:
         block_sizes: NDArray,
         global_stack_shape: tuple,
         stack_index: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
     ):
         """Tests that we can get the correct diagonal elements."""
         _, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type,
             block_sizes,
             global_stack_shape,
-            symmetry_type,
+            symmetry,
         )
         dense = dsdbsparse.to_dense()
 
@@ -259,15 +253,14 @@ class TestAccess:
         dsdbsparse_type: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
     ):
         """Tests that we can set the correct diagonal elements."""
-        _, symmetry_op = symmetry_type
         _, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type,
             block_sizes,
             global_stack_shape,
-            symmetry_type,
+            symmetry,
         )
         dense = dsdbsparse.to_dense()
 
@@ -277,7 +270,7 @@ class TestAccess:
         dsdbsparse.fill_diagonal(val=xp.ones_like(dense[..., inds, inds]))
         stack_index = (0,) * len(global_stack_shape)
         inds = dense[*stack_index, inds, inds].nonzero()
-        dense[..., inds, inds] = 0.5 * (symmetry_op(1) + 1)
+        dense[..., inds, inds] = 0.5 * (symmetry_ops[symmetry](1) + 1)
         assert xp.allclose(dense, dsdbsparse.to_dense())
 
     def test_set_diagonal_substack(
@@ -286,15 +279,14 @@ class TestAccess:
         block_sizes: NDArray,
         global_stack_shape: tuple,
         stack_index: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
     ):
         """Tests that we can set the correct diagonal elements."""
-        _, symmetry_op = symmetry_type
         _, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type,
             block_sizes,
             global_stack_shape,
-            symmetry_type,
+            symmetry,
         )
         dense = dsdbsparse.to_dense()
 
@@ -307,7 +299,7 @@ class TestAccess:
         )
         tmp_stack_index = (0,) * len(global_stack_shape)
         inds = dense[*tmp_stack_index, inds, inds].nonzero()
-        dense[*stack_index][..., inds, inds] = 0.5 * (symmetry_op(1) + 1)
+        dense[*stack_index][..., inds, inds] = 0.5 * (symmetry_ops[symmetry](1) + 1)
         assert xp.allclose(dense, dsdbsparse.to_dense())
 
     def test_set_diagonal_substack_val(
@@ -316,15 +308,14 @@ class TestAccess:
         block_sizes: NDArray,
         global_stack_shape: tuple,
         stack_index: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
     ):
         """Tests that we can set the correct diagonal elements."""
-        _, symmetry_op = symmetry_type
         _, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type,
             block_sizes,
             global_stack_shape,
-            symmetry_type,
+            symmetry,
         )
         dense = dsdbsparse.to_dense()
 
@@ -334,7 +325,7 @@ class TestAccess:
         dsdbsparse.fill_diagonal(stack_index=stack_index, val=2)
         tmp_stack_index = (0,) * len(global_stack_shape)
         inds = dense[*tmp_stack_index, inds, inds].nonzero()
-        dense[*stack_index][..., inds, inds] = 0.5 * (symmetry_op(2) + 2)
+        dense[*stack_index][..., inds, inds] = 0.5 * (symmetry_ops[symmetry](2) + 2)
         assert xp.allclose(dense, dsdbsparse.to_dense())
 
     def test_set_stack(
@@ -342,29 +333,27 @@ class TestAccess:
         dsdbsparse_type_dist: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
         stack_index: tuple,
     ):
         """Tests that we can set the stackview of a DSDBSparse matrix for
         a specific stack index.
         """
-        if symmetry_type[0]:
+        if symmetry is not None:
             # TODO: not implemented
             pytest.skip("Skipping test for symmetric DSDBSparse.")
 
-        symmetry, symmetry_op = symmetry_type
         coo, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type_dist,
             block_sizes,
             global_stack_shape,
-            symmetry_type,
+            symmetry,
         )
 
         csr_array = coo.tocsr()[dsdbsparse.spy()]
         csr_new = _create_coo(
             block_sizes,
-            symmetric=symmetry,
-            symmetry_op=symmetry_op,
+            symmetry=symmetry,
         ).tocsr()
 
         # Set the stackview to a new value.
@@ -400,14 +389,14 @@ class TestArithmetic:
         dsdbsparse_type: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
     ):
         """Tests the in-place addition of a DSDBSparse matrix."""
         _, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type,
             block_sizes,
             global_stack_shape,
-            symmetry_type,
+            symmetry,
         )
         dense = dsdbsparse.to_dense()
 
@@ -420,21 +409,21 @@ class TestArithmetic:
         dsdbsparse_type: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
     ):
         """Tests the in-place addition of a DSDBSparse matrix with a COO matrix."""
 
         if dsdbsparse_type.__name__ == "DSDBCSR":
             pytest.skip("DSDBCSR does not support in-place addition.")
 
-        if symmetry_type[0]:
+        if symmetry is not None:
             pytest.skip("Symmetric DSDBSparse does not support in-place addition.")
 
         coo, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type,
             block_sizes,
             global_stack_shape,
-            symmetry_type,
+            symmetry,
         )
 
         dsdbsparse += coo.copy()
@@ -446,15 +435,14 @@ class TestArithmetic:
         dsdbsparse_type: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
     ):
         """Tests the in-place subtraction of a DSDBSparse matrix."""
-        symmetry, symmetry_op = symmetry_type
         coo, dsdbsparse_1 = _create_coo_dsdbsparse(
             dsdbsparse_type,
             block_sizes,
             global_stack_shape,
-            symmetry_type,
+            symmetry,
         )
         dense_1 = dsdbsparse_1.to_dense()
 
@@ -464,7 +452,6 @@ class TestArithmetic:
             block_sizes=block_sizes,
             global_stack_shape=global_stack_shape,
             symmetry=symmetry,
-            symmetry_op=symmetry_op,
         )
         dense_2 = dsdbsparse_2.to_dense()
 
@@ -477,21 +464,21 @@ class TestArithmetic:
         dsdbsparse_type: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
     ):
         """Tests the in-place subtraction of a DSDBSparse matrix with a COO matrix."""
 
         if dsdbsparse_type.__name__ == "DSDBCSR":
             pytest.skip("DSDBCSR does not support in-place subtraction.")
 
-        if symmetry_type[0]:
+        if symmetry is not None:
             pytest.skip("Symmetric DSDBSparse does not support in-place subtraction.")
 
         coo, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type,
             block_sizes,
             global_stack_shape,
-            symmetry_type,
+            symmetry,
         )
         dense = dsdbsparse.to_dense()
 
@@ -499,38 +486,12 @@ class TestArithmetic:
 
         assert xp.allclose(dense - 2 * coo.toarray(), dsdbsparse.to_dense())
 
-    def test_imul(
-        self,
-        dsdbsparse_type: DSDBSparse,
-        block_sizes: NDArray,
-        global_stack_shape: tuple,
-        symmetry_type: tuple[bool, Callable],
-    ):
-        """Tests the in-place multiplication of a DSDBSparse matrix."""
-
-        if symmetry_type[0]:
-            pytest.skip(
-                "Symmetric DSDBSparse does not support in-place multiplication."
-            )
-
-        _, dsdbsparse = _create_coo_dsdbsparse(
-            dsdbsparse_type,
-            block_sizes,
-            global_stack_shape,
-            symmetry_type,
-        )
-        dense = dsdbsparse.to_dense()
-
-        dsdbsparse *= dsdbsparse
-
-        assert xp.allclose(dense * dense, dsdbsparse.to_dense())
-
     def test_iadd_stack(
         self,
         dsdbsparse_type: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
         stack_index: tuple[int, ...],
     ):
         """Tests the in-place addition of a stackview."""
@@ -538,15 +499,14 @@ class TestArithmetic:
             dsdbsparse_type,
             block_sizes,
             global_stack_shape,
-            symmetry_type,
+            symmetry,
         )
         substack_shape = (1,)
         dsdbsparse_substack = dsdbsparse_type.from_sparray(
             sparray=coo,
             block_sizes=block_sizes,
             global_stack_shape=substack_shape,
-            symmetry=symmetry_type[0],
-            symmetry_op=symmetry_type[1],
+            symmetry=symmetry,
         )
         dsdbsparse.stack[stack_index] += dsdbsparse_substack
 
@@ -576,7 +536,7 @@ class TestArithmetic:
         dsdbsparse_type: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
         stack_index: tuple[int, ...],
     ):
         """Tests the in-place addition of a stackview with a COO matrix."""
@@ -590,7 +550,7 @@ class TestArithmetic:
                 dsdbsparse_type,
                 block_sizes,
                 global_stack_shape,
-                symmetry_type,
+                symmetry,
             )
             dsdbsparse.stack[stack_index] += coo
 
@@ -621,7 +581,7 @@ class TestArithmetic:
         dsdbsparse_type: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
         stack_index: tuple[int, ...],
     ):
         """Tests the in-place subtraction of a stackview."""
@@ -629,15 +589,14 @@ class TestArithmetic:
             dsdbsparse_type,
             block_sizes,
             global_stack_shape,
-            symmetry_type,
+            symmetry,
         )
         substack_shape = (1,)
         dsdbsparse_substack = dsdbsparse_type.from_sparray(
             sparray=coo,
             block_sizes=block_sizes,
             global_stack_shape=substack_shape,
-            symmetry=symmetry_type[0],
-            symmetry_op=symmetry_type[1],
+            symmetry=symmetry,
         )
         dsdbsparse.stack[stack_index] -= dsdbsparse_substack
 
@@ -668,19 +627,19 @@ class TestArithmetic:
         dsdbsparse_type: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry_type: tuple[bool, Callable],
+        symmetry: str | None,
         stack_index: tuple[int, ...],
     ):
         """Tests the in-place subtraction of a stackview with a COO matrix."""
 
-        if symmetry_type[0]:
+        if symmetry is not None:
             pytest.skip("Symmetric DSDBSparse does not support in-place subtraction.")
 
         coo, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type,
             block_sizes,
             global_stack_shape,
-            symmetry_type,
+            symmetry,
         )
         dsdbsparse.stack[stack_index] -= coo
 

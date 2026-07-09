@@ -228,6 +228,17 @@ class RGFDist(GFSolver):
                     raise ValueError("Invalid number of output matrices.")
                 xr_out = xr_out[0]
 
+            if xl_out.symmetry not in [None, "skew-hermitian"]:
+                raise ValueError(
+                    "Invalid symmetry for lesser Green's function. "
+                    "Expected None or 'skew-hermitian'."
+                )
+            if xg_out.symmetry not in [None, "skew-hermitian"]:
+                raise ValueError(
+                    "Invalid symmetry for greater Green's function. "
+                    "Expected None or 'skew-hermitian'."
+                )
+
             batch_sizes, batch_offsets = get_batches(
                 sigma_lesser.shape[0], self.max_batch_size
             )

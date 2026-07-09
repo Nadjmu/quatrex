@@ -223,7 +223,7 @@ class PCoulombScreening(ScatteringSelfEnergy):
         with profiler.profile_range(
             label="PCoulombScreening: Symmetrization", level="default", comm=comm
         ):
-            if not p_lesser.symmetry:
+            if p_lesser.symmetry is None:
                 p_lesser.symmetrize(xp.subtract)
                 p_greater.symmetrize(xp.subtract)
                 p_retarded_hermitian.symmetrize(xp.add)

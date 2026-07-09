@@ -321,7 +321,7 @@ def _expand_tight_binding_matrix(
 
 def _sum_operator(
     matrix_dict: dict[tuple, sparse.csr_matrix | NDArray],
-    symmetric: bool,
+    symmetry: str | None = None,
     phases: dict | None = None,
 ):
     """Sums up periodic image contributions for a specific k-point.
@@ -334,9 +334,8 @@ def _sum_operator(
     matrix_dict : dict[tuple, sparse.csr_matrix | NDArray]
         The dictionary of matrices corresponding to different periodic
         repetitions. It is assumed that only the upper parts are present.
-    symmetric : bool
-        Whether the resulting matrix should be symmetric. If `True`, only
-        construct the upper triangular part.
+    symmetry : str | None, optional
+        The symmetry of the resulting matrix. If `None`, the matrix is not symmetric.
     phases : dict, optional
         A dictionary mapping the different image indices to their weight.
         If not provided, this performs an unweighted sum.
@@ -351,7 +350,7 @@ def _sum_operator(
     # TODO: Could still be optimized
     summed_matrix = sum(phases[coord] * matrix for coord, matrix in matrix_dict.items())
 
-    if not symmetric:
+    if symmetry is None:
         summed_matrix = summed_matrix + summed_matrix.T.conj()
         summed_matrix.setdiag(summed_matrix.diagonal() / 2)
 
@@ -684,8 +683,7 @@ def assemble_matrix(
         block_sizes=block_sizes,
         global_stack_shape=(comm.stack.size,)
         + tuple([k for k in config.device.kpoint_grid if k > 1]),
-        symmetry=config.scba.symmetric,
-        symmetry_op=xp.conj,
+        symmetry="hermitian" if config.scba.symmetric else None,
     )
     matrix.data[:] = 0.0  # Initialize to zero.
 

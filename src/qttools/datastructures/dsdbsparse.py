@@ -13,6 +13,14 @@ from qttools.comm import comm
 from qttools.utils.gpu_utils import free_mempool, synchronize_device
 from qttools.utils.mpi_utils import get_section_sizes
 
+symmetry_ops = {
+    None: lambda x: x,
+    "symmetric": lambda x: x,
+    "hermitian": xp.conj,
+    "skew-symmetric": lambda x: -x,
+    "skew-hermitian": lambda x: -xp.conj(x),
+}
+
 
 def _flatten_list(nested_lists: list[list]) -> list:
     """Flattens a list of lists.
@@ -141,11 +149,10 @@ class DSDBSparse(ABC):
     return_dense : bool, optional
         Whether to return dense arrays when accessing the blocks.
         Default is True.
-    symmetry : bool, optional
-        Whether the matrix is symmetric. Default is False.
-    symmetry_op : Callable, optional
-        The operation to use for symmetrization. Default is `xp.conj`,
-        which is the complex conjugate.
+    symmetry : str | None, optional
+        The symmetry of the matrix. This can be "symmetric",
+        "hermitian", "skew-symmetric", "skew-hermitian", or None.
+        Default is None.
 
     """
 
@@ -158,8 +165,7 @@ class DSDBSparse(ABC):
         global_stack_shape: tuple | int,
         index_type: xp.int32 | xp.int64,
         return_dense: bool = True,
-        symmetry: bool | None = False,
-        symmetry_op: Callable = xp.conj,
+        symmetry: str | None = None,
     ):
         """Initializes a DSBDSparse matrix."""
 
@@ -170,13 +176,18 @@ class DSDBSparse(ABC):
                 "the BLOCK_COMM_SIZE environment variable."
             )
 
+        if symmetry not in symmetry_ops:
+            raise ValueError(
+                f"Invalid symmetry '{symmetry}'."
+                f"Must be one of {list(symmetry_ops.keys())}."
+            )
+
         # Type of the data
         self.dtype = dtype
         # Type of the indices
         self.index_type = index_type
         self.return_dense = return_dense
         self.symmetry = symmetry
-        self.symmetry_op = symmetry_op
         # Per default, we have the data is distributed in stack format.
         self.distribution_state = "stack"
         self._data = None
@@ -573,17 +584,6 @@ class DSDBSparse(ABC):
         """Checks if two DSDBSparse matrices are commensurable."""
         ...
 
-    def __imul__(self, other: "DSDBSparse") -> "DSDBSparse":
-        """In-place multiplication of two DSDBSparse matrices."""
-        if self.symmetry or other.symmetry:
-            raise ValueError(
-                "In-place multiplication is not supported for symmetric " "matrices."
-            )
-
-        self._check_commensurable(other)
-        self._data *= other._data
-        return self
-
     @abstractmethod
     def __iadd__(self, other: "DSDBSparse | sparse.spmatrix") -> "DSDBSparse":
         """In-place addition of two DSDBSparse matrices."""
@@ -918,8 +918,7 @@ class DSDBSparse(ABC):
         sparray: sparse.spmatrix,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry: bool | None = False,
-        symmetry_op: Callable = xp.conj,
+        symmetry: str | None = None,
         dtype: xp.dtype[xp.generic] = xp.complex128,
         allocate: bool = True,
     ) -> "DSDBSparse":
@@ -940,10 +939,10 @@ class DSDBSparse(ABC):
             The block sizes of the block-sparse matrix.
         global_stack_shape : tuple
             The global shape of the stack.
-        symmetry : bool, optional
-            Whether to enforce symmetry in the matrix. Default is False.
-        symmetry_op : callable, optional
-            The operation to use for the symmetry. Default is `xp.conj`.
+        symmetry : str | None, optional
+            The symmetry of the matrix. This can be "symmetric",
+            "hermitian", "skew-symmetric", "skew-hermitian", or None.
+            Default is None.
         dtype : xp.dtype, optional
             The data type of the matrix. Default is `xp.complex128`.
         allocate : bool, optional

@@ -183,6 +183,17 @@ class RGF(GFSolver):
                 raise ValueError("Invalid number of output matrices.")
             xr = xr[0]
 
+        if xl.symmetry not in [None, "skew-hermitian"]:
+            raise ValueError(
+                "Invalid symmetry for lesser Green's function. "
+                "Expected None or 'skew-hermitian'."
+            )
+        if xg.symmetry not in [None, "skew-hermitian"]:
+            raise ValueError(
+                "Invalid symmetry for greater Green's function. "
+                "Expected None or 'skew-hermitian'."
+            )
+
         # Perform the selected solve by batches.
         for b in range(len(batches_sizes)):
             stack_slice = slice(int(batches_slices[b]), int(batches_slices[b + 1]), 1)
@@ -340,7 +351,7 @@ class RGF(GFSolver):
                 )
 
                 xl_.blocks[i, j] = xl_ij
-                if not xl_.symmetry:
+                if xl_.symmetry is None:
                     xl_.blocks[j, i] = -xl_ij.conj().swapaxes(-2, -1)
 
                 xl_diag_blocks[i] = xl_ii + temp_2x @ a_ij_dagger_xr_ii_dagger + temp_1x
@@ -362,7 +373,7 @@ class RGF(GFSolver):
                 )
 
                 xg_.blocks[i, j] = xg_ij
-                if not xg_.symmetry:
+                if xg_.symmetry is None:
                     xg_.blocks[j, i] = -xg_ij.conj().swapaxes(-2, -1)
 
                 xg_diag_blocks[i] = xg_ii + temp_2x @ a_ij_dagger_xr_ii_dagger + temp_1x
