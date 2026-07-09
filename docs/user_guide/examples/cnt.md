@@ -30,7 +30,9 @@ You can find more detailed information on the input data provenance in
 the `README.md` file in the example directory
 `./examples/w90/carbon-nanotube/`
 
-Here you can see the resulting Wannier centers of the CNT structure:
+Here you can see the resulting *Wannier centers* of the CNT structure
+Note that the orbital centers are not necessarily coincident with the
+atomic positions.
 
 {{ mol3d("../../assets/structures/carbon-nanotube.xyz", style={"stick": {"radius":
 -1}, "sphere": {"scale": 0.25}}) }}
