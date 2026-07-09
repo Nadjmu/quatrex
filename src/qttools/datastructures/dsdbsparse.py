@@ -545,44 +545,6 @@ class DSDBSparse(ABC):
         """In-place subtraction of two DSDBSparse matrices."""
         ...
 
-    def block_diagonal(self, offset: int = 0) -> list[NDArray]:
-        """Returns the block diagonal of the matrix.
-
-        Note that this will cause communication in the
-        block-communicator.
-
-        Parameters
-        ----------
-        offset : int, optional
-            Offset from the main diagonal. Positive values indicate
-            superdiagonals, negative values indicate subdiagonals.
-            Default is 0.
-
-        Returns
-        -------
-        blocks : list
-            List of block diagonal elements. The length of the list is
-            the number of blocks on the main diagonal minus the offset.
-
-        """
-        local_blocks = []
-        stack_view = self.stack[...]
-        if comm.block.rank != comm.block.size - 1:
-            # Only the last rank in the block-communicator needs to make
-            # sure that the offset does not exceed the number of local
-            # blocks.
-            num_blocks = self.num_local_blocks
-        else:
-            num_blocks = self.num_local_blocks - abs(offset)
-
-        col_offset = offset if offset > 0 else 0
-        row_offset = abs(offset) if offset < 0 else 0
-
-        for b in range(num_blocks):
-            local_blocks.append(stack_view.local_blocks[b + row_offset, b + col_offset])
-
-        return _flatten_list(comm.block._mpi_comm.allgather(local_blocks))
-
     def diagonal(self, stack_index: tuple = (Ellipsis,)) -> NDArray:
         """Returns or sets the diagonal elements of the matrix.
 

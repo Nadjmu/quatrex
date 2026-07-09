@@ -719,10 +719,6 @@ class ElectronSolver(SubsystemSolver):
 
         """
         g_lesser, g_greater, g_retarded = out
-        # local_dos = [
-        #     (-xp.diagonal(block, axis1=-2, axis2=-1).imag).mean(-1)
-        #     for block in g_retarded.block_diagonal()
-        # ]
 
         g_retarded_diag = g_retarded.diagonal()
         block_sizes = g_retarded.block_sizes
