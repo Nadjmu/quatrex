@@ -547,11 +547,6 @@ class DSDBSparse(ABC):
         """In-place addition of two DSDBSparse matrices."""
         ...
 
-    @abstractmethod
-    def __isub__(self, other: "DSDBSparse | sparse.spmatrix") -> "DSDBSparse":
-        """In-place subtraction of two DSDBSparse matrices."""
-        ...
-
     def diagonal(self, stack_index: tuple = (Ellipsis,)) -> NDArray:
         """Returns or sets the diagonal elements of the matrix.
 
@@ -1172,24 +1167,6 @@ class _DStackView:
             # NOTE: Check commensurable is not good since
             # it is possible that the stack of other is different.
             self._dsdbsparse.data[self._stack_index] += xp.squeeze(
-                xp.asarray(other.data[:])
-            )
-        return self._dsdbsparse
-
-    def __isub__(self, other: "DSDBSparse | sparse.spmatrix") -> "DSDBSparse":
-        """In-place subtraction of two DSDBSparse matrices."""
-        if sparse.issparse(other):
-            csr = other.tocsr()
-            self._dsdbsparse.data[self._stack_index] -= xp.squeeze(
-                xp.asarray(csr[self._dsdbsparse.spy()])
-            )
-            return self._dsdbsparse
-        else:
-            # TODO: Lots more checks should be done here.
-            # For example, the nnz sizes should match.
-            # NOTE: Check commensurable is not good since
-            # it is possible that the stack of other is different.
-            self._dsdbsparse.data[self._stack_index] -= xp.squeeze(
                 xp.asarray(other.data[:])
             )
         return self._dsdbsparse

@@ -429,17 +429,6 @@ class DSDBCSR(DSDBSparse):
         self._data += other._data
         return self
 
-    def __isub__(self, other: "DSDBCSR | sparse.spmatrix") -> "DSDBCSR":
-        """In-place subtraction of two DSDBCSR matrices."""
-        if sparse.issparse(other):
-            raise NotImplementedError(
-                "In-place subtraction is not implemented for DSDBCSR matrices."
-            )
-
-        self._check_commensurable(other)
-        self._data -= other._data
-        return self
-
     @DSDBSparse.block_sizes.setter
     def block_sizes(self, block_sizes: NDArray) -> None:
         """Sets new block sizes for the matrix.

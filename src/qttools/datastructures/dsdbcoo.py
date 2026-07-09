@@ -502,29 +502,6 @@ class DSDBCOO(DSDBSparse):
         self._data += other._data
         return self
 
-    def __isub__(self, other: "DSDBCOO | sparse.spmatrix") -> "DSDBCOO":
-        """In-place subtraction of two DSDBCOO matrices."""
-        if sparse.issparse(other):
-
-            csr = other.tocsr()
-            self.data -= csr[
-                self.rows + self.global_block_offset,
-                self.cols + self.global_block_offset,
-            ]
-            return self
-
-        if (
-            self.symmetry != other.symmetry
-            or symmetry_ops[self.symmetry] != symmetry_ops[other.symmetry]
-        ):
-            raise ValueError(
-                "Symmetry and symmetry_op must match for in-place substraction."
-            )
-
-        self._check_commensurable(other)
-        self._data -= other._data
-        return self
-
     @DSDBSparse.block_sizes.setter
     def block_sizes(self, block_sizes: NDArray) -> None:
         """Sets new block sizes for the matrix.
