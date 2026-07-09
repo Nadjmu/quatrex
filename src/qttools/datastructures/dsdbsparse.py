@@ -146,9 +146,6 @@ class DSDBSparse(ABC):
     index_type : xp.int32 | xp.int64
         The index type to use for the sparse matrix. This is relevant
         for the low level kernels to avoid unnecessary type conversions.
-    return_dense : bool, optional
-        Whether to return dense arrays when accessing the blocks.
-        Default is True.
     symmetry : str | None, optional
         The symmetry of the matrix. This can be "symmetric",
         "hermitian", "skew-symmetric", "skew-hermitian", or None.
@@ -164,7 +161,6 @@ class DSDBSparse(ABC):
         local_stack_shape: tuple | int,
         global_stack_shape: tuple | int,
         index_type: xp.int32 | xp.int64,
-        return_dense: bool = True,
         symmetry: str | None = None,
     ):
         """Initializes a DSBDSparse matrix."""
@@ -186,7 +182,6 @@ class DSDBSparse(ABC):
         self.dtype = dtype
         # Type of the indices
         self.index_type = index_type
-        self.return_dense = return_dense
         self.symmetry = symmetry
         # Per default, we have the data is distributed in stack format.
         self.distribution_state = "stack"
@@ -295,7 +290,6 @@ class DSDBSparse(ABC):
         self._add_block_config(self.num_blocks, block_sizes, block_offsets)
 
         self._block_indexer = _DSDBlockIndexer(self)
-        self._sparse_block_indexer = _DSDBlockIndexer(self, return_dense=False)
         self._stack_indexer = _DStackIndexer(self)
 
         # Diagonal indices.
@@ -390,11 +384,6 @@ class DSDBSparse(ABC):
     def blocks(self) -> "_DSDBlockIndexer":
         """Returns a block indexer."""
         return self._block_indexer
-
-    @property
-    def sparse_blocks(self) -> "_DSDBlockIndexer":
-        """Returns a block indexer."""
-        return self._sparse_block_indexer
 
     @property
     def stack(self) -> "_DStackIndexer":
@@ -536,45 +525,7 @@ class DSDBSparse(ABC):
         -------
         block : NDArray | tuple[NDArray, NDArray, NDArray]
             The block at the requested index. This is an array of shape
-            `(*local_stack_shape, block_sizes[row], block_sizes[col])` if
-            `return_dense` is True, otherwise it is a tuple of arrays
-            `(rows, cols, data)`.
-
-        """
-        ...
-
-    @abstractmethod
-    def _get_sparse_block(
-        self,
-        arg: tuple | NDArray,
-        row: int,
-        col: int,
-        is_index: bool = True,
-    ) -> sparse.spmatrix | tuple:
-        """Gets a block from the data structure in a sparse representation.
-
-        This is supposed to be a low-level method that does not perform
-        any checks on the input. These are handled by the block indexer.
-        The index is assumed to already be renormalized.
-
-        Parameters
-        ----------
-        arg : tuple | NDArray
-            The index of the stack or a view of the data stack. The
-            is_index flag indicates whether the argument is an index or
-            a view.
-        row : int
-            Row index of the block.
-        col : int
-            Column index of the block.
-        is_index : bool, optional
-            Whether the argument is an index or a view. Default is True.
-
-        Returns
-        -------
-        block : spmatrix | tuple
-            The block at the requested index. It is a sparse
-            representation of the block.
+            `(*local_stack_shape, block_sizes[row], block_sizes[col])`.
 
         """
         ...
@@ -612,8 +563,6 @@ class DSDBSparse(ABC):
         blocks : list
             List of block diagonal elements. The length of the list is
             the number of blocks on the main diagonal minus the offset.
-            Depending on return_dense, the elements are either sparse
-            or dense arrays.
 
         """
         local_blocks = []
@@ -636,9 +585,6 @@ class DSDBSparse(ABC):
 
     def diagonal(self, stack_index: tuple = (Ellipsis,)) -> NDArray:
         """Returns or sets the diagonal elements of the matrix.
-
-        This temporarily sets the return_dense state to True. Note that
-        this will cause communication in the block-communicator.
 
         Returns
         -------
@@ -675,9 +621,6 @@ class DSDBSparse(ABC):
 
     def fill_diagonal(self, val: NDArray, stack_index: tuple = (Ellipsis,)) -> NDArray:
         """Returns or sets the diagonal elements of the matrix.
-
-        This temporarily sets the return_dense state to True. Note that
-        this will cause communication in the block-communicator.
 
         Returns
         -------
@@ -1169,9 +1112,6 @@ class _DStackView:
         self._block_indexer = _DSDBlockIndexer(
             self._dsdbsparse, self._stack_index, cache_stack=True
         )
-        self._sparse_block_indexer = _DSDBlockIndexer(
-            self._dsdbsparse, self._stack_index, return_dense=False, cache_stack=True
-        )
 
         shape = self._dsdbsparse.shape
         stack_size = []
@@ -1300,19 +1240,9 @@ class _DStackView:
         return self._block_indexer
 
     @property
-    def sparse_local_blocks(self) -> "_DSDBlockIndexer":
-        """Returns a sparse block indexer on the substack."""
-        return self._sparse_block_indexer
-
-    @property
     def blocks(self) -> "_DSDBlockIndexer":
         """Returns a block indexer on the substack."""
         return self._block_indexer
-
-    @property
-    def sparse_blocks(self) -> "_DSDBlockIndexer":
-        """Returns a sparse block indexer on the substack."""
-        return self._sparse_block_indexer
 
 
 class _DSDBlockIndexer:
@@ -1331,9 +1261,6 @@ class _DSDBlockIndexer:
     stack_index : tuple, optional
         The stack index to slice the blocks from. Default is Ellipsis,
         i.e. we return the whole stack of blocks.
-    return_dense : bool, optional
-        Whether to return dense arrays when accessing the blocks.
-        Default is True.
     cache_stack : bool, optional
         Whether to propagate only the stack index to the block
         access methods, or to provide the data stack outright. Default
@@ -1345,7 +1272,6 @@ class _DSDBlockIndexer:
         self,
         dsdbsparse: DSDBSparse,
         stack_index: tuple = (Ellipsis,),
-        return_dense: bool = True,
         cache_stack: bool = False,
     ) -> None:
         """Initializes the block indexer."""
@@ -1358,7 +1284,6 @@ class _DSDBlockIndexer:
         else:
             self._arg = stack_index
             self._is_index = True
-        self._return_dense = return_dense
 
     def _normalize_index(self, index: tuple) -> tuple:
         """Normalizes the block index."""
@@ -1386,9 +1311,7 @@ class _DSDBlockIndexer:
     def __getitem__(self, index: tuple) -> NDArray | tuple:
         """Gets the requested block from the data structure."""
         row, col = self._normalize_index(index)
-        if self._return_dense:
-            return self._dsdbsparse._get_block(self._arg, row, col, self._is_index)
-        return self._dsdbsparse._get_sparse_block(self._arg, row, col, self._is_index)
+        return self._dsdbsparse._get_block(self._arg, row, col, self._is_index)
 
     def __setitem__(self, index: tuple, block: NDArray) -> None:
         """Sets the requested block in the data structure."""

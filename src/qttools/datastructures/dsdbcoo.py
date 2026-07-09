@@ -44,9 +44,6 @@ class DSDBCOO(DSDBSparse):
     global_stack_shape : tuple or int
         The global shape of the stack. If this is an integer, it is
         interpreted as a one-dimensional stack.
-    return_dense : bool, optional
-        Whether to return dense arrays when accessing the blocks.
-        Default is True.
     symmetry : str | None, optional
         The symmetry of the matrix. This can be "symmetric",
         "hermitian", "skew-symmetric", "skew-hermitian", or None.
@@ -62,7 +59,6 @@ class DSDBCOO(DSDBSparse):
         block_sizes: NDArray,
         local_stack_shape: tuple | int,
         global_stack_shape: tuple | int,
-        return_dense: bool = True,
         symmetry: str | None = None,
     ):
         """Initializes a DSDBCOO matrix."""
@@ -89,7 +85,6 @@ class DSDBCOO(DSDBSparse):
             local_stack_shape=local_stack_shape,
             global_stack_shape=global_stack_shape,
             index_type=index_type,
-            return_dense=return_dense,
             symmetry=symmetry,
         )
 
@@ -365,9 +360,7 @@ class DSDBCOO(DSDBSparse):
         -------
         block : NDArray | tuple[NDArray, NDArray, NDArray]
             The block at the requested index. This is an array of shape
-            `(*local_stack_shape, block_sizes[row], block_sizes[col])` if
-            `return_dense` is True, otherwise it is a tuple of arrays
-            `(rows, cols, data)`.
+            `(*local_stack_shape, block_sizes[row], block_sizes[col])`.
 
         """
         if self.symmetry and (col < row):
@@ -382,21 +375,6 @@ class DSDBCOO(DSDBSparse):
             data_stack = arg
 
         block_slice = self._get_block_slice(row, col)
-
-        if not self.return_dense:
-            if self.symmetry is not None:
-                # TODO: If really needed, this will need some more thinking.
-                raise NotImplementedError(
-                    "Sparse blocks with symmetry not implemented."
-                )
-            if block_slice.start is None and block_slice.stop is None:
-                # No data in this block, return an empty block.
-                return xp.empty(0), xp.empty(0), xp.empty(data_stack.shape[:-1] + (0,))
-
-            rows = self.rows[block_slice] - self.local_block_offsets[row]
-            cols = self.cols[block_slice] - self.local_block_offsets[col]
-
-            return rows, cols, data_stack[..., block_slice]
 
         block = xp.zeros(
             data_stack.shape[:-1]
@@ -421,58 +399,6 @@ class DSDBCOO(DSDBSparse):
             block[..., *xp.diag_indices(block.shape[-1])] /= 2
 
         return block
-
-    def _get_sparse_block(
-        self,
-        arg: tuple | NDArray,
-        row: int,
-        col: int,
-        is_index: bool = True,
-    ) -> sparse.spmatrix | tuple:
-        """Gets a block from the data structure in a sparse representation.
-
-        This is supposed to be a low-level method that does not perform
-        any checks on the input. These are handled by the block indexer.
-        The index is assumed to already be renormalized.
-
-        Parameters
-        ----------
-        arg : tuple | NDArray
-            The index of the stack or a view of the data stack. The
-            is_index flag indicates whether the argument is an index or
-            a view.
-        row : int
-            Row index of the block.
-        col : int
-            Column index of the block.
-        is_index : bool, optional
-            Whether the argument is an index or a view. Default is True.
-
-        Returns
-        -------
-        block : spmatrix | tuple
-            The block at the requested index. It is a sparse
-            representation of the block.
-
-        """
-        if self.symmetry is not None:
-            # TODO: If needed, this will need some more thinking.
-            raise NotImplementedError("Sparse blocks with symmetry not implemented.")
-
-        if is_index:
-            data_stack = self.data[*arg]
-        else:
-            data_stack = arg
-
-        block_slice = self._get_block_slice(row, col)
-
-        if block_slice.start is None and block_slice.stop is None:
-            # No data in this block, return an empty block.
-            return xp.empty(data_stack.shape[:-1] + (0,)), (xp.empty(0), xp.empty(0))
-
-        rows = self.rows[block_slice] - self.local_block_offsets[row]
-        cols = self.cols[block_slice] - self.local_block_offsets[col]
-        return data_stack[..., block_slice], (rows, cols)
 
     def _set_block(
         self,
@@ -876,7 +802,6 @@ class DSDBCOO(DSDBSparse):
             block_sizes=dsdbsparse.block_sizes,
             local_stack_shape=dsdbsparse.local_stack_shape,
             global_stack_shape=dsdbsparse.global_stack_shape,
-            return_dense=dsdbsparse.return_dense,
             symmetry=dsdbsparse.symmetry,
         )
 

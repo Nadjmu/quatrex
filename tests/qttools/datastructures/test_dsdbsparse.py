@@ -339,9 +339,6 @@ class TestAccess:
         """Tests that we can set the stackview of a DSDBSparse matrix for
         a specific stack index.
         """
-        if symmetry is not None:
-            # TODO: not implemented
-            pytest.skip("Skipping test for symmetric DSDBSparse.")
 
         coo, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type_dist,
@@ -416,9 +413,6 @@ class TestArithmetic:
         if dsdbsparse_type.__name__ == "DSDBCSR":
             pytest.skip("DSDBCSR does not support in-place addition.")
 
-        if symmetry is not None:
-            pytest.skip("Symmetric DSDBSparse does not support in-place addition.")
-
         coo, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type,
             block_sizes,
@@ -470,9 +464,6 @@ class TestArithmetic:
 
         if dsdbsparse_type.__name__ == "DSDBCSR":
             pytest.skip("DSDBCSR does not support in-place subtraction.")
-
-        if symmetry is not None:
-            pytest.skip("Symmetric DSDBSparse does not support in-place subtraction.")
 
         coo, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type,
@@ -631,9 +622,6 @@ class TestArithmetic:
         stack_index: tuple[int, ...],
     ):
         """Tests the in-place subtraction of a stackview with a COO matrix."""
-
-        if symmetry is not None:
-            pytest.skip("Symmetric DSDBSparse does not support in-place subtraction.")
 
         coo, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type,

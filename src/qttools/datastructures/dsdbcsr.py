@@ -49,9 +49,6 @@ class DSDBCSR(DSDBSparse):
     global_stack_shape : tuple or int
         The global shape of the stack. If this is an integer, it is
         interpreted as a one-dimensional stack.
-    return_dense : bool, optional
-        Whether to return dense arrays when accessing the blocks.
-        Default is True.
     symmetry : str | None, optional
         The symmetry of the matrix. This can be "symmetric",
         "hermitian", "skew-symmetric", "skew-hermitian", or None.
@@ -67,7 +64,6 @@ class DSDBCSR(DSDBSparse):
         block_sizes: NDArray,
         local_stack_shape: tuple | int,
         global_stack_shape: tuple,
-        return_dense: bool = True,
         symmetry: str | None = None,
     ) -> None:
         """Initializes the DBCSR matrix."""
@@ -95,7 +91,6 @@ class DSDBCSR(DSDBSparse):
             local_stack_shape=local_stack_shape,
             global_stack_shape=global_stack_shape,
             index_type=index_type,
-            return_dense=return_dense,
             symmetry=symmetry,
         )
 
@@ -310,9 +305,7 @@ class DSDBCSR(DSDBSparse):
         -------
         block : NDArray | tuple[NDArray, NDArray, NDArray]
             The block at the requested index. This is an array of shape
-            `(*local_stack_shape, block_sizes[row], block_sizes[col])`
-            if `return_dense` is True, otherwise it is a tuple of three
-            arrays `(rowptr, cols, data)`.
+            `(*local_stack_shape, block_sizes[row], block_sizes[col])`.
 
         """
         if self.symmetry and (col < row):
@@ -327,21 +320,6 @@ class DSDBCSR(DSDBSparse):
             data_stack = arg
 
         rowptr = self.rowptr_map.get((row, col), None)
-
-        if not self.return_dense:
-            if self.symmetry is not None:
-                # TODO: If really needed, this will need some more thinking.
-                raise IndexError("Not implemented")
-            if rowptr is None:
-                # No data in this block, return zeros.
-                return (
-                    xp.zeros(int(self.block_sizes[row]) + 1),
-                    xp.empty(0),
-                    xp.empty(data_stack.shape[:-1] + (0,)),
-                )
-
-            cols = self.cols[rowptr[0] : rowptr[-1]] - self.block_offsets[col]
-            return rowptr - rowptr[0], cols, data_stack[..., rowptr[0] : rowptr[-1]]
 
         block = xp.zeros(
             data_stack.shape[:-1]
@@ -364,59 +342,6 @@ class DSDBCSR(DSDBSparse):
             block[..., *xp.diag_indices(block.shape[-1])] /= 2
 
         return block
-
-    def _get_sparse_block(
-        self,
-        arg: tuple | NDArray,
-        row: int,
-        col: int,
-        is_index: bool = True,
-    ) -> sparse.spmatrix | tuple:
-        """Gets a block from the data structure in a sparse representation.
-
-        This is supposed to be a low-level method that does not perform
-        any checks on the input. These are handled by the block indexer.
-        The index is assumed to already be renormalized.
-
-        Parameters
-        ----------
-        arg : tuple | NDArray
-            The index of the stack or a view of the data stack. The
-            is_index flag indicates whether the argument is an index or
-            a view.
-        row : int
-            Row index of the block.
-        col : int
-            Column index of the block.
-        is_index : bool, optional
-            Whether the argument is an index or a view. Default is True.
-
-        Returns
-        -------
-        block : spmatrix | tuple
-            The block at the requested index. It is a sparse
-            representation of the block.
-
-        """
-        if self.symmetry is not None:
-            # TODO: If really needed, this will need some more thinking.
-            raise NotImplementedError("Not implemented")
-        if is_index:
-            data_stack = self.data[*arg]
-        else:
-            data_stack = arg
-        rowptr = self.rowptr_map.get((row, col), None)
-
-        if rowptr is None:
-            # No data in this block, return zeros.
-            return (
-                xp.empty(data_stack.shape[:-1] + (0,)),
-                xp.empty(0),
-                xp.zeros(int(self.block_sizes[row]) + 1),
-            )
-
-        cols = self.cols[rowptr[0] : rowptr[-1]] - self.block_offsets[col]
-        return data_stack[..., rowptr[0] : rowptr[-1]], cols, rowptr - rowptr[0]
 
     def _set_block(
         self,
@@ -696,7 +621,6 @@ class DSDBCSR(DSDBSparse):
             block_sizes=dsdbsparse.block_sizes,
             local_stack_shape=dsdbsparse.local_stack_shape,
             global_stack_shape=dsdbsparse.global_stack_shape,
-            return_dense=dsdbsparse.return_dense,
             symmetry=dsdbsparse.symmetry,
         )
 
@@ -789,9 +713,6 @@ class DSDBCSR(DSDBSparse):
                 "Conversion to dense is only supported in 'stack' distribution state."
             )
 
-        original_return_dense = self.return_dense
-        self.return_dense = True
-
         arr = xp.zeros(self.shape, dtype=self.dtype)
         for i, j in xp.ndindex(self.num_blocks, self.num_blocks):
             arr[
@@ -799,7 +720,5 @@ class DSDBCSR(DSDBSparse):
                 self.block_offsets[i] : self.block_offsets[i + 1],
                 self.block_offsets[j] : self.block_offsets[j + 1],
             ] = self._get_block((Ellipsis,), i, j)
-
-        self.return_dense = original_return_dense
 
         return arr
