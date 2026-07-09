@@ -768,7 +768,7 @@ class TestDistribution:
         )
         assert dsdbsparse.distribution_state == "stack"
 
-        original_data = dsdbsparse._data.copy()
+        original_data = dsdbsparse.data.copy()
 
         # Transpose forth.
         dsdbsparse.dtranspose()
@@ -780,7 +780,7 @@ class TestDistribution:
 
         comm.stack.barrier()
 
-        assert xp.allclose(original_data, dsdbsparse._data)
+        assert xp.allclose(original_data, dsdbsparse.data)
 
     def test_getitem_stack(
         self,
