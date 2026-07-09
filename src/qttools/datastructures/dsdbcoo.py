@@ -675,6 +675,10 @@ class DSDBCOO(DSDBSparse):
         to coordinate format. The returned sparsity pattern is not
         sorted.
 
+        !!! Note:
+            In the block distributed case, this returns the local
+            sparsity pattern.
+
         Returns
         -------
         rows : NDArray
@@ -683,19 +687,10 @@ class DSDBCOO(DSDBSparse):
             Column indices of the non-zero elements.
 
         """
-        rows = comm.block._mpi_comm.allgather(self.rows)
-        cols = comm.block._mpi_comm.allgather(self.cols)
-        rank_max = xp.hstack(
-            comm.block._mpi_comm.allgather(
-                sum(self.local_block_sizes[: self.num_local_blocks])
-            )
+        return (
+            self.rows + self.global_block_offset,
+            self.cols + self.global_block_offset,
         )
-        rank_offset = xp.hstack(([0], xp.cumsum(rank_max)))
-
-        for i in range(1, comm.block.size):
-            rows[i] += rank_offset[i]
-            cols[i] += rank_offset[i]
-        return xp.hstack(rows), xp.hstack(cols)
 
     def _check_sparsity_pattern_symmetric(self) -> bool:
         """Checks if the sparsity pattern is symmetric.

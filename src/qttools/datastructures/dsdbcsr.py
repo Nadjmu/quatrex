@@ -1,5 +1,6 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+import warnings
 from typing import Callable
 
 import numpy as np
@@ -579,6 +580,13 @@ class DSDBCSR(DSDBSparse):
         to coordinate format. The returned sparsity pattern is not
         sorted.
 
+        !!! Note:
+            In the block distributed case, this returns the local
+            sparsity pattern.
+
+        !!! Warning:
+            This not performant.
+
         Returns
         -------
         rows : NDArray
@@ -587,12 +595,15 @@ class DSDBCSR(DSDBSparse):
             Column indices of the non-zero elements.
 
         """
+        if comm.rank == 0:
+            warnings.warn("The spy method is not efficient for large matrices.")
+
         rows = xp.zeros(self.cols.size, dtype=self.index_type)
         for (row, __), rowptr in self.rowptr_map.items():
             for i in range(int(self.block_sizes[row])):
                 rows[rowptr[i] : rowptr[i + 1]] = i + self.block_offsets[row]
 
-        return rows, self.cols
+        return rows + self.global_block_offset, self.cols + self.global_block_offset
 
     @classmethod
     def empty_like(cls, dsdbsparse: "DSDBCSR") -> "DSDBCSR":

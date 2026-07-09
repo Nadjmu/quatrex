@@ -712,6 +712,10 @@ class DSDBSparse(ABC):
         to coordinate format. The returned sparsity pattern is not
         sorted.
 
+        !!! Note:
+            In the block distributed case, this returns the local
+            sparsity pattern including the offset.
+
         Returns
         -------
         rows : NDArray
@@ -1046,10 +1050,7 @@ class _DStackIndexer:
             csr = other.tocsr()
             self._dsdbsparse.data[stack_index] = csr[self._dsdbsparse.spy()]
             return None
-            # return self._dsdbsparse
 
-        # Not sure what the expected behavior should be here
-        # self._dsdbsparse.data[stack_index] = other.data[:]
         self._dsdbsparse.data[stack_index] = other.data[stack_index]
 
 
@@ -1139,35 +1140,19 @@ class _DStackView:
         """In-place addition of sparse matrix."""
         if sparse.issparse(other):
             csr = other.tocsr()
+            self._dsdbsparse.data[self._stack_index] += xp.squeeze(
+                xp.asarray(csr[self._dsdbsparse.spy()])
+            )
+            return self._dsdbsparse
 
-            if hasattr(self._dsdbsparse, "rows") and hasattr(self._dsdbsparse, "cols"):
-                # If the view has rows and cols attributes, we can use them to
-                # directly index into the sparse matrix.
-                self._dsdbsparse.data[self._stack_index] += xp.squeeze(
-                    xp.asarray(
-                        csr[
-                            getattr(self._dsdbsparse, "rows"),
-                            getattr(self._dsdbsparse, "cols"),
-                        ]
-                    )
-                )
-                return self._dsdbsparse
-
-            else:
-                raise NotImplementedError(
-                    "In-place addition only supported for dsdbcoo matrices"
-                )
-        try:
+        else:
             # TODO: Lots more checks should be done here.
             # For example, the nnz sizes should match.
+            # NOTE: Check commensurable is not good since
+            # it is possible that the stack of other is different.
             self._dsdbsparse.data[self._stack_index] += xp.squeeze(
                 xp.asarray(other.data[:])
             )
-        except ValueError as e:
-            raise ValueError(
-                "In-place addition requires the shapes of the two "
-                "DSDBSparse matrices to match."
-            ) from e
         return self._dsdbsparse
 
     def __isub__(self, other: "DSDBSparse | sparse.spmatrix") -> "DSDBSparse":
@@ -1178,17 +1163,14 @@ class _DStackView:
                 xp.asarray(csr[self._dsdbsparse.spy()])
             )
             return self._dsdbsparse
-        try:
+        else:
             # TODO: Lots more checks should be done here.
             # For example, the nnz sizes should match.
+            # NOTE: Check commensurable is not good since
+            # it is possible that the stack of other is different.
             self._dsdbsparse.data[self._stack_index] -= xp.squeeze(
                 xp.asarray(other.data[:])
             )
-        except ValueError as e:
-            raise ValueError(
-                "In-place subtraction requires the shapes of the two "
-                "DSDBSparse matrices to match."
-            ) from e
         return self._dsdbsparse
 
     @property

@@ -572,6 +572,9 @@ class TestAccess:
         ref_col, ref_row = coo.col[inds], coo.row[inds]
 
         rows, cols = dsdbsparse.spy()
+        rows = comm.block.all_gather_v(rows, axis=0)
+        cols = comm.block.all_gather_v(cols, axis=0)
+
         inds = xp.lexsort(xp.vstack((cols, rows)))
         col, row = cols[inds], rows[inds]
 
@@ -742,6 +745,8 @@ class TestDistribution:
 
         dense = dsdbsparse.to_dense()
         rows, cols = dsdbsparse.spy()
+        rows = comm.block.all_gather_v(rows, axis=0)
+        cols = comm.block.all_gather_v(cols, axis=0)
         row, col, __ = _unsign_index(*accessed_element, dense.shape[-1])
         ind = xp.where((rows == row) & (cols == col))[0]
 
