@@ -44,7 +44,7 @@ def get_section_sizes(
 
     Examples
     --------
-    >>> get_section_sizes(10, 3, "fair")
+    >>> get_section_sizes(10, 3, "balanced")
     ([4, 3, 3], 12)
     >>> get_section_sizes(10, 3, "greedy")
     ([4, 4, 2], 12)

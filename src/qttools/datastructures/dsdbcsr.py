@@ -1,12 +1,13 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+import warnings
 from typing import Callable
 
 import numpy as np
 
 from qttools import NDArray, sparse, xp
 from qttools.comm import comm
-from qttools.datastructures.dsdbsparse import DSDBSparse
+from qttools.datastructures.dsdbsparse import DSDBSparse, symmetry_ops
 from qttools.kernels.datastructure import dsdbcsr_kernels, dsdbsparse_kernels
 from qttools.utils.mpi_utils import get_section_sizes
 
@@ -35,41 +36,36 @@ class DSDBCSR(DSDBSparse):
 
     Parameters
     ----------
-    data : NDArray
-        The local slice of the data. This should be an array of shape
-        `(*local_stack_shape, nnz)`. It is the caller's responsibility
-        to ensure that the data is distributed correctly across the
-        ranks.
+    dtype : xp.dtype[xp.generic]
+        The data type of the matrix.
     cols : NDArray
         The column indices.
     rowptr_map : dict
         The row pointer map.
     block_sizes : NDArray
         The size of each block in the sparse matrix.
+    local_stack_shape : tuple or int
+        The local shape of the stack. If this is an integer, it is
+        interpreted as a one-dimensional stack.
     global_stack_shape : tuple or int
         The global shape of the stack. If this is an integer, it is
         interpreted as a one-dimensional stack.
-    return_dense : bool, optional
-        Whether to return dense arrays when accessing the blocks.
-        Default is True.
-    symmetry : bool, optional
-        Whether the matrix is symmetric. Default is False.
-    symmetry_op : callable, optional
-        The operation to use for the symmetry. Default is
-        `xp.conj`.
+    symmetry : str | None, optional
+        The symmetry of the matrix. This can be "symmetric",
+        "hermitian", "skew-symmetric", "skew-hermitian", or None.
+        Default is None.
 
     """
 
     def __init__(
         self,
-        data: NDArray,
+        dtype: xp.dtype[xp.generic],
         cols: NDArray,
         rowptr_map: dict,
         block_sizes: NDArray,
+        local_stack_shape: tuple | int,
         global_stack_shape: tuple,
-        return_dense: bool = True,
-        symmetry: bool | None = False,
-        symmetry_op: Callable = xp.conj,
+        symmetry: str | None = None,
     ) -> None:
         """Initializes the DBCSR matrix."""
 
@@ -90,13 +86,13 @@ class DSDBCSR(DSDBSparse):
             )
 
         super().__init__(
-            data,
-            block_sizes,
-            global_stack_shape,
-            index_type,
-            return_dense,
+            dtype=dtype,
+            block_sizes=block_sizes,
+            nnz=len(cols),
+            local_stack_shape=local_stack_shape,
+            global_stack_shape=global_stack_shape,
+            index_type=index_type,
             symmetry=symmetry,
-            symmetry_op=symmetry_op,
         )
 
         self.cols = cols
@@ -158,7 +154,7 @@ class DSDBCSR(DSDBSparse):
         rows = rows.astype(self.index_type)
         cols = cols.astype(self.index_type)
 
-        if self.symmetry:
+        if self.symmetry is not None:
             rows, cols, mask_transposed = _upper_triangle(rows, cols)
 
             inds, value_inds = dsdbcsr_kernels.find_inds(
@@ -186,9 +182,11 @@ class DSDBCSR(DSDBSparse):
         if self.distribution_state == "stack":
             arr = xp.zeros(data_stack.shape[:-1] + (rows.size,), dtype=self.dtype)
 
-            if self.symmetry:
+            if self.symmetry is not None:
                 arr[..., value_inds] = data_stack[..., inds]
-                arr[..., value_inds_t] = self.symmetry_op(data_stack[..., inds_t])
+                arr[..., value_inds_t] = symmetry_ops[self.symmetry](
+                    data_stack[..., inds_t]
+                )
             else:
                 arr[..., value_inds] = data_stack[..., inds]
             return xp.squeeze(arr)
@@ -232,7 +230,7 @@ class DSDBCSR(DSDBSparse):
         rows = rows.astype(self.index_type)
         cols = cols.astype(self.index_type)
 
-        if self.symmetry:
+        if self.symmetry is not None:
             # items of upper triangle of the matrix
             rows, cols, mask_transposed = _upper_triangle(rows, cols)
 
@@ -248,10 +246,10 @@ class DSDBCSR(DSDBSparse):
         if self.distribution_state == "stack":
             if value.ndim == 0:
                 self.data[*stack_index][..., inds] = value
-                if self.symmetry:
-                    self.data[*stack_index][..., inds[mask_transposed]] = (
-                        self.symmetry_op(value)
-                    )
+                if self.symmetry is not None:
+                    self.data[*stack_index][..., inds[mask_transposed]] = symmetry_ops[
+                        self.symmetry
+                    ](value)
                 return
 
             self.data[*stack_index][..., inds] = value[..., value_inds]
@@ -308,14 +306,14 @@ class DSDBCSR(DSDBSparse):
         -------
         block : NDArray | tuple[NDArray, NDArray, NDArray]
             The block at the requested index. This is an array of shape
-            `(*local_stack_shape, block_sizes[row], block_sizes[col])`
-            if `return_dense` is True, otherwise it is a tuple of three
-            arrays `(rowptr, cols, data)`.
+            `(*local_stack_shape, block_sizes[row], block_sizes[col])`.
 
         """
         if self.symmetry and (col < row):
             block = self._get_block(arg, row=col, col=row, is_index=is_index)
-            return xp.ascontiguousarray(self.symmetry_op(block.swapaxes(-1, -2)))
+            return xp.ascontiguousarray(
+                symmetry_ops[self.symmetry](block.swapaxes(-1, -2))
+            )
 
         if is_index:
             data_stack = self.data[*arg]
@@ -323,21 +321,6 @@ class DSDBCSR(DSDBSparse):
             data_stack = arg
 
         rowptr = self.rowptr_map.get((row, col), None)
-
-        if not self.return_dense:
-            if self.symmetry:
-                # TODO: If really needed, this will need some more thinking.
-                raise IndexError("Not implemented")
-            if rowptr is None:
-                # No data in this block, return zeros.
-                return (
-                    xp.zeros(int(self.block_sizes[row]) + 1),
-                    xp.empty(0),
-                    xp.empty(data_stack.shape[:-1] + (0,)),
-                )
-
-            cols = self.cols[rowptr[0] : rowptr[-1]] - self.block_offsets[col]
-            return rowptr - rowptr[0], cols, data_stack[..., rowptr[0] : rowptr[-1]]
 
         block = xp.zeros(
             data_stack.shape[:-1]
@@ -356,63 +339,10 @@ class DSDBCSR(DSDBSparse):
             data=data_stack,
         )
         if self.symmetry and (col == row):
-            block += self.symmetry_op(block.swapaxes(-1, -2))
+            block += symmetry_ops[self.symmetry](block.swapaxes(-1, -2))
             block[..., *xp.diag_indices(block.shape[-1])] /= 2
 
         return block
-
-    def _get_sparse_block(
-        self,
-        arg: tuple | NDArray,
-        row: int,
-        col: int,
-        is_index: bool = True,
-    ) -> sparse.spmatrix | tuple:
-        """Gets a block from the data structure in a sparse representation.
-
-        This is supposed to be a low-level method that does not perform
-        any checks on the input. These are handled by the block indexer.
-        The index is assumed to already be renormalized.
-
-        Parameters
-        ----------
-        arg : tuple | NDArray
-            The index of the stack or a view of the data stack. The
-            is_index flag indicates whether the argument is an index or
-            a view.
-        row : int
-            Row index of the block.
-        col : int
-            Column index of the block.
-        is_index : bool, optional
-            Whether the argument is an index or a view. Default is True.
-
-        Returns
-        -------
-        block : spmatrix | tuple
-            The block at the requested index. It is a sparse
-            representation of the block.
-
-        """
-        if self.symmetry:
-            # TODO: If really needed, this will need some more thinking.
-            raise NotImplementedError("Not implemented")
-        if is_index:
-            data_stack = self.data[*arg]
-        else:
-            data_stack = arg
-        rowptr = self.rowptr_map.get((row, col), None)
-
-        if rowptr is None:
-            # No data in this block, return zeros.
-            return (
-                xp.empty(data_stack.shape[:-1] + (0,)),
-                xp.empty(0),
-                xp.zeros(int(self.block_sizes[row]) + 1),
-            )
-
-        cols = self.cols[rowptr[0] : rowptr[-1]] - self.block_offsets[col]
-        return data_stack[..., rowptr[0] : rowptr[-1]], cols, rowptr - rowptr[0]
 
     def _set_block(
         self,
@@ -449,7 +379,7 @@ class DSDBCSR(DSDBSparse):
                 arg,
                 row=col,
                 col=row,
-                block=self.symmetry_op(block.swapaxes(-1, -2)),
+                block=symmetry_ops[self.symmetry](block.swapaxes(-1, -2)),
                 is_index=is_index,
             )
 
@@ -487,41 +417,6 @@ class DSDBCSR(DSDBSparse):
 
         if xp.any(self.cols != other.cols):
             raise ValueError("Column indices do not match.")
-
-    def __iadd__(self, other: "DSDBCSR | sparse.spmatrix") -> "DSDBCSR":
-        """In-place addition of two DSDBCSR matrices."""
-        if sparse.issparse(other):
-            raise NotImplementedError(
-                "In-place addition is not implemented for DSDBCSR matrices."
-            )
-
-        self._check_commensurable(other)
-        self._data += other._data
-        return self
-
-    def __isub__(self, other: "DSDBCSR | sparse.spmatrix") -> "DSDBCSR":
-        """In-place subtraction of two DSDBCSR matrices."""
-        if sparse.issparse(other):
-            raise NotImplementedError(
-                "In-place subtraction is not implemented for DSDBCSR matrices."
-            )
-
-        self._check_commensurable(other)
-        self._data -= other._data
-        return self
-
-    def __neg__(self) -> "DSDBCSR":
-        """Negation of the data."""
-        return DSDBCSR(
-            data=-self.data,
-            cols=self.cols,
-            rowptr_map=self.rowptr_map,
-            block_sizes=self.block_sizes,
-            global_stack_shape=self.global_stack_shape,
-            return_dense=self.return_dense,
-            symmetry=self.symmetry,
-            symmetry_op=self.symmetry_op,
-        )
 
     @DSDBSparse.block_sizes.setter
     def block_sizes(self, block_sizes: NDArray) -> None:
@@ -600,92 +495,12 @@ class DSDBCSR(DSDBSparse):
         self.num_blocks = num_blocks
         self._add_block_config(self.num_blocks, block_sizes, block_offsets)
 
-    def ltranspose(self, copy=False) -> "None | DSDBCSR":
-        """Performs a local transposition of the matrix.
-
-        Parameters
-        ----------
-        copy : bool, optional
-            Whether to return a new object. Default is False.
-
-        Returns
-        -------
-        None | DSDBCSR
-            The transposed matrix. If copy is False, this is None.
-
-        """
-        if self.distribution_state == "nnz":
-            raise NotImplementedError("Cannot transpose when distributed through nnz.")
-
-        if self.symmetry:
-            if copy:
-                self = DSDBCSR(
-                    self.data.copy(),
-                    self.cols.copy(),
-                    self.rowptr_map.copy(),
-                    self.block_sizes,
-                    self.global_stack_shape,
-                    symmetry=self.symmetry,
-                    symmetry_op=self.symmetry_op,
-                )
-            self.data[:] = self.symmetry_op(self.data)
-            return self if copy else None
-
-        if copy:
-            self = DSDBCSR(
-                self.data.copy(),
-                self.cols.copy(),
-                self.rowptr_map.copy(),
-                self.block_sizes,
-                self.global_stack_shape,
-                symmetry=self.symmetry,
-                symmetry_op=self.symmetry_op,
-            )
-
-        if not (
-            hasattr(self, "_inds_bcsr2bcsr_t")
-            and hasattr(self, "_rowptr_map_t")
-            and hasattr(self, "_cols_t")
-        ):
-            # These indices are sorted by block-row and -column.
-            rows, cols = self.spy()
-
-            # Transpose.
-            rows_t, cols_t = cols, rows
-
-            # Canonical ordering of the transpose.
-            inds_bcsr2canonical_t = xp.lexsort(xp.vstack((cols_t, rows_t)))
-            canonical_rows_t = rows_t[inds_bcsr2canonical_t]
-            canonical_cols_t = cols_t[inds_bcsr2canonical_t]
-
-            # Compute index for sorting the transpose by block and the
-            # transpose rowptr map.
-            inds_canonical2bcsr_t, rowptr_map_t = dsdbcsr_kernels.compute_rowptr_map(
-                canonical_rows_t, canonical_cols_t, self.block_sizes
-            )
-
-            # Mapping directly from original ordering to transpose
-            # block-ordering is achieved by chaining the two mappings.
-            inds_bcsr2bcsr_t = inds_bcsr2canonical_t[inds_canonical2bcsr_t]
-
-            # Cache the necessary objects.
-            self._inds_bcsr2bcsr_t = inds_bcsr2bcsr_t
-            self._rowptr_map_t = rowptr_map_t
-            self._cols_t = cols_t[self._inds_bcsr2bcsr_t]
-
-        data = self.data.reshape(-1, self.data.shape[-1])
-        for stack_idx in range(data.shape[0]):
-            data[stack_idx] = data[stack_idx, self._inds_bcsr2bcsr_t]
-        self._inds_bcsr2bcsr_t = xp.argsort(self._inds_bcsr2bcsr_t)
-        self.cols, self._cols_t = self._cols_t, self.cols
-        self.rowptr_map, self._rowptr_map_t = self._rowptr_map_t, self.rowptr_map
-
-        return self if copy else None
-
     def symmetrize(self, op: Callable[[NDArray, NDArray], NDArray] = xp.add) -> None:
         """Symmetrizes the matrix.
 
-        NOTE: Assumes that the matrix's sparsity pattern is symmetric.
+        Note
+        ----
+        This assumes that the matrix's sparsity pattern is symmetric.
 
         Parameters
         ----------
@@ -694,7 +509,7 @@ class DSDBCSR(DSDBSparse):
             is addition.
 
         """
-        if self.symmetry:
+        if self.symmetry is not None:
             # Already symmetric, nothing to do.
             return
 
@@ -745,6 +560,15 @@ class DSDBCSR(DSDBSparse):
         to coordinate format. The returned sparsity pattern is not
         sorted.
 
+        Note
+        ----
+        In the block distributed case, this returns the local
+        sparsity pattern.
+
+        Warning
+        -------
+        This not performant.
+
         Returns
         -------
         rows : NDArray
@@ -753,74 +577,80 @@ class DSDBCSR(DSDBSparse):
             Column indices of the non-zero elements.
 
         """
+        if comm.rank == 0:
+            warnings.warn("The spy method is not efficient for large matrices.")
+
         rows = xp.zeros(self.cols.size, dtype=self.index_type)
         for (row, __), rowptr in self.rowptr_map.items():
             for i in range(int(self.block_sizes[row])):
                 rows[rowptr[i] : rowptr[i + 1]] = i + self.block_offsets[row]
 
-        return rows, self.cols
+        return rows + self.global_block_offset, self.cols + self.global_block_offset
 
     @classmethod
-    def zeros_like(cls, dsdbsparse: "DSDBSparse") -> "DSDBSparse":
-        """Creates a new DSDBSparse matrix with the same shape and dtype.
+    def empty_like(cls, dsdbsparse: "DSDBCSR") -> "DSDBCSR":
+        """Creates a new DSDBCSR matrix with the same shape and dtype.
 
-        All non-zero elements are set to zero, but the sparsity pattern
-        is preserved.
+        Note
+        ----
+        There is no data allocated in the new matrix. The sparsity
+        pattern is the same as the original matrix.
 
         Parameters
         ----------
-        dsdbsparse : DSDBSparse
+        dsdbsparse : DSDBCSR
             The matrix to copy the shape and dtype from.
 
         Returns
         -------
-        DSDBSparse
-            The new DSDBSparse matrix.
+        DSDBCSR
+            The new DSDBCSR matrix.
 
         """
         # TODO: Problem with deepcopy in tests
         # own copy should be provided
-        out = cls(
-            data=dsdbsparse.data.copy(),
+        return cls(
+            dtype=dsdbsparse.dtype,
             cols=dsdbsparse.cols.copy(),
             rowptr_map=dsdbsparse.rowptr_map.copy(),
             block_sizes=dsdbsparse.block_sizes,
+            local_stack_shape=dsdbsparse.local_stack_shape,
             global_stack_shape=dsdbsparse.global_stack_shape,
-            return_dense=dsdbsparse.return_dense,
             symmetry=dsdbsparse.symmetry,
-            symmetry_op=dsdbsparse.symmetry_op,
         )
-
-        if out._data is None:
-            out.allocate_data()
-        out._data[:] = 0.0
-        return out
 
     @classmethod
     def from_sparray(
         cls,
-        arr: sparse.spmatrix,
+        sparray: sparse.spmatrix,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        symmetry: bool | None = False,
-        symmetry_op: Callable = xp.conj,
+        symmetry: str | None = None,
+        dtype: xp.dtype[xp.generic] = xp.complex128,
+        allocate: bool = True,
     ) -> "DSDBCSR":
-        """Creates a new DSDBSparse matrix from a scipy.sparse array.
+        """Creates a new DSDBCSR matrix from a scipy.sparse array.
+
+        This essentially distributed the matrix across the stack and
+        block communicators.
 
         Parameters
         ----------
-        arr : sparse.spmatrix
-            The sparse array to convert.
+        sparray : sparse.spmatrix
+            The sparse matrix from which to use the sparsity pattern.
         block_sizes : NDArray
-            The size of all the blocks in the matrix.
+            The block sizes of the block-sparse matrix.
         global_stack_shape : tuple
-            The global shape of the stack of matrices. The provided
-            sparse matrix is replicated across the stack.
-        symmetry : bool, optional
-            Whether to enforce symmetry in the matrix. Default is False.
-        symmetry_op : callable, optional
-            The operation to use for the symmetry. Default is
-            `xp.conj`.
+            The global shape of the stack.
+        symmetry : str | None, optional
+            The symmetry of the matrix. This can be "symmetric",
+            "hermitian", "skew-symmetric", "skew-hermitian", or None.
+            Default is None.
+        dtype : xp.dtype, optional
+            The data type of the matrix. Default is `xp.complex128`.
+        allocate : bool, optional
+            Whether to allocate the data of the resulting matrix.
+            Default is True.
 
         Returns
         -------
@@ -834,7 +664,7 @@ class DSDBCSR(DSDBSparse):
         section_size = stack_section_sizes[comm.rank]
         local_stack_shape = (section_size,) + global_stack_shape[1:]
 
-        coo: sparse.coo_matrix = arr.tocoo().copy()
+        coo: sparse.coo_matrix = sparray.tocoo().copy()
 
         # Canonicalizes the COO format.
         coo.sum_duplicates()
@@ -847,20 +677,23 @@ class DSDBCSR(DSDBSparse):
         block_sort_index, rowptr_map = dsdbcsr_kernels.compute_rowptr_map(
             coo.row, coo.col, block_sizes.astype(index_type)
         )
-
-        data = xp.zeros(local_stack_shape + (coo.nnz,), dtype=coo.data.dtype)
-        data[:] = coo.data[block_sort_index]
         cols = coo.col[block_sort_index]
 
-        return cls(
-            data=data,
+        dsdbcsr = cls(
+            dtype=dtype,
             cols=cols,
             rowptr_map=rowptr_map,
             block_sizes=block_sizes,
+            local_stack_shape=local_stack_shape,
             global_stack_shape=global_stack_shape,
             symmetry=symmetry,
-            symmetry_op=symmetry_op,
         )
+        if allocate:
+            dsdbcsr.allocate_data()
+            dsdbcsr._data[:] = 0
+            dsdbcsr.data = coo.data[block_sort_index]
+
+        return dsdbcsr
 
     def to_dense(self) -> NDArray:
         """Converts the local data to a dense array.
@@ -878,9 +711,6 @@ class DSDBCSR(DSDBSparse):
                 "Conversion to dense is only supported in 'stack' distribution state."
             )
 
-        original_return_dense = self.return_dense
-        self.return_dense = True
-
         arr = xp.zeros(self.shape, dtype=self.dtype)
         for i, j in xp.ndindex(self.num_blocks, self.num_blocks):
             arr[
@@ -888,7 +718,5 @@ class DSDBCSR(DSDBSparse):
                 self.block_offsets[i] : self.block_offsets[i + 1],
                 self.block_offsets[j] : self.block_offsets[j + 1],
             ] = self._get_block((Ellipsis,), i, j)
-
-        self.return_dense = original_return_dense
 
         return arr

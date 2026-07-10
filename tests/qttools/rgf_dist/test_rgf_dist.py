@@ -94,20 +94,28 @@ def test_rgf_dist(block_sizes: NDArray, global_stack_shape: tuple):
     a_sparray = a_sparray.tocoo()
     a_sparray.sum_duplicates()
     a_sparray.eliminate_zeros()
-    a_dsdbcoo = DSDBCOO.from_sparray(a_sparray, global_block_sizes, global_stack_shape)
+    a_dsdbcoo = DSDBCOO.from_sparray(
+        sparray=a_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
+    )
 
     sigma_lesser_sparray = sigma_lesser_sparray.tocoo()
     sigma_lesser_sparray.sum_duplicates()
     sigma_lesser_sparray.eliminate_zeros()
     sigma_lesser_dsdbcoo = DSDBCOO.from_sparray(
-        sigma_lesser_sparray, global_block_sizes, global_stack_shape
+        sparray=sigma_lesser_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
     )
 
     sigma_greater_sparray = sigma_greater_sparray.tocoo()
     sigma_greater_sparray.sum_duplicates()
     sigma_greater_sparray.eliminate_zeros()
     sigma_greater_dsdbcoo = DSDBCOO.from_sparray(
-        sigma_greater_sparray, global_block_sizes, global_stack_shape
+        sparray=sigma_greater_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
     )
 
     out_sparray = sparse.diags(
@@ -115,13 +123,19 @@ def test_rgf_dist(block_sizes: NDArray, global_stack_shape: tuple):
     ).tocsr()
 
     xr_out_dsdbcoo = DSDBCOO.from_sparray(
-        out_sparray, global_block_sizes, global_stack_shape
+        sparray=out_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
     )
     xl_out_dsdbcoo = DSDBCOO.from_sparray(
-        out_sparray, global_block_sizes, global_stack_shape
+        sparray=out_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
     )
     xg_out_dsdbcoo = DSDBCOO.from_sparray(
-        out_sparray, global_block_sizes, global_stack_shape
+        sparray=out_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
     )
 
     xr_out_dsdbcoo.data[:] = 0.0
@@ -216,20 +230,28 @@ def test_rgf_dist_no_retarded(block_sizes: NDArray, global_stack_shape: tuple):
     a_sparray = a_sparray.tocoo()
     a_sparray.sum_duplicates()
     a_sparray.eliminate_zeros()
-    a_dsdbcoo = DSDBCOO.from_sparray(a_sparray, global_block_sizes, global_stack_shape)
+    a_dsdbcoo = DSDBCOO.from_sparray(
+        sparray=a_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
+    )
 
     sigma_lesser_sparray = sigma_lesser_sparray.tocoo()
     sigma_lesser_sparray.sum_duplicates()
     sigma_lesser_sparray.eliminate_zeros()
     sigma_lesser_dsdbcoo = DSDBCOO.from_sparray(
-        sigma_lesser_sparray, global_block_sizes, global_stack_shape
+        sparray=sigma_lesser_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
     )
 
     sigma_greater_sparray = sigma_greater_sparray.tocoo()
     sigma_greater_sparray.sum_duplicates()
     sigma_greater_sparray.eliminate_zeros()
     sigma_greater_dsdbcoo = DSDBCOO.from_sparray(
-        sigma_greater_sparray, global_block_sizes, global_stack_shape
+        sparray=sigma_greater_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
     )
 
     out_sparray = sparse.diags(
@@ -237,10 +259,14 @@ def test_rgf_dist_no_retarded(block_sizes: NDArray, global_stack_shape: tuple):
     ).tocsr()
 
     xl_out_dsdbcoo = DSDBCOO.from_sparray(
-        out_sparray, global_block_sizes, global_stack_shape
+        sparray=out_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
     )
     xg_out_dsdbcoo = DSDBCOO.from_sparray(
-        out_sparray, global_block_sizes, global_stack_shape
+        sparray=out_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
     )
 
     xl_out_dsdbcoo.data[:] = 0.0
@@ -330,20 +356,28 @@ def test_rgf_dist_batched(block_sizes: NDArray, global_stack_shape: tuple):
     a_sparray = a_sparray.tocoo()
     a_sparray.sum_duplicates()
     a_sparray.eliminate_zeros()
-    a_dsdbcoo = DSDBCOO.from_sparray(a_sparray, global_block_sizes, global_stack_shape)
+    a_dsdbcoo = DSDBCOO.from_sparray(
+        sparray=a_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
+    )
 
     sigma_lesser_sparray = sigma_lesser_sparray.tocoo()
     sigma_lesser_sparray.sum_duplicates()
     sigma_lesser_sparray.eliminate_zeros()
     sigma_lesser_dsdbcoo = DSDBCOO.from_sparray(
-        sigma_lesser_sparray, global_block_sizes, global_stack_shape
+        sparray=sigma_lesser_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
     )
 
     sigma_greater_sparray = sigma_greater_sparray.tocoo()
     sigma_greater_sparray.sum_duplicates()
     sigma_greater_sparray.eliminate_zeros()
     sigma_greater_dsdbcoo = DSDBCOO.from_sparray(
-        sigma_greater_sparray, global_block_sizes, global_stack_shape
+        sparray=sigma_greater_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
     )
 
     out_sparray = sparse.diags(
@@ -351,13 +385,19 @@ def test_rgf_dist_batched(block_sizes: NDArray, global_stack_shape: tuple):
     ).tocsr()
 
     xr_out_dsdbcoo = DSDBCOO.from_sparray(
-        out_sparray, global_block_sizes, global_stack_shape
+        sparray=out_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
     )
     xl_out_dsdbcoo = DSDBCOO.from_sparray(
-        out_sparray, global_block_sizes, global_stack_shape
+        sparray=out_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
     )
     xg_out_dsdbcoo = DSDBCOO.from_sparray(
-        out_sparray, global_block_sizes, global_stack_shape
+        sparray=out_sparray,
+        block_sizes=global_block_sizes,
+        global_stack_shape=global_stack_shape,
     )
 
     xr_out_dsdbcoo.data[:] = 0.0

@@ -78,14 +78,18 @@ class TestNonDistr:
         coo = _create_btd_coo(block_sizes)
         coo = global_comm.bcast(coo, root=0)
         dsdbsparse = dsdbsparse_type_dist.from_sparray(
-            coo, block_sizes, global_stack_shape
+            sparray=coo,
+            block_sizes=block_sizes,
+            global_stack_shape=global_stack_shape,
         )
         dense = dsdbsparse.to_dense()
 
         # Initalize the output matrix with the correct sparsity pattern.
 
         out = dsdbsparse_type_dist.from_sparray(
-            coo @ coo, block_sizes, global_stack_shape
+            sparray=coo @ coo,
+            block_sizes=block_sizes,
+            global_stack_shape=global_stack_shape,
         )
         out.data[:] = 0
 
@@ -113,14 +117,18 @@ class TestNonDistr:
         coo = _create_btd_coo(block_sizes)
         coo = global_comm.bcast(coo, root=0)
         dsdbsparse = dsdbsparse_type_dist.from_sparray(
-            coo, block_sizes, global_stack_shape
+            sparray=coo,
+            block_sizes=block_sizes,
+            global_stack_shape=global_stack_shape,
         )
         dense = dsdbsparse.to_dense()
 
         # Initalize the output matrix with the correct sparsity pattern.
 
         out = dsdbsparse_type_dist.from_sparray(
-            coo @ coo @ coo, block_sizes, global_stack_shape
+            sparray=coo @ coo @ coo,
+            block_sizes=block_sizes,
+            global_stack_shape=global_stack_shape,
         )
         out.data[:] = 0
 

@@ -25,26 +25,20 @@ class RGF(GFSolver):
     def selected_inv(
         self,
         a: DSDBSparse,
+        out: DSDBSparse,
         obc_blocks: OBCBlocks | None = None,
-        out: DSDBSparse | None = None,
-    ) -> None | DSDBSparse:
+    ) -> None:
         """Performs selected inversion of a block-tridiagonal matrix.
 
         Parameters
         ----------
         a : DSDBSparse
             Matrix to invert.
+        out : DSDBSparse
+            Preallocated output matrix.
         obc_blocks : OBCBlocks, optional
             OBC blocks for lesser, greater and retarded Green's
             functions. By default None.
-        out : DSDBSparse, optional
-            Preallocated output matrix, by default None.
-
-        Returns
-        -------
-        None | DSDBSparse
-            If `out` is None, returns None. Otherwise, returns the
-            inverted matrix as a DSDBSparse object.
 
         """
         # Initialize dense temporary buffers for the diagonal blocks.
@@ -56,10 +50,7 @@ class RGF(GFSolver):
         # Get list of batches to perform
         batches_sizes, batches_slices = get_batches(a.shape[0], self.max_batch_size)
 
-        if out is not None:
-            x = out
-        else:
-            x = a.__class__.zeros_like(a)
+        x = out
 
         for b in range(len(batches_sizes)):
             stack_slice = slice(int(batches_slices[b]), int(batches_slices[b + 1]), 1)
@@ -109,19 +100,16 @@ class RGF(GFSolver):
                 # NOTE: Cursed Python multiple assignment syntax.
                 x_.blocks[i, i] = x_diag_blocks[i] = x_ii - x_ii @ a_ij @ x_ji
 
-        if out is None:
-            return x
-
     def selected_solve(
         self,
         a: DSDBSparse,
         sigma_lesser: DSDBSparse,
         sigma_greater: DSDBSparse,
+        out: tuple[DSDBSparse, ...],
         obc_blocks: OBCBlocks | None = None,
-        out: tuple[DSDBSparse, ...] | None = None,
         return_retarded: bool = False,
         return_current: bool = False,
-    ) -> None | tuple | NDArray:
+    ) -> None | NDArray:
         r"""Produces elements of the solution to the congruence equation.
 
         This method produces selected elements of the solution to the
@@ -136,16 +124,16 @@ class RGF(GFSolver):
         a : DSDBSparse
             Matrix to invert.
         sigma_lesser : DSDBSparse
-            Lesser matrix. This matrix is expected to be
-            skew-hermitian, i.e. \(\Sigma_{ij} = -\Sigma_{ji}^*\).
+            Lesser matrix. This matrix is expected to be skew-hermitian,
+            i.e. \(\Sigma_{ij} = -\Sigma_{ji}^*\).
         sigma_greater : DSDBSparse
             Greater matrix. This matrix is expected to be
             skew-hermitian, i.e. \(\Sigma_{ij} = -\Sigma_{ji}^*\).
+        out : tuple[DSDBSparse, ...]
+            Preallocated output matrices.
         obc_blocks : OBCBlocks, optional
             OBC blocks for lesser, greater and retarded Green's
             functions. By default None.
-        out : tuple[DSDBSparse, ...] | None, optional
-            Preallocated output matrices, by default None
         return_retarded : bool, optional
             Wether the retarded Green's function should be returned
             along with lesser and greater, by default False
@@ -155,12 +143,9 @@ class RGF(GFSolver):
 
         Returns
         -------
-        None | tuple | NDArray
-            If `out` is None, returns None. Otherwise, the solutions are
-            returned as DSBParse matrices. If `return_retarded` is True,
-            returns a tuple with the retarded Green's function as the
-            last element. If `return_current` is True, returns the
-            current for each layer.
+        None | NDArray
+            If `return_current` is True, returns the current for each
+            layer.
 
         """
         # Initialize empty lists for the dense diagonal blocks.
@@ -185,18 +170,23 @@ class RGF(GFSolver):
             sigma_lesser.shape[0], self.max_batch_size
         )
 
-        # If out is not none, xr will be the third element of the tuple.
-        if out is not None:
-            xl, xg, *xr = out
-            if return_retarded:
-                if len(xr) != 1:
-                    raise ValueError("Invalid number of output matrices.")
-                xr = xr[0]
-        else:
-            xl = a.__class__.zeros_like(a)
-            xg = a.__class__.zeros_like(a)
-            if return_retarded:
-                xr = a.__class__.zeros_like(a)
+        # xr will be the third element of the tuple.
+        xl, xg, *xr = out
+        if return_retarded:
+            if len(xr) != 1:
+                raise ValueError("Invalid number of output matrices.")
+            xr = xr[0]
+
+        if xl.symmetry not in [None, "skew-hermitian"]:
+            raise ValueError(
+                "Invalid symmetry for lesser Green's function. "
+                "Expected None or 'skew-hermitian'."
+            )
+        if xg.symmetry not in [None, "skew-hermitian"]:
+            raise ValueError(
+                "Invalid symmetry for greater Green's function. "
+                "Expected None or 'skew-hermitian'."
+            )
 
         # Perform the selected solve by batches.
         for b in range(len(batches_sizes)):
@@ -355,7 +345,7 @@ class RGF(GFSolver):
                 )
 
                 xl_.blocks[i, j] = xl_ij
-                if not xl_.symmetry:
+                if xl_.symmetry is None:
                     xl_.blocks[j, i] = -xl_ij.conj().swapaxes(-2, -1)
 
                 xl_diag_blocks[i] = xl_ii + temp_2x @ a_ij_dagger_xr_ii_dagger + temp_1x
@@ -377,7 +367,7 @@ class RGF(GFSolver):
                 )
 
                 xg_.blocks[i, j] = xg_ij
-                if not xg_.symmetry:
+                if xg_.symmetry is None:
                     xg_.blocks[j, i] = -xg_ij.conj().swapaxes(-2, -1)
 
                 xg_diag_blocks[i] = xg_ii + temp_2x @ a_ij_dagger_xr_ii_dagger + temp_1x
@@ -426,13 +416,6 @@ class RGF(GFSolver):
                 axis1=-2,
                 axis2=-1,
             )
-
-        if out is None:
-            if return_retarded:
-                if return_current:
-                    return xl, xg, xr, current
-                return xl, xg, xr
-            return xl, xg
 
         if return_current:
             return current

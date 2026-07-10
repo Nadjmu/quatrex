@@ -98,12 +98,12 @@ class ElectronSolver(SubsystemSolver):
 
         # Allocate memory for the system matrix.
         self.system_matrix = config.compute.dsdbsparse_type.from_sparray(
-            sparsity_pattern.astype(xp.complex128),
+            sparray=sparsity_pattern.astype(xp.complex128),
             block_sizes=self.block_sizes,
             global_stack_shape=self.energies.shape
             + tuple([int(k) for k in config.device.kpoint_grid if k > 1]),
+            allocate=False,
         )
-        self.system_matrix.free_data()  # Free any previously allocated data
         del sparsity_pattern
 
         self.block_offsets = np.hstack(([0], np.cumsum(self.block_sizes)))
@@ -687,19 +687,32 @@ class ElectronSolver(SubsystemSolver):
 
         """
         self.system_matrix.data = 0.0
+
         if self.overlap is None:
-            self.system_matrix.fill_diagonal(1.0)
+            offset = self.system_matrix.global_block_offset
+            num_diag = self.system_matrix.num_local_diag
+
+            diagonal = (self.local_energies[batch_slice] + 1j * self.eta)[:, np.newaxis]
+            diagonal = (
+                diagonal - self.potential[offset : offset + num_diag][np.newaxis, :]
+            )
+
+            # Add singleton dimensions to match the system matrix shape.
+            num_kpoint_dims = len(self.system_matrix.global_stack_shape) - 1
+            if num_kpoint_dims > 0:
+                new_shape = (
+                    (diagonal.shape[0],) + (1,) * num_kpoint_dims + (diagonal.shape[1],)
+                )
+                diagonal = diagonal.reshape(new_shape)
+
+            self.system_matrix.fill_diagonal(diagonal)
         else:
             self._add_overlap()
+            scale_stack(
+                self.system_matrix.data,
+                self.local_energies[batch_slice] + 1j * self.eta,
+            )
 
-        scale_stack(
-            self.system_matrix.data,
-            self.local_energies[batch_slice] + 1j * self.eta,
-        )
-
-        if self.overlap is None:
-            self.system_matrix -= sparse.diags(self.potential, format="csr")
-        else:
             self._apply_potential()
 
         self._subtract_hamiltonian_and_self_energy(
@@ -719,12 +732,10 @@ class ElectronSolver(SubsystemSolver):
 
         """
         g_lesser, g_greater, g_retarded = out
-        # local_dos = [
-        #     (-xp.diagonal(block, axis1=-2, axis2=-1).imag).mean(-1)
-        #     for block in g_retarded.block_diagonal()
-        # ]
 
         g_retarded_diag = g_retarded.diagonal()
+        g_retarded_diag = comm.block.all_gather_v(g_retarded_diag, axis=-1)
+
         block_sizes = g_retarded.block_sizes
         block_offsets = g_retarded.block_offsets
         local_dos = []

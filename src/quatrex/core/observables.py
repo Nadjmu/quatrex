@@ -24,6 +24,11 @@ def density(x: DSDBSparse, overlap: DSDBSparse | None = None) -> NDArray:
     """
     if overlap is None:
         local_density = x.diagonal().imag
+        local_density = comm.block.all_gather_v(
+            local_density,
+            axis=-1,
+        )
+
         return comm.stack.all_gather_v(
             local_density,
             axis=0,

@@ -63,9 +63,11 @@ OPS = [
     pytest.param(xp.subtract, id="subtract"),
 ]
 
-SYMMETRY_TYPE = [
-    pytest.param((False, lambda x: x), id="non-symmetric"),
-    pytest.param((True, lambda x: -xp.conj(x)), id="skew-hermitian"),
+SYMMETRY = [
+    pytest.param(None, id="non-symmetric"),
+    pytest.param("skew-hermitian", id="skew-hermitian"),
+    pytest.param("hermitian", id="hermitian"),
+    pytest.param("symmetric", id="symmetric"),
 ]
 
 
@@ -119,6 +121,6 @@ def op(request):
     return request.param
 
 
-@pytest.fixture(params=SYMMETRY_TYPE)
-def symmetry_type(request: pytest.FixtureRequest) -> bool:
+@pytest.fixture(params=SYMMETRY)
+def symmetry(request: pytest.FixtureRequest) -> str | None:
     return request.param

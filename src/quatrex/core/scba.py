@@ -104,45 +104,45 @@ class SCBAData:
         dsdbsparse_type = config.compute.dsdbsparse_type
 
         self.g_retarded = dsdbsparse_type.from_sparray(
-            self.sparsity_pattern.astype(xp.complex128),
+            sparray=self.sparsity_pattern.astype(xp.complex128),
             block_sizes=block_sizes,
             global_stack_shape=electron_energies.shape
             + tuple([k for k in kpoint_grid if k > 1]),
+            allocate=False,
         )
-        self.g_retarded.data[:] = 0.0  # Initialize to zero.
 
         self.g_lesser = dsdbsparse_type.from_sparray(
-            self.sparsity_pattern.astype(xp.complex128),
+            sparray=self.sparsity_pattern.astype(xp.complex128),
             block_sizes=block_sizes,
             global_stack_shape=electron_energies.shape
             + tuple([k for k in kpoint_grid if k > 1]),
-            symmetry=config.scba.symmetric,
-            symmetry_op=lambda a: -a.conj(),
+            symmetry="skew-hermitian" if config.scba.symmetric else None,
+            allocate=False,
         )
-        self.g_greater = dsdbsparse_type.zeros_like(self.g_lesser)
+        self.g_greater = dsdbsparse_type.empty_like(self.g_lesser)
 
-        self.sigma_lesser_prev = dsdbsparse_type.zeros_like(self.g_lesser)
-        self.sigma_lesser = dsdbsparse_type.zeros_like(self.g_lesser)
-        self.sigma_greater_prev = dsdbsparse_type.zeros_like(self.g_lesser)
-        self.sigma_greater = dsdbsparse_type.zeros_like(self.g_lesser)
+        self.sigma_lesser_prev = dsdbsparse_type.empty_like(self.g_lesser)
+        self.sigma_lesser = dsdbsparse_type.empty_like(self.g_lesser)
+        self.sigma_greater_prev = dsdbsparse_type.empty_like(self.g_lesser)
+        self.sigma_greater = dsdbsparse_type.empty_like(self.g_lesser)
 
-        self.sigma_retarded_hermitian_prev = dsdbsparse_type.zeros_like(self.g_lesser)
-        self.sigma_retarded_hermitian = dsdbsparse_type.zeros_like(self.g_lesser)
+        self.sigma_retarded_hermitian_prev = dsdbsparse_type.empty_like(self.g_lesser)
+        self.sigma_retarded_hermitian = dsdbsparse_type.empty_like(self.g_lesser)
         if config.scba.symmetric:
-            self.sigma_retarded_hermitian.symmetry_op = lambda a: a.conj()
-            self.sigma_retarded_hermitian_prev.symmetry_op = lambda a: a.conj()
+            self.sigma_retarded_hermitian.symmetry = "hermitian"
+            self.sigma_retarded_hermitian_prev.symmetry = "hermitian"
 
         if config.scba.coulomb_screening:
             # NOTE: The polarization has the same sparsity pattern as
             # the electronic system (the interactions are local in real
             # space). However, we need to change the block sizes of the
             # screened Coulomb interaction.
-            self.p_retarded_hermitian = dsdbsparse_type.zeros_like(self.g_lesser)
-            self.p_lesser = dsdbsparse_type.zeros_like(self.g_lesser)
-            self.p_greater = dsdbsparse_type.zeros_like(self.g_lesser)
+            self.p_retarded_hermitian = dsdbsparse_type.empty_like(self.g_lesser)
+            self.p_lesser = dsdbsparse_type.empty_like(self.g_lesser)
+            self.p_greater = dsdbsparse_type.empty_like(self.g_lesser)
 
             if config.scba.symmetric:
-                self.p_retarded_hermitian.symmetry_op = lambda a: a.conj()
+                self.p_retarded_hermitian.symmetry = "hermitian"
 
             num_connected_blocks = config.coulomb_screening.num_connected_blocks
             if num_connected_blocks == "auto":
@@ -160,14 +160,14 @@ class SCBAData:
             )
 
             self.w_lesser = dsdbsparse_type.from_sparray(
-                self.sparsity_pattern.astype(xp.complex128),
+                sparray=self.sparsity_pattern.astype(xp.complex128),
                 block_sizes=coulomb_screening_block_sizes,
                 global_stack_shape=electron_energies.shape
                 + tuple([k for k in kpoint_grid if k > 1]),
-                symmetry=config.scba.symmetric,
-                symmetry_op=lambda a: -a.conj(),
+                symmetry="skew-hermitian" if config.scba.symmetric else None,
+                allocate=False,
             )
-            self.w_greater = dsdbsparse_type.zeros_like(self.w_lesser)
+            self.w_greater = dsdbsparse_type.empty_like(self.w_lesser)
 
         # TODO: The interactions with photons and phonons are not yet
         # implemented.
@@ -176,6 +176,16 @@ class SCBAData:
 
         if config.scba.phonon and config.phonon.model == "negf":
             raise NotImplementedError
+
+        # Allocate the data for the Green's functions and self-energies.
+        self.g_lesser.allocate_data()
+        self.g_greater.allocate_data()
+        self.sigma_lesser.allocate_data()
+        self.sigma_greater.allocate_data()
+        self.sigma_retarded_hermitian.allocate_data()
+        self.sigma_lesser.data = 0.0
+        self.sigma_greater.data = 0.0
+        self.sigma_retarded_hermitian.data = 0.0
 
 
 @dataclass
@@ -288,7 +298,7 @@ class SCBA(TransportSolver):
 
             # Make sure the Coulomb matrix is hermitian.
             # TODO: Check that this is correct for kpoints.
-            if not coulomb_matrix.symmetry:
+            if coulomb_matrix.symmetry is None:
                 coulomb_matrix.symmetrize()
             coulomb_matrix._data /= config.coulomb_screening.epsilon_r
 
@@ -361,6 +371,11 @@ class SCBA(TransportSolver):
 
     def _stash_sigma(self) -> None:
         """Stash the current into the previous self-energy buffers."""
+
+        self.data.sigma_lesser_prev.allocate_data()
+        self.data.sigma_greater_prev.allocate_data()
+        self.data.sigma_retarded_hermitian_prev.allocate_data()
+
         self.data.sigma_lesser_prev.data[:] = self.data.sigma_lesser.data
         self.data.sigma_greater_prev.data[:] = self.data.sigma_greater.data
         self.data.sigma_retarded_hermitian_prev.data[:] = (
@@ -404,6 +419,10 @@ class SCBA(TransportSolver):
             (1 - self.mixing_factor) * self.data.sigma_retarded_hermitian_prev.data
             + self.mixing_factor * self.data.sigma_retarded_hermitian.data
         )
+
+        self.data.sigma_lesser_prev.free_data()
+        self.data.sigma_greater_prev.free_data()
+        self.data.sigma_retarded_hermitian_prev.free_data()
 
     @profiler.profile(label="SCBA: Convergence test", level="default", comm=comm)
     def _has_converged(self) -> bool:
@@ -740,6 +759,8 @@ class SCBA(TransportSolver):
             with profiler.profile_range(
                 label="SCBA: Iteration", level="default", comm=comm
             ):
+                self.data.g_retarded.allocate_data()
+                self.data.g_retarded.data = 0.0
                 self.electron_solver.solve(
                     self.data.sigma_lesser,
                     self.data.sigma_greater,
@@ -747,6 +768,8 @@ class SCBA(TransportSolver):
                     out=(self.data.g_lesser, self.data.g_greater, self.data.g_retarded),
                 )
                 self._compute_electron_observables()
+
+                self.data.g_retarded.free_data()
 
                 # Stash current into previous self-energy buffer.
                 self._stash_sigma()

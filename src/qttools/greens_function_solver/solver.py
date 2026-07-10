@@ -35,26 +35,20 @@ class GFSolver(ABC):
     def selected_inv(
         self,
         a: DSDBSparse,
+        out: DSDBSparse,
         obc_blocks: OBCBlocks | None = None,
-        out: DSDBSparse = None,
-    ) -> None | DSDBSparse:
+    ) -> None:
         """Performs selected inversion of a block-tridiagonal matrix.
 
         Parameters
         ----------
         a : DSDBSparse
             Matrix to invert.
+        out : DSDBSparse
+            Preallocated output matrix.
         obc_blocks : OBCBlocks, optional
             OBC blocks for lesser, greater and retarded Green's
             functions. By default None.
-        out : DSDBSparse, optional
-            Preallocated output matrix, by default None.
-
-        Returns
-        -------
-        None | DSDBSparse
-            If `out` is None, returns None. Otherwise, returns the
-            inverted matrix as a DSDBSparse object.
 
         """
         ...
@@ -65,11 +59,11 @@ class GFSolver(ABC):
         a: DSDBSparse,
         sigma_lesser: DSDBSparse,
         sigma_greater: DSDBSparse,
+        out: tuple[DSDBSparse, ...],
         obc_blocks: OBCBlocks | None = None,
-        out: tuple | None = None,
         return_retarded: bool = False,
         return_current: bool = False,
-    ) -> None | tuple:
+    ) -> None | NDArray:
         r"""Produces elements of the solution to the congruence equation.
 
         This method produces selected elements of the solution to the
@@ -89,11 +83,11 @@ class GFSolver(ABC):
         sigma_greater : DSDBSparse
             Greater matrix. This matrix is expected to be
             skew-hermitian, i.e. \(\Sigma_{ij} = -\Sigma_{ji}^*\).
+        out : tuple[DSDBSparse, ...]
+            Preallocated output matrices
         obc_blocks : dict[int, OBCBlocks], optional
             OBC blocks for lesser, greater and retarded Green's
             functions, by default None.
-        out : tuple[DSDBSparse, ...] | None, optional
-            Preallocated output matrices, by default None
         return_retarded : bool, optional
             Wether the retarded Green's function should be returned
             along with lesser and greater, by default False
@@ -103,11 +97,9 @@ class GFSolver(ABC):
 
         Returns
         -------
-        None | tuple
-            If `out` is None, returns None. Otherwise, the solutions are
-            returned as DSBParse matrices. If `return_retarded` is True,
-            returns a tuple with the retarded Green's function as the
-            last element.
+        None | NDArray
+            If `return_current` is True, returns the
+            current for each layer.
 
         """
         ...

@@ -23,11 +23,6 @@ BATCHING_TYPE = [
     pytest.param(100, id="all-batching"),
 ]
 
-OUT = [
-    pytest.param(True, id="out_true"),
-    pytest.param(False, id="out_false"),
-]
-
 RETURN_RETARDED = [
     pytest.param(True, id="return_retarded"),
     pytest.param(False, id="not_return_retarded"),
@@ -106,11 +101,6 @@ def bt_dense(block_sizes: NDArray) -> NDArray:
 
 @pytest.fixture(params=BATCHING_TYPE)
 def max_batch_size(request: pytest.FixtureRequest) -> int:
-    return request.param
-
-
-@pytest.fixture(params=OUT)
-def out(request: pytest.FixtureRequest) -> bool:
     return request.param
 
 

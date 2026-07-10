@@ -167,7 +167,11 @@ def test_product_sparsity_dsdbsparse(
     """Tests the computation of the matrix product's sparsity pattern."""
     matrices = [_create_btd_coo(block_sizes) for _ in range(num_matrices)]
     dsdbsparse_matrices = [
-        dsdbsparse_type.from_sparray(matrix, block_sizes, global_stack_shape)
+        dsdbsparse_type.from_sparray(
+            sparray=matrix,
+            block_sizes=block_sizes,
+            global_stack_shape=global_stack_shape,
+        )
         for matrix in matrices
     ]
     dense_matrices = [matrix.to_dense() for matrix in dsdbsparse_matrices]
@@ -209,7 +213,11 @@ def test_product_sparsity_dsdbsparse_spillover(
 
     matrices = [_create_btd_coo_periodic(block_sizes) for _ in range(num_matrices)]
     dsdbsparse_matrices = [
-        dsdbsparse_type.from_sparray(matrix, block_sizes, global_stack_shape)
+        dsdbsparse_type.from_sparray(
+            sparray=matrix,
+            block_sizes=block_sizes,
+            global_stack_shape=global_stack_shape,
+        )
         for matrix in matrices
     ]
     dense_matrices = [matrix.to_dense() for matrix in dsdbsparse_matrices]
