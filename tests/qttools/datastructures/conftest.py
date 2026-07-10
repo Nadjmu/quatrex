@@ -122,5 +122,5 @@ def op(request):
 
 
 @pytest.fixture(params=SYMMETRY)
-def symmetry(request: pytest.FixtureRequest) -> bool:
+def symmetry(request: pytest.FixtureRequest) -> str | None:
     return request.param
