@@ -66,6 +66,23 @@ Other available environments are:
   information, see the [HPC installation
   section](#installation-on-hpc-systems).
 
+!!! info "Registering and using `pixi` workspaces"
+    Often you will want to run `quatrex` from a different directory than
+    the source code, e.g. to run a simulation in some other directory.
+    In this case, you can register the quatrex workspace with
+
+    ```bash
+    pixi workspace register --path /path/to/quatrex
+    ```
+    After this you can launch a `pixi` shell in the quatrex workspace
+    from any other directory with
+
+    ```bash
+    pixi shell --workspace quatrex  # Optionally add --environment=<env>
+    ```
+    You can find more information on `pixi` named workspaces in the
+    [pixi documentation](https://pixi.prefix.dev/latest/switching_from/conda/#named-workspaces).
+
 ## Installation using `uv`
 
 [`uv`](https://docs.astral.sh/uv/) is a general-purpose Python
@@ -97,9 +114,13 @@ uv pip install --editable .[<dev|docs|gpu>]
     `quatrex`](../user_guide/cli/#quatrex-mesh) is currently not
     supported on `linux-aarch64` systems, as the `gmsh` package does not
     provide pre-built binaries for this platform and also cannot be
-    built from source. You can still use `quatrex` for running
+    built from source via PyPI. You can still use `quatrex` for running
     simulations on such systems, but you will not be able to generate
     and visualize the device mesh.
+
+    Alternatively you can [install `quatrex` via
+    `pixi`](#installation-using-pixi) or build `gmsh` entirely from
+    source and manually install the Python bindings.
 
 ## Installation on HPC systems
 
@@ -188,6 +209,27 @@ srun quatrex run <path/to/config.toml>
     become incoherent across nodes. It is better to warm up the caches
     or to explicitly set cache directories to a shared location, as
     shown in the example above.
+
+!!! info "Using `pixi` workspaces on HPC systems"
+    Like described [above](#installation-using-pixi), you can also
+    register a `quatrex` workspace on Alps with
+    ```bash
+    pixi workspace register --path /path/to/quatrex
+    ```
+    And you can then use this workspace in batch scripts or from any
+    other directory
+
+    ```bash
+    #!/bin/bash
+
+    # ... SBATCH directives ...
+
+    eval "$(pixi shell-hook --workspace quatrex --environment hpc --frozen)"
+
+    srun quatrex run <path/to/config.toml>
+    ```
+
+
 
 ### Installing `quatrex` on Alps using `uv`
 
