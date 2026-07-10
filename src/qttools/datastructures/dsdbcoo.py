@@ -474,34 +474,6 @@ class DSDBCOO(DSDBSparse):
         if xp.any(self.cols != other.cols):
             raise ValueError("Column indices do not match.")
 
-    def __iadd__(self, other: "DSDBCOO | sparse.spmatrix") -> "DSDBCOO":
-        """In-place addition of two DSDBCOO matrices."""
-
-        if sparse.issparse(other):
-            # Perform checks on the shape of the sparse matrix.
-            if other.shape != self.shape[-2:]:
-                raise ValueError(
-                    f"Sparse matrix shape does not match DSDBCOO shape: {other.shape} != {self.shape[-2:]}"
-                )
-            csr = other.tocsr()
-            self.data += csr[
-                self.rows + self.global_block_offset,
-                self.cols + self.global_block_offset,
-            ]
-            return self
-
-        if (
-            self.symmetry != other.symmetry
-            or symmetry_ops[self.symmetry] != symmetry_ops[other.symmetry]
-        ):
-            raise ValueError(
-                "Symmetry and symmetry_op must match for in-place addition."
-            )
-
-        self._check_commensurable(other)
-        self._data += other._data
-        return self
-
     @DSDBSparse.block_sizes.setter
     def block_sizes(self, block_sizes: NDArray) -> None:
         """Sets new block sizes for the matrix.

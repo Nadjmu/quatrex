@@ -573,7 +573,7 @@ class CoulombScreeningSolver(SubsystemSolver):
             )
 
         xp.negative(self.system_matrix.data, out=self.system_matrix.data)
-        self.system_matrix += sparse.eye(self.system_matrix.shape[-1])
+        self.system_matrix.fill_diagonal(self.system_matrix.diagonal() + 1.0)
 
     def _contact_spillover_sandwich(
         self,

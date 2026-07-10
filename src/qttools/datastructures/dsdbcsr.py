@@ -418,17 +418,6 @@ class DSDBCSR(DSDBSparse):
         if xp.any(self.cols != other.cols):
             raise ValueError("Column indices do not match.")
 
-    def __iadd__(self, other: "DSDBCSR | sparse.spmatrix") -> "DSDBCSR":
-        """In-place addition of two DSDBCSR matrices."""
-        if sparse.issparse(other):
-            raise NotImplementedError(
-                "In-place addition is not implemented for DSDBCSR matrices."
-            )
-
-        self._check_commensurable(other)
-        self._data += other._data
-        return self
-
     @DSDBSparse.block_sizes.setter
     def block_sizes(self, block_sizes: NDArray) -> None:
         """Sets new block sizes for the matrix.

@@ -320,10 +320,10 @@ def _expand_tight_binding_matrix(
 
 
 def _sum_operator(
-    matrix_dict: dict[tuple, sparse.csr_matrix | NDArray],
+    matrix_dict: dict[tuple, sparse.csr_matrix],
     symmetry: str | None = None,
     phases: dict | None = None,
-):
+) -> sparse.csr_matrix:
     """Sums up periodic image contributions for a specific k-point.
 
     This takes a Hermitian operator (e.g., Hamiltonian, overlap) and performs a weighted
@@ -331,7 +331,7 @@ def _sum_operator(
 
     Parameters
     ----------
-    matrix_dict : dict[tuple, sparse.csr_matrix | NDArray]
+    matrix_dict : dict[tuple, sparse.csr_matrix]
         The dictionary of matrices corresponding to different periodic
         repetitions. It is assumed that only the upper parts are present.
     symmetry : str | None, optional
@@ -339,6 +339,11 @@ def _sum_operator(
     phases : dict, optional
         A dictionary mapping the different image indices to their weight.
         If not provided, this performs an unweighted sum.
+
+    Returns
+    -------
+    sparse.csr_matrix
+        The summed matrix for the specific k-point.
 
     """
 
@@ -397,7 +402,9 @@ def _assemble_kpoint(
             )
 
     if all(kpoint_grid == 1):
-        out_matrix.stack[(...,)] += _sum_operator(matrix_dict, out_matrix.symmetry)
+        out_matrix.data += _sum_operator(matrix_dict, out_matrix.symmetry)[
+            out_matrix.spy()
+        ]
     else:
 
         kpoints = monkhorst_pack(kpoint_grid, kpoint_shift).reshape(
@@ -416,9 +423,9 @@ def _assemble_kpoint(
                 for coord in matrix_dict
             }
 
-            out_matrix.stack[(...,) + stack_index] += _sum_operator(
+            out_matrix.data[(...,) + stack_index + (slice(None),)] += _sum_operator(
                 matrix_dict, out_matrix.symmetry, phases=phases
-            )
+            )[out_matrix.spy()]
 
 
 def _create_matrix_from_unit_cells(
