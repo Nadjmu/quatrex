@@ -27,7 +27,7 @@ class RGF(GFSolver):
         a: DSDBSparse,
         out: DSDBSparse,
         obc_blocks: OBCBlocks | None = None,
-    ) -> None | DSDBSparse:
+    ) -> None:
         """Performs selected inversion of a block-tridiagonal matrix.
 
         Parameters
@@ -39,12 +39,6 @@ class RGF(GFSolver):
         obc_blocks : OBCBlocks, optional
             OBC blocks for lesser, greater and retarded Green's
             functions. By default None.
-
-        Returns
-        -------
-        None | DSDBSparse
-            If `out` is None, returns None. Otherwise, returns the
-            inverted matrix as a DSDBSparse object.
 
         """
         # Initialize dense temporary buffers for the diagonal blocks.
@@ -115,7 +109,7 @@ class RGF(GFSolver):
         obc_blocks: OBCBlocks | None = None,
         return_retarded: bool = False,
         return_current: bool = False,
-    ) -> None | tuple | NDArray:
+    ) -> None | NDArray:
         r"""Produces elements of the solution to the congruence equation.
 
         This method produces selected elements of the solution to the
@@ -130,13 +124,13 @@ class RGF(GFSolver):
         a : DSDBSparse
             Matrix to invert.
         sigma_lesser : DSDBSparse
-            Lesser matrix. This matrix is expected to be
-            skew-hermitian, i.e. \(\Sigma_{ij} = -\Sigma_{ji}^*\).
+            Lesser matrix. This matrix is expected to be skew-hermitian,
+            i.e. \(\Sigma_{ij} = -\Sigma_{ji}^*\).
         sigma_greater : DSDBSparse
             Greater matrix. This matrix is expected to be
             skew-hermitian, i.e. \(\Sigma_{ij} = -\Sigma_{ji}^*\).
-        out : tuple[DSDBSparse, ...], optional
-            Preallocated output matrices, by default None
+        out : tuple[DSDBSparse, ...]
+            Preallocated output matrices.
         obc_blocks : OBCBlocks, optional
             OBC blocks for lesser, greater and retarded Green's
             functions. By default None.
@@ -150,8 +144,8 @@ class RGF(GFSolver):
         Returns
         -------
         None | NDArray
-            If `return_current` is True, returns the
-            current for each layer.
+            If `return_current` is True, returns the current for each
+            layer.
 
         """
         # Initialize empty lists for the dense diagonal blocks.
