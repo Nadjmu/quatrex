@@ -147,7 +147,7 @@ Direct
 </details>
 
 The calculations were performed with the standard VASP `PAW_PBE` carbon
-potential (`C`, 08Apr2002) obtained from the VASP portal.
+pseudopotential (`C`, 08Apr2002) obtained from the VASP portal.
 
 Using these input files, the SCF calculation can be run (parallelizing
 over the bands) with the following command:
@@ -265,8 +265,8 @@ At the end of the Wannier90 calculation, we find spreads of roughly 3
 for this example, especially given the small number of projections used
 for this wannierization. The DFT band structure and the
 Wannier-interpolated band structure are in good agreement. The resulting
-Hamiltonian is stored in the `wannier90_hr.dat` file is used to
-construct inputs for the transport simulations.
+Hamiltonian, stored in the `wannier90_hr.dat` file, is used to construct
+inputs for the transport simulations.
 
 ## Constructing Transport Hamiltonian and Structure Files
 
