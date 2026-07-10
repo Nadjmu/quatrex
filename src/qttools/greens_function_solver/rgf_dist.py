@@ -453,7 +453,7 @@ class RGFDist(GFSolver):
             # Now we need to allreduce the current across the block
             # communicator to get the total current for each layer.
             # NOTE: We use allreduce instead of allgather since every
-            # rank allocates the full curent
+            # rank allocates the full current
             total_current = xp.empty_like(current)
             comm.block.all_reduce(current, total_current, op="sum")
 
