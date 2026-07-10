@@ -270,7 +270,10 @@ class TestAccess:
         dsdbsparse.fill_diagonal(val=xp.ones_like(dense[..., inds, inds]))
         stack_index = (0,) * len(global_stack_shape)
         inds = dense[*stack_index, inds, inds].nonzero()
-        dense[..., inds, inds] = 0.5 * (symmetry_ops[symmetry](1) + 1)
+        if symmetry is None:
+            dense[..., inds, inds] = 1
+        else:
+            dense[..., inds, inds] = 0.5 * (symmetry_ops[symmetry](1) + 1)
         assert xp.allclose(dense, dsdbsparse.to_dense())
 
     def test_set_diagonal_substack(
@@ -299,7 +302,10 @@ class TestAccess:
         )
         tmp_stack_index = (0,) * len(global_stack_shape)
         inds = dense[*tmp_stack_index, inds, inds].nonzero()
-        dense[*stack_index][..., inds, inds] = 0.5 * (symmetry_ops[symmetry](1) + 1)
+        if symmetry is None:
+            dense[*stack_index][..., inds, inds] = 1
+        else:
+            dense[*stack_index][..., inds, inds] = 0.5 * (symmetry_ops[symmetry](1) + 1)
         assert xp.allclose(dense, dsdbsparse.to_dense())
 
     def test_set_diagonal_substack_val(
@@ -325,7 +331,10 @@ class TestAccess:
         dsdbsparse.fill_diagonal(stack_index=stack_index, val=2)
         tmp_stack_index = (0,) * len(global_stack_shape)
         inds = dense[*tmp_stack_index, inds, inds].nonzero()
-        dense[*stack_index][..., inds, inds] = 0.5 * (symmetry_ops[symmetry](2) + 2)
+        if symmetry is None:
+            dense[*stack_index][..., inds, inds] = 2
+        else:
+            dense[*stack_index][..., inds, inds] = 0.5 * (symmetry_ops[symmetry](2) + 2)
         assert xp.allclose(dense, dsdbsparse.to_dense())
 
     def test_set_stack(

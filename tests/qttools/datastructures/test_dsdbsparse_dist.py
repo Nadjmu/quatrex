@@ -841,7 +841,10 @@ class TestDistribution:
         dsdbsparse.fill_diagonal(val=42)
         stack_index = (0,) * len(global_stack_shape)
         inds = dense[*stack_index, inds, inds].nonzero()
-        dense[..., inds, inds] = 0.5 * (symmetry_ops[symmetry](42) + 42)
+        if symmetry is None:
+            dense[..., inds, inds] = 42
+        else:
+            dense[..., inds, inds] = 0.5 * (symmetry_ops[symmetry](42) + 42)
 
         dsdbsparse.dtranspose()
 

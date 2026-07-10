@@ -624,9 +624,10 @@ class DSDBCOO(DSDBSparse):
         to coordinate format. The returned sparsity pattern is not
         sorted.
 
-        !!! Note:
-            In the block distributed case, this returns the local
-            sparsity pattern.
+        Note
+        ----
+        In the block distributed case, this returns the local
+        sparsity pattern.
 
         Returns
         -------
@@ -725,6 +726,8 @@ class DSDBCOO(DSDBSparse):
         """Creates a new DSDBCOO matrix with the same shape and
         dtype.
 
+        Note
+        ----
         There is no data allocated in the new matrix. The sparsity
         pattern is the same as the original matrix.
 
@@ -761,8 +764,8 @@ class DSDBCOO(DSDBSparse):
     ) -> "DSDBCOO":
         """Constructs a DSDBCOO matrix from a sparse matrix.
 
-        This essentially distributes the COO matrix across the
-        participating ranks.
+        This essentially distributed the matrix across the stack and
+        block communicators.
 
         Parameters
         ----------
@@ -854,8 +857,9 @@ class DSDBCOO(DSDBSparse):
 
         This is dumb, unless used for testing and debugging.
 
-        !!! Warning:
-            This create a very large dense matrix.
+        Warning
+        -------
+        This creates a very large dense matrix.
 
         Returns
         -------

@@ -498,7 +498,9 @@ class DSDBCSR(DSDBSparse):
     def symmetrize(self, op: Callable[[NDArray, NDArray], NDArray] = xp.add) -> None:
         """Symmetrizes the matrix.
 
-        NOTE: Assumes that the matrix's sparsity pattern is symmetric.
+        Note
+        ----
+        This assumes that the matrix's sparsity pattern is symmetric.
 
         Parameters
         ----------
@@ -558,12 +560,14 @@ class DSDBCSR(DSDBSparse):
         to coordinate format. The returned sparsity pattern is not
         sorted.
 
-        !!! Note:
-            In the block distributed case, this returns the local
-            sparsity pattern.
+        Note
+        ----
+        In the block distributed case, this returns the local
+        sparsity pattern.
 
-        !!! Warning:
-            This not performant.
+        Warning
+        -------
+        This not performant.
 
         Returns
         -------
@@ -587,6 +591,8 @@ class DSDBCSR(DSDBSparse):
     def empty_like(cls, dsdbsparse: "DSDBCSR") -> "DSDBCSR":
         """Creates a new DSDBCSR matrix with the same shape and dtype.
 
+        Note
+        ----
         There is no data allocated in the new matrix. The sparsity
         pattern is the same as the original matrix.
 
@@ -624,6 +630,9 @@ class DSDBCSR(DSDBSparse):
         allocate: bool = True,
     ) -> "DSDBCSR":
         """Creates a new DSDBCSR matrix from a scipy.sparse array.
+
+        This essentially distributed the matrix across the stack and
+        block communicators.
 
         Parameters
         ----------

@@ -14,7 +14,6 @@ from qttools.utils.gpu_utils import free_mempool, synchronize_device
 from qttools.utils.mpi_utils import get_section_sizes
 
 symmetry_ops = {
-    None: lambda x: x,
     "symmetric": lambda x: x,
     "hermitian": xp.conj,
     "skew-symmetric": lambda x: -x,
@@ -169,13 +168,13 @@ class DSDBSparse(ABC):
         if comm.block is None or comm.stack is None:
             raise ValueError(
                 "Block and stack communicators must be initialized via "
-                "the BLOCK_COMM_SIZE environment variable."
+                "the `setup_context` method."
             )
 
-        if symmetry not in symmetry_ops:
+        if symmetry not in list(symmetry_ops.keys()) + [None]:
             raise ValueError(
                 f"Invalid symmetry '{symmetry}'."
-                f"Must be one of {list(symmetry_ops.keys())}."
+                f"Must be one of {list(symmetry_ops.keys()) + [None]}."
             )
 
         # Type of the data
@@ -545,9 +544,10 @@ class DSDBSparse(ABC):
     def diagonal(self, stack_index: tuple = (Ellipsis,)) -> NDArray:
         """Returns or sets the diagonal elements of the matrix.
 
-        !!! Note:
-            In the block distributed case, this returns the local
-            diagonal elements.
+        Note
+        ----
+        In the block distributed case, this returns the local
+        diagonal elements.
 
         Parameters
         ----------
@@ -723,9 +723,10 @@ class DSDBSparse(ABC):
         to coordinate format. The returned sparsity pattern is not
         sorted.
 
-        !!! Note:
-            In the block distributed case, this returns the local
-            sparsity pattern including the offset.
+        Note
+        ----
+        In the block distributed case, this returns the local
+        sparsity pattern including the offset.
 
         Returns
         -------
@@ -780,14 +781,18 @@ class DSDBSparse(ABC):
     def allocate_data(self, stack_size: int | None = None) -> None:
         """Allocates the local data.
 
-        This should not be called with a non-None stack size
-        if the data will be dtransposed.
+        Note
+        ----
+        This should not be called with a non-None stack size if the
+        data will be dtransposed.
+        The data is not zeroed. It is the user responsibility to
+        ensure that the data is initialized correctly.
 
         Parameters
         ----------
         stack_size : int, optional
-            The size of the stack dimension to allocate. If None, the full
-            stack size is used. Default is None.
+            The size of the stack dimension to allocate. If None, the
+            full stack size is used. Default is None.
 
         """
         free_mempool()
@@ -847,10 +852,6 @@ class DSDBSparse(ABC):
         This essentially distributed the matrix across the stack and
         block communicators.
 
-        !!! Note
-            There is no data allocated in the new matrix and only the
-            sparsity pattern is used.
-
         Parameters
         ----------
         sparray : sparse.spmatrix
@@ -883,6 +884,8 @@ class DSDBSparse(ABC):
         """Creates a new DSDBSparse matrix with the same shape and
         dtype.
 
+        Note
+        ----
         There is no data allocated in the new matrix. The sparsity
         pattern is the same as the original matrix.
 
