@@ -6,7 +6,15 @@ from hashlib import sha256
 from tempfile import NamedTemporaryFile
 
 import ase.io
-import gmsh
+
+try:
+    import gmsh
+
+    gmsh_available = True
+
+except ImportError:
+    gmsh_available = False
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import meshio
@@ -732,6 +740,12 @@ class DeviceMesh:
             The generated mesh.
 
         """
+        if not gmsh_available:
+            raise ImportError(
+                "GMSH is not available. Make sure GMSH is installed and "
+                "the Python API is accessible."
+            )
+
         print("Generating mesh with GMSH...")
 
         # Initialize gmsh and create a temporary model.
