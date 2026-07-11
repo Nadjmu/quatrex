@@ -299,7 +299,7 @@ class SCBA(TransportSolver):
             # Make sure the Coulomb matrix is hermitian.
             # TODO: Check that this is correct for kpoints.
             if coulomb_matrix.symmetry is None:
-                coulomb_matrix.symmetrize()
+                coulomb_matrix.symmetrize("hermitian")
             coulomb_matrix._data /= config.coulomb_screening.epsilon_r
 
             energies_path = self.config.input_dir / "coulomb_screening_energies.npy"
@@ -390,12 +390,12 @@ class SCBA(TransportSolver):
     def _symmetrize_sigma(self) -> None:
         # Symmetrization.
         if not self.config.scba.symmetric:
-            self.data.sigma_lesser.symmetrize(xp.subtract)
-            self.data.sigma_greater.symmetrize(xp.subtract)
+            self.data.sigma_lesser.symmetrize("skew-hermitian")
+            self.data.sigma_greater.symmetrize("skew-hermitian")
             # Make the self-energy Hermitian
             # This is done before adding the skew hermitian part coming
             # from the lesser and greater self-energies
-            self.data.sigma_retarded_hermitian.symmetrize(xp.add)
+            self.data.sigma_retarded_hermitian.symmetrize("hermitian")
 
         if self.config.scba.align_self_energy_to_complex_axes:
             self.data.sigma_lesser._data.real = 0

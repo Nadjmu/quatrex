@@ -1,7 +1,5 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
-from typing import Callable
-
 import numpy as np
 
 from qttools import NDArray, sparse, xp
@@ -664,11 +662,8 @@ class DSDBCOO(DSDBSparse):
 
         return xp.all(idx_original == idx_swapped)
 
-    def symmetrize(self, op: Callable[[NDArray, NDArray], NDArray] = xp.add) -> None:
-        """Symmetrizes the matrix with a given operation.
-
-        This is done by setting the data to the result of the operation
-        applied to the data and its conjugate transpose.
+    def symmetrize(self, symmetry: str) -> None:
+        """Symmetrizes the matrix with a given symmetry.
 
         Note
         ----
@@ -676,13 +671,21 @@ class DSDBCOO(DSDBSparse):
 
         Parameters
         ----------
-        op : callable, optional
-            The operation to apply to the data and its conjugate
-            transpose. Default is `xp.add`, so that the matrix is
-            Hermitian after calling.
+        symmetry : str
+            The symmetry to enforce. This can be "symmetric",
+            "hermitian", "skew-symmetric", or "skew-hermitian".
 
         """
+        if symmetry not in symmetry_ops:
+            raise ValueError(
+                f"Symmetry must be one of {list(symmetry_ops.keys())} but got {symmetry}."
+            )
+
         if self.symmetry is not None:
+            if symmetry != self.symmetry:
+                raise ValueError(
+                    f"Matrix is already {self.symmetry}. Cannot enforce {symmetry}."
+                )
             # Already symmetric, nothing to do.
             return
 
@@ -717,8 +720,9 @@ class DSDBCOO(DSDBSparse):
 
         data = self.data.reshape(-1, self.data.shape[-1])
         for stack_idx in range(data.shape[0]):
-            data[stack_idx] = 0.5 * op(
-                data[stack_idx], data[stack_idx, self._inds_bcoo2bcoo_t].conj()
+            data[stack_idx] = 0.5 * (
+                symmetry_ops[symmetry](data[stack_idx, self._inds_bcoo2bcoo_t])
+                + data[stack_idx]
             )
 
     @classmethod

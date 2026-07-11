@@ -1,7 +1,6 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
 import warnings
-from typing import Callable
 
 import numpy as np
 
@@ -495,8 +494,8 @@ class DSDBCSR(DSDBSparse):
         self.num_blocks = num_blocks
         self._add_block_config(self.num_blocks, block_sizes, block_offsets)
 
-    def symmetrize(self, op: Callable[[NDArray, NDArray], NDArray] = xp.add) -> None:
-        """Symmetrizes the matrix.
+    def symmetrize(self, symmetry: str) -> None:
+        """Symmetrizes the matrix with a given symmetry.
 
         Note
         ----
@@ -504,12 +503,21 @@ class DSDBCSR(DSDBSparse):
 
         Parameters
         ----------
-        op : callable, optional
-            The operation to perform on the symmetric elements. Default
-            is addition.
+        symmetry : str
+            The symmetry to enforce. This can be "symmetric",
+            "hermitian", "skew-symmetric", or "skew-hermitian".
 
         """
+        if symmetry not in symmetry_ops:
+            raise ValueError(
+                f"Symmetry must be one of {list(symmetry_ops.keys())} but got {symmetry}."
+            )
+
         if self.symmetry is not None:
+            if symmetry != self.symmetry:
+                raise ValueError(
+                    f"Matrix is already {self.symmetry}. Cannot enforce {symmetry}."
+                )
             # Already symmetric, nothing to do.
             return
 
@@ -549,8 +557,9 @@ class DSDBCSR(DSDBSparse):
 
         data = self.data.reshape(-1, self.data.shape[-1])
         for stack_idx in range(data.shape[0]):
-            data[stack_idx] = 0.5 * op(
-                data[stack_idx], data[stack_idx, self._inds_bcsr2bcsr_t].conj()
+            data[stack_idx] = 0.5 * (
+                symmetry_ops[symmetry](data[stack_idx, self._inds_bcsr2bcsr_t])
+                + data[stack_idx]
             )
 
     def spy(self) -> tuple[NDArray, NDArray]:

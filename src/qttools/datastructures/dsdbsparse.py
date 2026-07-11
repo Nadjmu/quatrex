@@ -4,7 +4,6 @@ import itertools
 import numbers
 import warnings
 from abc import ABC, abstractmethod
-from typing import Callable
 
 import numpy as np
 
@@ -739,11 +738,8 @@ class DSDBSparse(ABC):
         ...
 
     @abstractmethod
-    def symmetrize(self, op: Callable[[NDArray, NDArray], NDArray] = xp.add) -> None:
-        """Symmetrizes the matrix with a given operation.
-
-        This is done by setting the data to the result of the operation
-        applied to the data and its conjugate transpose.
+    def symmetrize(self, symmetry: str) -> None:
+        """Symmetrizes the matrix with a given symmetry.
 
         Note
         ----
@@ -751,10 +747,9 @@ class DSDBSparse(ABC):
 
         Parameters
         ----------
-        op : callable, optional
-            The operation to apply to the data and its conjugate
-            transpose. Default is `xp.add`, so that the matrix is
-            Hermitian after calling.
+        symmetry : str
+            The symmetry to enforce. This can be "symmetric",
+            "hermitian", "skew-symmetric", or "skew-hermitian".
 
         """
         ...

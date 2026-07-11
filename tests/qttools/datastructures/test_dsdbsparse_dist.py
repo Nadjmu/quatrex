@@ -1,6 +1,5 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 from contextlib import nullcontext
-from typing import Callable
 
 import numpy as np
 import pytest
@@ -175,26 +174,26 @@ class TestConversion:
         dsdbsparse_type_dist: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        op: Callable[[NDArray, NDArray], NDArray],
         symmetry: str | None,
     ):
         """Tests that we can transpose a DSDBSparse matrix."""
+
+        if symmetry is None:
+            pytest.skip("Skipping test since symmetry is None.")
+
         coo, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type_dist,
             block_sizes,
             global_stack_shape,
-            symmetry,
+            None,
             symmetric_sparsity=True,
         )
 
         dense = coo.toarray()
-        if symmetry is None:
-            symmetrized = 0.5 * op(dense, dense.transpose().conj())
-        else:
-            symmetrized = dense
+        symmetrized = 0.5 * (symmetry_ops[symmetry](dense.transpose()) + dense)
 
         reference = xp.broadcast_to(symmetrized, dsdbsparse.shape)
-        dsdbsparse.symmetrize(op)
+        dsdbsparse.symmetrize(symmetry)
 
         assert xp.allclose(reference, dsdbsparse.to_dense())
 
