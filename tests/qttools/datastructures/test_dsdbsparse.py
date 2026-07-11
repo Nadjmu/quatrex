@@ -88,52 +88,6 @@ def _create_coo_dsdbsparse(
     return coo, dsdbsparse
 
 
-def _create_new_block_sizes(
-    block_sizes: NDArray, block_change_factor: float
-) -> NDArray:
-    """Creates new block sizes based on the block change factor."""
-    rest = 0
-    updated_block_sizes = []
-    for bs in block_sizes:
-        if sum(updated_block_sizes) < sum(block_sizes):
-            # Calculate the new block size.
-            el = max(int(bs * block_change_factor), 1)
-            # Calculate the number of repetitions and the rest. The rest is added to the next block.
-            reps, rest = max(divmod(bs + rest, el), (1, 0))
-            # Add the new block size to the list.
-            updated_block_sizes = updated_block_sizes + [el] * int(reps)
-        else:
-            # Break if the sum of the updated block sizes is equal or greater than the sum of the original block sizes.
-            break
-    if sum(updated_block_sizes) != sum(block_sizes):
-        # Add the rest to the last block.
-        updated_block_sizes[-1] += sum(block_sizes) - sum(updated_block_sizes)
-    return np.asarray(updated_block_sizes)
-
-
-def _unsign_index(row: int, col: int, num_blocks) -> tuple:
-    """Adjusts the sign to allow negative indices and checks bounds."""
-    row = num_blocks + row if row < 0 else row
-    col = num_blocks + col if col < 0 else col
-    in_bounds = 0 <= row < num_blocks and 0 <= col < num_blocks
-    return row, col, in_bounds
-
-
-def _get_block_inds(block: tuple, block_sizes: NDArray) -> tuple:
-    """Returns the equivalent dense indices for a block."""
-    block_offsets = np.hstack(([0], np.cumsum(block_sizes)), dtype=np.int32)
-    num_blocks = len(block_sizes)
-
-    # Normalize negative indices.
-    row, col, in_bounds = _unsign_index(*block, num_blocks)
-    index = (
-        slice(block_offsets[row], block_offsets[row + 1]),
-        slice(block_offsets[col], block_offsets[col + 1]),
-    )
-
-    return index, in_bounds
-
-
 class TestAccess:
     """Tests for the access methods of DSDBSparse."""
 

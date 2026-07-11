@@ -91,9 +91,6 @@ class BlockConfig(object):
         The index type to use for the sparse matrix.
         This is relevant for the low level kernels to avoid
         unnecessary type conversions.
-    inds_canonical2block : NDArray, optional
-        A mapping from canonical to block-sorted indices. Default is
-        None.
     rowptr_map : dict, optional
         A mapping from block-coordinates to row-pointers. Default is
         None.
@@ -107,18 +104,12 @@ class BlockConfig(object):
         block_sizes: NDArray,
         block_offsets: NDArray,
         index_type: xp.int32 | xp.int64,
-        inds_canonical2block: NDArray | None = None,
         rowptr_map: dict | None = None,
         block_slice_cache: dict | None = None,
     ):
         """Initializes the block config."""
         self.block_sizes = block_sizes.astype(index_type)
         self.block_offsets = block_offsets.astype(index_type)
-        self.inds_canonical2block = (
-            inds_canonical2block.astype(index_type)
-            if inds_canonical2block is not None
-            else None
-        )
         self.rowptr_map = rowptr_map or {}
         self.block_slice_cache = block_slice_cache or {}
 
@@ -292,6 +283,12 @@ class DSDBSparse(ABC):
         # --- Things concerning block indexing and slicing --------------
 
         self._block_config: dict[int, BlockConfig] = {}
+        # This is a cache for the block change. It contains
+        # the mapping from one block configuration to another.
+        # NOTE: Currently, it is assumed that each configuration
+        # is uniquely identified by the number of blocks. This is
+        # not necessarily true, but it is a reasonable assumption for now.
+        self._block_change_cache: dict[(int, int), NDArray] = {}
         self._add_block_config(self.num_blocks, block_sizes, block_offsets)
 
         self._block_indexer = _DSDBlockIndexer(self)
@@ -300,6 +297,9 @@ class DSDBSparse(ABC):
         # Diagonal indices.
         self._diag_inds = None
         self._diag_value_inds = None
+        self._diag_inds_nnz = None
+        self._diag_value_inds_nnz = None
+        self._diag_cache: dict[int, NDArray] = {}
 
     def _add_block_config(
         self,
@@ -533,11 +533,6 @@ class DSDBSparse(ABC):
             `(*local_stack_shape, block_sizes[row], block_sizes[col])`.
 
         """
-        ...
-
-    @abstractmethod
-    def _check_commensurable(self, other: "DSDBSparse") -> None:
-        """Checks if two DSDBSparse matrices are commensurable."""
         ...
 
     def diagonal(self, stack_index: tuple = (Ellipsis,)) -> NDArray:

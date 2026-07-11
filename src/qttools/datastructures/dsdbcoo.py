@@ -94,14 +94,11 @@ class DSDBCOO(DSDBSparse):
         if symmetry is None:
             self._symmetric_pattern = self._check_sparsity_pattern_symmetric()
 
+        self._set_nnz_indices()
         self._set_diagonal_indices()
 
-    def _set_diagonal_indices(self) -> None:
-        """Sets the diagonal indices of the matrix."""
-        self._diag_inds = xp.where(self.rows == self.cols)[0].astype(self.index_type)
-        self._diag_value_inds = self.rows[self._diag_inds]
-        ranks = dsdbsparse_kernels.find_ranks(self.nnz_section_offsets, self._diag_inds)
-
+    def _set_nnz_indices(self) -> None:
+        """Sets the `nnz` distributed local indices of the matrix."""
         self.rows_nnz = self.rows[
             self.nnz_section_offsets[comm.stack.rank] : self.nnz_section_offsets[
                 comm.stack.rank + 1
@@ -113,17 +110,39 @@ class DSDBCOO(DSDBSparse):
             ]
         ] + self.index_type.type(self.global_block_offset)
 
+    def _set_diagonal_indices(self) -> None:
+        """Sets the diagonal indices of the matrix."""
+
+        if self.num_blocks in self._diag_cache:
+            (
+                self._diag_inds,
+                self._diag_value_inds,
+                self._diag_inds_nnz,
+                self._diag_value_inds_nnz,
+            ) = self._diag_cache[self.num_blocks]
+            return
+
+        self._diag_inds = xp.where(self.rows == self.cols)[0].astype(self.index_type)
+        self._diag_value_inds = self.rows[self._diag_inds]
+        ranks = dsdbsparse_kernels.find_ranks(self.nnz_section_offsets, self._diag_inds)
+
         if not any(ranks == comm.stack.rank):
             self._diag_inds_nnz = None
             self._diag_value_inds_nnz = None
-            return
-        self._diag_inds_nnz = (
-            self._diag_inds[ranks == comm.stack.rank]
-            - self.nnz_section_offsets[comm.stack.rank]
-        )
-        self._diag_value_inds_nnz = (
-            self._diag_value_inds[ranks == comm.stack.rank]
-            - self._diag_value_inds[ranks == comm.stack.rank][0]
+        else:
+            self._diag_inds_nnz = (
+                self._diag_inds[ranks == comm.stack.rank]
+                - self.nnz_section_offsets[comm.stack.rank]
+            )
+            self._diag_value_inds_nnz = (
+                self._diag_value_inds[ranks == comm.stack.rank]
+                - self._diag_value_inds[ranks == comm.stack.rank][0]
+            )
+        self._diag_cache[self.num_blocks] = (
+            self._diag_inds,
+            self._diag_value_inds,
+            self._diag_inds_nnz,
+            self._diag_value_inds_nnz,
         )
 
     def _get_items(self, stack_index: tuple, rows: NDArray, cols: NDArray) -> NDArray:
@@ -455,23 +474,6 @@ class DSDBCOO(DSDBSparse):
             data_stack[..., block_slice],
         )
 
-    def _check_commensurable(self, other: "DSDBCOO") -> None:
-        """Checks if the other matrix is commensurate."""
-        if not isinstance(other, DSDBCOO):
-            raise TypeError("Can only add DSDBCOO matrices.")
-
-        if self.shape != other.shape:
-            raise ValueError("Matrix shapes do not match.")
-
-        if np.any(self.block_sizes != other.block_sizes):
-            raise ValueError("Block sizes do not match.")
-
-        if xp.any(self.rows != other.rows):
-            raise ValueError("Row indices do not match.")
-
-        if xp.any(self.cols != other.cols):
-            raise ValueError("Column indices do not match.")
-
     @DSDBSparse.block_sizes.setter
     def block_sizes(self, block_sizes: NDArray) -> None:
         """Sets new block sizes for the matrix.
@@ -482,138 +484,67 @@ class DSDBCOO(DSDBSparse):
             The new block sizes.
 
         """
-        block_sizes = np.asarray(block_sizes, dtype=self.index_type)
-
-        if self.distribution_state == "nnz":
-            raise NotImplementedError(
-                "Cannot reassign block-sizes when distributed through nnz."
-            )
-
         num_blocks = len(block_sizes)
-        if num_blocks in self._block_config and num_blocks == self.num_blocks:
-            return
-
-        if sum(block_sizes) != self.shape[-1]:
-            raise ValueError("Block sizes must sum to matrix shape.")
 
         block_section_sizes, __ = get_section_sizes(len(block_sizes), comm.block.size)
         block_section_offsets = np.hstack(([0], np.cumsum(block_section_sizes)))
-
         local_block_sizes = block_sizes[block_section_offsets[comm.block.rank] :]
-        if sum(local_block_sizes[: block_section_sizes[comm.block.rank]]) != sum(
+        num_local_blocks = block_section_sizes[comm.block.rank]
+
+        if sum(local_block_sizes[:num_local_blocks]) != sum(
             self.local_block_sizes[: self.num_local_blocks]
         ):
             raise ValueError(
                 f"Block sizes {block_sizes} are inconsistent with the current distribution."
             )
 
-        # Check if configuration already exists.
-        if num_blocks in self._block_config:
-            # Compute canonical ordering of the matrix.
-            inds_bcoo2canonical = xp.lexsort(xp.vstack((self.cols, self.rows)))
-
-            if self._block_config[num_blocks].inds_canonical2block is None:
-                canonical_rows = self.rows[inds_bcoo2canonical]
-                canonical_cols = self.cols[inds_bcoo2canonical]
-                # Compute the index for sorting by the new block-sizes.
-                inds_canonical2bcoo = dsdbcoo_kernels.compute_block_sort_index(
-                    canonical_rows, canonical_cols, local_block_sizes
-                )
-                self._block_config[num_blocks].inds_canonical2block = (
-                    inds_canonical2bcoo
-                )
-
-            # Mapping directly from original block-ordering to the new
-            # block-ordering is achieved by chaining the two mappings.
-            inds_bcoo2bcoo = inds_bcoo2canonical[
-                self._block_config[num_blocks].inds_canonical2block
-            ]
-            data = self.data.reshape(-1, self.data.shape[-1])
-            for stack_idx in range(data.shape[0]):
-                data[stack_idx] = data[stack_idx, inds_bcoo2bcoo]
-            self.rows = self.rows[inds_bcoo2bcoo]
-            self.cols = self.cols[inds_bcoo2bcoo]
-            self.rows_nnz = (
-                self.rows[
-                    self.nnz_section_offsets[
-                        comm.stack.rank
-                    ] : self.nnz_section_offsets[comm.stack.rank + 1]
-                ]
-                + self.global_block_offset
-            )
-            self.cols_nnz = (
-                self.cols[
-                    self.nnz_section_offsets[
-                        comm.stack.rank
-                    ] : self.nnz_section_offsets[comm.stack.rank + 1]
-                ]
-                + self.global_block_offset
-            )
-            self._set_diagonal_indices()
-
-            self.block_section_offsets = block_section_offsets
-            # We need to know our local block sizes and those of all
-            # subsequent ranks.
-            self.num_local_blocks = block_section_sizes[comm.block.rank]
-            self.local_block_sizes = block_sizes[
-                self.block_section_offsets[comm.block.rank] :
-            ]
-            self.local_block_offsets = np.hstack(
-                ([0], np.cumsum(self.local_block_sizes))
+        if self.distribution_state == "nnz":
+            raise NotImplementedError(
+                "Cannot reassign block-sizes when distributed through nnz."
             )
 
-            self.num_blocks = num_blocks
+        if num_blocks in self._block_config and num_blocks == self.num_blocks:
             return
 
-        # Compute canonical ordering of the matrix.
-        inds_bcoo2canonical = xp.lexsort(xp.vstack((self.cols, self.rows)))
-        canonical_rows = self.rows[inds_bcoo2canonical]
-        canonical_cols = self.cols[inds_bcoo2canonical]
-        # Compute the index for sorting by the new block-sizes.
-        inds_canonical2bcoo = dsdbcoo_kernels.compute_block_sort_index(
-            canonical_rows, canonical_cols, local_block_sizes
-        )
-        # Mapping directly from original block-ordering to the new
-        # block-ordering is achieved by chaining the two mappings.
-        inds_bcoo2bcoo = inds_bcoo2canonical[inds_canonical2bcoo]
-        data = self.data.reshape(-1, self.data.shape[-1])
-        for stack_idx in range(data.shape[0]):
-            data[stack_idx] = data[stack_idx, inds_bcoo2bcoo]
+        if sum(block_sizes) != self.shape[-1]:
+            raise ValueError("Block sizes must sum to matrix shape.")
+
+        if (self.num_blocks, num_blocks) in self._block_change_cache:
+            inds_bcoo2bcoo = self._block_change_cache[self.num_blocks, num_blocks]
+
+        else:
+            # Compute canonical ordering of the matrix.
+            inds_bcoo2canonical = xp.lexsort(xp.vstack((self.cols, self.rows)))
+            canonical_rows = self.rows[inds_bcoo2canonical]
+            canonical_cols = self.cols[inds_bcoo2canonical]
+            # Compute the index for sorting by the new block-sizes.
+            inds_canonical2bcoo = dsdbcoo_kernels.compute_block_sort_index(
+                canonical_rows, canonical_cols, local_block_sizes
+            )
+            # Mapping directly from original block-ordering to the new
+            # block-ordering is achieved by chaining the two mappings.
+            inds_bcoo2bcoo = inds_bcoo2canonical[inds_canonical2bcoo]
+            block_offsets = np.hstack(([0], np.cumsum(block_sizes)))
+
+            self._add_block_config(num_blocks, block_sizes, block_offsets)
+            self._block_change_cache[self.num_blocks, num_blocks] = inds_bcoo2bcoo
+
+        self.data = self.data[..., inds_bcoo2bcoo]
         self.rows = self.rows[inds_bcoo2bcoo]
         self.cols = self.cols[inds_bcoo2bcoo]
-        self.rows_nnz = (
-            self.rows[
-                self.nnz_section_offsets[comm.stack.rank] : self.nnz_section_offsets[
-                    comm.stack.rank + 1
-                ]
-            ]
-            + self.global_block_offset
-        )
-        self.cols_nnz = (
-            self.cols[
-                self.nnz_section_offsets[comm.stack.rank] : self.nnz_section_offsets[
-                    comm.stack.rank + 1
-                ]
-            ]
-            + self.global_block_offset
-        )
-        self._set_diagonal_indices()
 
         # Update the block sizes and offsets as in the initializer.
         self.num_blocks = num_blocks
-
-        block_offsets = np.hstack(([0], np.cumsum(block_sizes)))
-
         self.block_section_offsets = block_section_offsets
         # We need to know our local block sizes and those of all
         # subsequent ranks.
-        self.num_local_blocks = block_section_sizes[comm.block.rank]
-        self.local_block_sizes = block_sizes[
-            self.block_section_offsets[comm.block.rank] :
-        ]
+        self.num_local_blocks = num_local_blocks
+        self.local_block_sizes = local_block_sizes
         self.local_block_offsets = np.hstack(([0], np.cumsum(self.local_block_sizes)))
-        self._add_block_config(num_blocks, block_sizes, block_offsets)
-        self._block_config[num_blocks].inds_canonical2block = inds_canonical2bcoo
+        # self.global_block_offset is already set in the initializer and does not change.
+
+        self._set_nnz_indices()
+        self._set_diagonal_indices()
 
     def spy(self) -> tuple[NDArray, NDArray]:
         """Returns the row and column indices of the non-zero elements.

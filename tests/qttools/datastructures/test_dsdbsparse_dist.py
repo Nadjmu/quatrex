@@ -524,6 +524,10 @@ class TestAccess:
             global_stack_shape,
             symmetry,
         )
+        dsdbsparse_original = dsdbsparse_type_dist.empty_like(dsdbsparse)
+        dsdbsparse_original.allocate_data()
+        dsdbsparse_original.data = dsdbsparse.data
+
         # Create new block sizes.
         updated_block_sizes, inconsistent = _create_new_block_sizes(
             block_sizes, block_change_factor
@@ -548,7 +552,42 @@ class TestAccess:
             return
 
         # Assert that the two DSDBSparse matrices are equivalent.
-        assert xp.allclose(dsdbsparse.data, dsdbsparse_updated_block_sizes.data)
+        attributes = [
+            "data",
+            "num_blocks",
+            "block_section_offsets",
+            "num_local_blocks",
+            "local_block_sizes",
+            "local_block_offsets",
+            "global_block_offset",
+            "block_offsets",
+        ]
+
+        for attr in attributes:
+            actual = getattr(dsdbsparse, attr)
+            expected = getattr(dsdbsparse_updated_block_sizes, attr)
+            close_fn = xp.allclose if attr == "data" else np.allclose
+            assert close_fn(actual, expected)
+
+        with pytest.raises(ValueError) if inconsistent else nullcontext():
+            # Test caching
+            dsdbsparse.block_sizes = block_sizes
+
+        for attr in attributes:
+            actual = getattr(dsdbsparse, attr)
+            expected = getattr(dsdbsparse_original, attr)
+            close_fn = xp.allclose if attr == "data" else np.allclose
+            assert close_fn(actual, expected)
+
+        with pytest.raises(ValueError) if inconsistent else nullcontext():
+            dsdbsparse.block_sizes = updated_block_sizes
+
+        # Assert that the two DSDBSparse matrices are equivalent.
+        for attr in attributes:
+            actual = getattr(dsdbsparse, attr)
+            expected = getattr(dsdbsparse_updated_block_sizes, attr)
+            close_fn = xp.allclose if attr == "data" else np.allclose
+            assert close_fn(actual, expected)
 
     def test_spy(
         self,

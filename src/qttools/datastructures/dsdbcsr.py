@@ -97,7 +97,11 @@ class DSDBCSR(DSDBSparse):
         self.cols = cols
         self.rowptr_map = rowptr_map
 
-        inds = xp.arange(self.shape[-1], dtype=index_type)
+        self._set_diagonal_indices()
+
+    def _set_diagonal_indices(self) -> None:
+        """Sets the diagonal indices of the matrix."""
+        inds = xp.arange(self.shape[-1], dtype=self.index_type)
         self._diag_inds, self._diag_value_inds = dsdbcsr_kernels.find_inds(
             self.rowptr_map, xp.asarray(self.block_offsets), self.cols, inds, inds
         )
@@ -400,23 +404,6 @@ class DSDBCSR(DSDBSparse):
             data=data_stack,
         )
 
-    def _check_commensurable(self, other: "DSDBSparse") -> None:
-        """Checks if the other matrix is commensurate."""
-        if not isinstance(other, DSDBCSR):
-            raise TypeError("Can only add DSDBCSR matrices.")
-
-        if self.shape != other.shape:
-            raise ValueError("Matrix shapes do not match.")
-
-        if np.any(self.block_sizes != other.block_sizes):
-            raise ValueError("Block sizes do not match.")
-
-        if self.rowptr_map.keys() != other.rowptr_map.keys():
-            raise ValueError("Block sparsities do not match.")
-
-        if xp.any(self.cols != other.cols):
-            raise ValueError("Column indices do not match.")
-
     @DSDBSparse.block_sizes.setter
     def block_sizes(self, block_sizes: NDArray) -> None:
         """Sets new block sizes for the matrix.
@@ -427,52 +414,35 @@ class DSDBCSR(DSDBSparse):
             The new block sizes.
 
         """
+        num_blocks = len(block_sizes)
+
+        block_section_sizes, __ = get_section_sizes(len(block_sizes), comm.block.size)
+        block_section_offsets = np.hstack(([0], np.cumsum(block_section_sizes)))
+        local_block_sizes = block_sizes[block_section_offsets[comm.block.rank] :]
+        num_local_blocks = block_section_sizes[comm.block.rank]
+
+        if sum(local_block_sizes[:num_local_blocks]) != sum(
+            self.local_block_sizes[: self.num_local_blocks]
+        ):
+            raise ValueError(
+                f"Block sizes {block_sizes} are inconsistent with the current distribution."
+            )
+
         if self.distribution_state == "nnz":
             raise NotImplementedError(
                 "Cannot reassign block-sizes when distributed through nnz."
             )
 
-        num_blocks = len(block_sizes)
-        # Check if configuration already exists.
-        if num_blocks in self._block_config:
-            # Compute canonical ordering of the matrix.
-
-            if num_blocks == self.num_blocks:
-                return
-
-            if self._block_config[num_blocks].inds_canonical2block is None:
-                rows, cols = self.spy()
-                inds_bcsr2canonical = xp.lexsort(xp.vstack((cols, rows)))
-                canonical_rows = rows[inds_bcsr2canonical]
-                canonical_cols = cols[inds_bcsr2canonical]
-                # Compute the index for sorting by the new block-sizes.
-                inds_canonical2bcsr, rowptr_map = dsdbcsr_kernels.compute_rowptr_map(
-                    canonical_rows, canonical_cols, block_sizes
-                )
-                self._block_config[num_blocks].inds_canonical2block = (
-                    inds_canonical2bcsr
-                )
-                self._block_config[num_blocks].rowptr_map = rowptr_map
-
-            self.rowptr_map = self._block_config[num_blocks].rowptr_map
-
-            # Mapping directly from original block-ordering to the new
-            # block-ordering is achieved by chaining the two mappings.
-            inds_bcsr2bcsr = inds_bcsr2canonical[
-                self._block_config[num_blocks].inds_canonical2block
-            ]
-            data = self.data.reshape(-1, self.data.shape[-1])
-            for stack_idx in range(data.shape[0]):
-                data[stack_idx] = data[stack_idx, inds_bcsr2bcsr]
-            self.cols = self.cols[inds_bcsr2bcsr]
-
-            self.num_blocks = num_blocks
+        if num_blocks in self._block_config and num_blocks == self.num_blocks:
             return
 
         if sum(block_sizes) != self.shape[-1]:
-            raise ValueError("Block sizes do not match matrix shape.")
-        rows, cols = self.spy()
+            raise ValueError("Block sizes must sum to matrix shape.")
+
+        # NOTE: caching is not implemented for CSR
+
         # Compute canonical ordering of the matrix.
+        rows, cols = self.spy()
         inds_bcsr2canonical = xp.lexsort(xp.vstack((cols, rows)))
         canonical_rows = rows[inds_bcsr2canonical]
         canonical_cols = cols[inds_bcsr2canonical]
@@ -484,15 +454,24 @@ class DSDBCSR(DSDBSparse):
         # Mapping directly from original block-ordering to the new
         # block-ordering is achieved by chaining the two mappings.
         inds_bcsr2bcsr = inds_bcsr2canonical[inds_canonical2bcsr]
-        data = self.data.reshape(-1, self.data.shape[-1])
-        for stack_idx in range(data.shape[0]):
-            data[stack_idx] = data[stack_idx, inds_bcsr2bcsr]
+        block_offsets = np.hstack(([0], np.cumsum(block_sizes)))
+
+        self._add_block_config(num_blocks, block_sizes, block_offsets)
+
+        self.data = self.data[..., inds_bcsr2bcsr]
         self.cols = self.cols[inds_bcsr2bcsr]
 
-        block_sizes = np.asarray(block_sizes, dtype=self.index_type)
-        block_offsets = np.hstack(([0], np.cumsum(block_sizes)), dtype=self.index_type)
+        # Update the block sizes and offsets as in the initializer.
         self.num_blocks = num_blocks
-        self._add_block_config(self.num_blocks, block_sizes, block_offsets)
+        self.block_section_offsets = block_section_offsets
+        # We need to know our local block sizes and those of all
+        # subsequent ranks.
+        self.num_local_blocks = num_local_blocks
+        self.local_block_sizes = local_block_sizes
+        self.local_block_offsets = np.hstack(([0], np.cumsum(self.local_block_sizes)))
+        # self.global_block_offset is already set in the initializer and does not change.
+
+        self._set_diagonal_indices()
 
     def symmetrize(self, symmetry: str) -> None:
         """Symmetrizes the matrix with a given symmetry.
