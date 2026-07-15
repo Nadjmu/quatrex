@@ -364,7 +364,7 @@ class SCBA(TransportSolver):
                 self.phonon_solver = PhononSolver(config, self.phonon_energies)
                 self.sigma_phonon = SigmaPhonon(...)
 
-            elif self.config.phonon.model == "pseudo-scattering":
+            elif self.config.phonon.model in ("pseudo-scattering", "long-wavelength"):
                 self.sigma_phonon = SigmaPhonon(config, self.electron_energies)
 
         self.data = SCBAData(
@@ -468,7 +468,7 @@ class SCBA(TransportSolver):
         if self.config.phonon.model == "negf":
             raise NotImplementedError
 
-        elif self.config.phonon.model == "pseudo-scattering":
+        elif self.config.phonon.model in ("pseudo-scattering", "long-wavelength"):
             self.sigma_phonon.compute(
                 self.data.g_lesser,
                 self.data.g_greater,
@@ -565,7 +565,6 @@ class SCBA(TransportSolver):
                 self.data.g_lesser, self.electron_solver.hamiltonian
             )
             if self.config.electron.solver.compute_current:
-
                 local_current = self.electron_solver.meir_wingreen_current
                 meir_wingreen_current = comm.stack.all_gather_v(
                     local_current,
