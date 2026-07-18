@@ -51,8 +51,9 @@ energy_window_min = -10
 energy_window_max = 0
 energy_window_num = 100
 
+max_batch_size = 30
 solver.algorithm = "rgf"
-solver.max_batch_size = 1000
+solver.max_batch_size = 20
 # solver.compute_current = true # Compute Meir-Wingreen current.
 
 obc.algorithm = "spectral"
@@ -80,8 +81,9 @@ epsilon_r = 4.0
 
 num_connected_blocks = 2 # Can be 1, 2, 3, or "auto"
 
+max_batch_size = 40
 solver.algorithm = "rgf"
-solver.max_batch_size = 1000
+solver.max_batch_size = 25
 
 obc.algorithm = "spectral"
 obc.nevp_solver = "full"

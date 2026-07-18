@@ -127,7 +127,7 @@ class ReducedSystem:
 
         Parameters
         ----------
-        a : DSDBSparse
+        a : DSDBSparse | _DStackView
             The system matrix A in A X A^T = I/B.
         x_diag_blocks : list[NDArray]
             The diagonal blocks of the system matrix.
@@ -219,7 +219,7 @@ class ReducedSystem:
 
         Parameters
         ----------
-        a : DSDBSparse
+        a : DSDBSparse | _DStackView
             The system matrix A in A X A^T = I/B.
         x_diag_blocks : list[NDArray]
             The diagonal blocks of the system matrix.
@@ -331,7 +331,7 @@ class ReducedSystem:
 
         Parameters
         ----------
-        a : DSDBSparse
+        a : DSDBSparse | _DStackView
             Local partition of the matrix to map.
         x_diag_blocks : list[NDArray]
             Local (densified) diagonal blocks of the matrix to map.
@@ -379,7 +379,7 @@ class ReducedSystem:
 
         Parameters
         ----------
-        a : DSDBSparse
+        a : DSDBSparse | _DStackView
             Local partition of the matrix to map.
         x_diag_blocks : list[NDArray]
             Local (densified) diagonal blocks of the matrix to map.
@@ -392,14 +392,10 @@ class ReducedSystem:
         i = a.num_local_blocks - 1
         j = i + 1
 
-        if isinstance(a, DSDBSparse):
-            stack_shape = a._data.shape[:-1]
-            block_size = a.block_sizes[0]
-            dtype = a.dtype
-        else:
-            stack_shape = a._block_indexer._arg.shape[:-1]
-            block_size = a._dsdbsparse.block_sizes[0]
-            dtype = a._dsdbsparse.dtype
+        # NOTE: This is the local shape of the stack.
+        stack_shape = a.shape[:-2]
+        block_size = a.block_sizes[0]
+        dtype = a.dtype
 
         diag_blocks = xp.empty(
             (2 * comm.block.size, *stack_shape, block_size, block_size), dtype=dtype

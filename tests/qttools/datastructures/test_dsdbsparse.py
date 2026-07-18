@@ -2,7 +2,6 @@
 
 from contextlib import nullcontext
 
-import numpy as np
 import pytest
 
 from qttools import NDArray, sparse, xp
@@ -199,55 +198,6 @@ class TestAccess:
         else:
             dense[*stack_index][..., inds, inds] = 0.5 * (symmetry_ops[symmetry](2) + 2)
         assert xp.allclose(dense, dsdbsparse.to_dense())
-
-    def test_set_stack(
-        self,
-        dsdbsparse_type_dist: DSDBSparse,
-        block_sizes: NDArray,
-        global_stack_shape: tuple,
-        symmetry: str | None,
-        stack_index: tuple,
-    ):
-        """Tests that we can set the stackview of a DSDBSparse matrix for
-        a specific stack index.
-        """
-
-        coo, dsdbsparse = _create_coo_dsdbsparse(
-            dsdbsparse_type_dist,
-            block_sizes,
-            global_stack_shape,
-            symmetry,
-        )
-
-        csr_array = coo.tocsr()[dsdbsparse.spy()]
-        csr_new = _create_coo(
-            block_sizes,
-            symmetry=symmetry,
-        ).tocsr()
-
-        # Set the stackview to a new value.
-        dsdbsparse.stack[stack_index] = csr_new
-        csr_new_array = csr_new[dsdbsparse.spy()]
-
-        # Create a boolean mask to track modified stack indices.
-        mask = np.zeros(dsdbsparse.shape[:-2], dtype=bool)
-        mask[stack_index] = True
-
-        # Check that the stackview has been updated correctly
-        # by looping through the stack indices.
-        for s_index in np.ndindex(*dsdbsparse.shape[:-2]):
-            if mask[s_index]:
-                # If the stack index is in the modified stack indices,
-                # check that the stackview has been updated correctly.
-                assert xp.array_equiv(
-                    csr_new_array,
-                    dsdbsparse.data[s_index],
-                )
-            else:
-                assert xp.array_equiv(
-                    csr_array,
-                    dsdbsparse.data[s_index],
-                )
 
 
 # Shape of the dense array.

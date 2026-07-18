@@ -182,7 +182,10 @@ class DSDBCOO(DSDBSparse):
         return block_slice
 
     def _get_block(
-        self, arg: tuple | NDArray, row: int, col: int, is_index: bool = True
+        self,
+        stack_index: tuple,
+        row: int,
+        col: int,
     ) -> NDArray | tuple:
         """Gets a block from the data structure.
 
@@ -192,16 +195,12 @@ class DSDBCOO(DSDBSparse):
 
         Parameters
         ----------
-        arg : tuple | NDArray
-            The index of the stack or a view of the data stack. The
-            is_index flag indicates whether the argument is an index or
-            a view.
+        stack_index : tuple
+            The index of the stack.
         row : int
             Row index of the block.
         col : int
             Column index of the block.
-        is_index : bool, optional
-            Whether the argument is an index or a view. Default is True.
 
         Returns
         -------
@@ -211,15 +210,12 @@ class DSDBCOO(DSDBSparse):
 
         """
         if self.symmetry and (col < row):
-            block = self._get_block(arg, row=col, col=row, is_index=is_index)
+            block = self._get_block(stack_index, row=col, col=row)
             return xp.ascontiguousarray(
                 symmetry_ops[self.symmetry](block.swapaxes(-1, -2))
             )
 
-        if is_index:
-            data_stack = self.data[*arg]
-        else:
-            data_stack = arg
+        data_stack = self.data[*stack_index]
 
         block_slice = self._get_block_slice(row, col)
 
@@ -249,11 +245,10 @@ class DSDBCOO(DSDBSparse):
 
     def _set_block(
         self,
-        arg: tuple | NDArray,
+        stack_index: tuple,
         row: int,
         col: int,
         block: NDArray,
-        is_index: bool = True,
     ) -> None:
         """Sets a block throughout the stack in the data structure.
 
@@ -261,10 +256,8 @@ class DSDBCOO(DSDBSparse):
 
         Parameters
         ----------
-        arg : tuple | NDArray
-            The index of the stack or a view of the data stack. The
-            is_index flag indicates whether the argument is an index or
-            a view.
+        stack_index : tuple
+            The index of the stack.
         row : int
             Row index of the block.
         col : int
@@ -272,25 +265,19 @@ class DSDBCOO(DSDBSparse):
         block : NDArray
             The block to set. This must be an array of shape
             `(*local_stack_shape, block_sizes[row], block_sizes[col])`.
-        is_index : bool, optional
-            Whether the argument is an index or a view. Default is True.
 
         """
         if self.symmetry and (col < row):
             # TODO: Probably worth testing if the block is symmetric.
             self._set_block(
-                arg,
+                stack_index,
                 row=col,
                 col=row,
                 block=symmetry_ops[self.symmetry](block.swapaxes(-1, -2)),
-                is_index=is_index,
             )
             return
 
-        if is_index:
-            data_stack = self.data[*arg]
-        else:
-            data_stack = arg
+        data_stack = self.data[*stack_index]
 
         block_slice = self._get_block_slice(row, col)
         if block_slice.start is None and block_slice.stop is None:

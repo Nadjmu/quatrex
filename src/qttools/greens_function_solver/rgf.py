@@ -401,21 +401,21 @@ class RGF(GFSolver):
                 if return_retarded:
                     xr_.blocks[i, i] = xr_diag_blocks[i]
 
-        if return_current:
-            current[..., 0] = xp.trace(
-                obc_blocks.greater[0] @ xl_diag_blocks[0]
-                - xg_diag_blocks[0] @ obc_blocks.lesser[0],
-                axis1=-2,
-                axis2=-1,
-            )
-            # NOTE: Negative sign is needed to get the current flowing
-            # in the correct direction (positive from left to right).
-            current[..., -1] = -xp.trace(
-                obc_blocks.greater[-1] @ xl_diag_blocks[-1]
-                - xg_diag_blocks[-1] @ obc_blocks.lesser[-1],
-                axis1=-2,
-                axis2=-1,
-            )
+            if return_current:
+                current[stack_slice, ..., 0] = xp.trace(
+                    obc_blocks.greater[0][stack_slice] @ xl_diag_blocks[0]
+                    - xg_diag_blocks[0] @ obc_blocks.lesser[0][stack_slice],
+                    axis1=-2,
+                    axis2=-1,
+                )
+                # NOTE: Negative sign is needed to get the current flowing
+                # in the correct direction (positive from left to right).
+                current[stack_slice, ..., -1] = -xp.trace(
+                    obc_blocks.greater[-1][stack_slice] @ xl_diag_blocks[-1]
+                    - xg_diag_blocks[-1] @ obc_blocks.lesser[-1][stack_slice],
+                    axis1=-2,
+                    axis2=-1,
+                )
 
         if return_current:
             return current

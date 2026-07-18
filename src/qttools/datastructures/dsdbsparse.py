@@ -733,12 +733,15 @@ class DSDBSparse(ABC):
         # and no all-to-all will be performed
         # TODO: We should have a non distributed
         # version without padding and cheaper initialization
+        # As with the block size, it should have a stack size
+        # setter which updates attributes
         if stack_size is not None:
             self.data_slice_stack = (
                 slice(None, int(stack_size)),
                 ...,
                 slice(None, int(self.nnz_section_offsets[-1])),
             )
+            self.shape = (int(stack_size), *self.shape[1:])
 
         if stack_size == 0:
             warnings.warn(
@@ -952,10 +955,14 @@ def _compose(
 class _DStackIndexer:
     """A utility class to locate substacks in the distributed stack.
 
+    Note
+    ----
+    Only continuous views are supported.
+
     Parameters
     ----------
-    dsdbsparse : DSDBSparse
-        The underlying datastructure
+    dsdbsparse : DSDBSparse | _DStackView
+        The underlying datastructure or an intermediate view.
 
     """
 
@@ -979,25 +986,6 @@ class _DStackIndexer:
             composition = index
         return _DStackView(self._dsdbsparse, composition)
 
-    def __setitem__(
-        self, stack_index: tuple, other: "DSDBSparse | sparse.spmatrix"
-    ) -> None:
-        """Sets a substack."""
-
-        if self._base_index is not None:
-            raise NotImplementedError(
-                "Setting a substack of a substack is not supported."
-            )
-
-        stack_index = _replace_ellipsis(stack_index, self._dsdbsparse.data.ndim)
-
-        if sparse.issparse(other):
-            csr = other.tocsr()
-            self._dsdbsparse.data[stack_index] = csr[self._dsdbsparse.spy()]
-            return None
-
-        self._dsdbsparse.data[stack_index] = other.data[stack_index]
-
 
 class _DStackView:
     """A utility class to create substack views.
@@ -1014,12 +1002,9 @@ class _DStackView:
     def __init__(self, dsdbsparse: DSDBSparse, stack_index: tuple) -> None:
         """Initializes the stack indexer."""
         self._dsdbsparse = dsdbsparse
-        self.symmetry = dsdbsparse.symmetry
         stack_index = _replace_ellipsis(stack_index, self._dsdbsparse.data.ndim)
         self._stack_index = stack_index
-        self._block_indexer = _DSDBlockIndexer(
-            self._dsdbsparse, self._stack_index, cache_stack=True
-        )
+        self._block_indexer = _DSDBlockIndexer(self._dsdbsparse, self._stack_index)
 
         shape = self._dsdbsparse.shape
         stack_size = []
@@ -1028,6 +1013,10 @@ class _DStackView:
                 start = s.start if s.start is not None else 0
                 stop = s.stop if s.stop is not None else shape[i]
                 stack_size.append(stop - start)
+                if s.step not in [1, None]:
+                    raise NotImplementedError(
+                        f"Non-unit strides are not supported, step: {s.step}."
+                    )
             elif isinstance(s, (int, numbers.Integral)):
                 stack_size.append(1)
             else:
@@ -1045,6 +1034,11 @@ class _DStackView:
         """Sets the requested data in the substack."""
         rows, cols = self._dsdbsparse._normalize_index(index)
         self._dsdbsparse._set_items(self._stack_index, rows, cols, values)
+
+    @property
+    def symmetry(self):
+        """Returns the symmetry of the substack."""
+        return self._dsdbsparse.symmetry
 
     @property
     def distribution_state(self):
@@ -1113,10 +1107,6 @@ class _DSDBlockIndexer:
     stack_index : tuple, optional
         The stack index to slice the blocks from. Default is Ellipsis,
         i.e. we return the whole stack of blocks.
-    cache_stack : bool, optional
-        Whether to propagate only the stack index to the block
-        access methods, or to provide the data stack outright. Default
-        is False.
 
     """
 
@@ -1124,18 +1114,12 @@ class _DSDBlockIndexer:
         self,
         dsdbsparse: DSDBSparse,
         stack_index: tuple = (Ellipsis,),
-        cache_stack: bool = False,
     ) -> None:
         """Initializes the block indexer."""
         self._dsdbsparse = dsdbsparse
         if not isinstance(stack_index, tuple):
             stack_index = (stack_index,)
-        if cache_stack:
-            self._arg = self._dsdbsparse.data[stack_index]
-            self._is_index = False
-        else:
-            self._arg = stack_index
-            self._is_index = True
+        self._stack_index = stack_index
 
     def _normalize_index(self, index: tuple) -> tuple:
         """Normalizes the block index."""
@@ -1163,9 +1147,9 @@ class _DSDBlockIndexer:
     def __getitem__(self, index: tuple) -> NDArray | tuple:
         """Gets the requested block from the data structure."""
         row, col = self._normalize_index(index)
-        return self._dsdbsparse._get_block(self._arg, row, col, self._is_index)
+        return self._dsdbsparse._get_block(self._stack_index, row, col)
 
     def __setitem__(self, index: tuple, block: NDArray) -> None:
         """Sets the requested block in the data structure."""
         row, col = self._normalize_index(index)
-        self._dsdbsparse._set_block(self._arg, row, col, block, self._is_index)
+        self._dsdbsparse._set_block(self._stack_index, row, col, block)

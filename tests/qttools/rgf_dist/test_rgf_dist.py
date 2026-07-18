@@ -161,19 +161,25 @@ def test_rgf_dist(block_sizes: NDArray, global_stack_shape: tuple):
 
     _Xr_ref = xp.linalg.inv(a_dsdbcoo.to_dense())
     Xr_ref = xp.zeros_like(_Xr_ref)
-    Xr_ref[*Xr_rgf.nonzero()] = _Xr_ref[*Xr_rgf.nonzero()]
+    Xr_ref[..., a_sparray.row, a_sparray.col] = _Xr_ref[
+        ..., a_sparray.row, a_sparray.col
+    ]
 
     _Xl_ref = (
         _Xr_ref @ sigma_lesser_dsdbcoo.to_dense() @ _Xr_ref.conj().swapaxes(-2, -1)
     )
     Xl_ref = xp.zeros_like(_Xl_ref)
-    Xl_ref[*Xl_rgf.nonzero()] = _Xl_ref[*Xl_rgf.nonzero()]
+    Xl_ref[..., a_sparray.row, a_sparray.col] = _Xl_ref[
+        ..., a_sparray.row, a_sparray.col
+    ]
 
     _Xg_ref = (
         _Xr_ref @ sigma_greater_dsdbcoo.to_dense() @ _Xr_ref.conj().swapaxes(-2, -1)
     )
     Xg_ref = xp.zeros_like(_Xg_ref)
-    Xg_ref[*Xg_rgf.nonzero()] = _Xg_ref[*Xg_rgf.nonzero()]
+    Xg_ref[..., a_sparray.row, a_sparray.col] = _Xg_ref[
+        ..., a_sparray.row, a_sparray.col
+    ]
 
     # Check results
     assert xp.allclose(Xr_rgf, Xr_ref)
@@ -294,13 +300,17 @@ def test_rgf_dist_no_retarded(block_sizes: NDArray, global_stack_shape: tuple):
         _Xr_ref @ sigma_lesser_dsdbcoo.to_dense() @ _Xr_ref.conj().swapaxes(-2, -1)
     )
     Xl_ref = xp.zeros_like(_Xl_ref)
-    Xl_ref[*Xl_rgf.nonzero()] = _Xl_ref[*Xl_rgf.nonzero()]
+    Xl_ref[..., a_sparray.row, a_sparray.col] = _Xl_ref[
+        ..., a_sparray.row, a_sparray.col
+    ]
 
     _Xg_ref = (
         _Xr_ref @ sigma_greater_dsdbcoo.to_dense() @ _Xr_ref.conj().swapaxes(-2, -1)
     )
     Xg_ref = xp.zeros_like(_Xg_ref)
-    Xg_ref[*Xg_rgf.nonzero()] = _Xg_ref[*Xg_rgf.nonzero()]
+    Xg_ref[..., a_sparray.row, a_sparray.col] = _Xg_ref[
+        ..., a_sparray.row, a_sparray.col
+    ]
 
     # Check results
     assert xp.allclose(Xl_rgf, Xl_ref)
@@ -419,23 +429,27 @@ def test_rgf_dist_batched(block_sizes: NDArray, global_stack_shape: tuple):
     Xl_rgf = xl_out_dsdbcoo.to_dense()
     Xg_rgf = xg_out_dsdbcoo.to_dense()
 
-    print("Got to reference results", flush=True)
-
     _Xr_ref = xp.linalg.inv(a_dsdbcoo.to_dense())
     Xr_ref = xp.zeros_like(_Xr_ref)
-    Xr_ref[*Xr_rgf.nonzero()] = _Xr_ref[*Xr_rgf.nonzero()]
+    Xr_ref[..., a_sparray.row, a_sparray.col] = _Xr_ref[
+        ..., a_sparray.row, a_sparray.col
+    ]
 
     _Xl_ref = (
         _Xr_ref @ sigma_lesser_dsdbcoo.to_dense() @ _Xr_ref.conj().swapaxes(-2, -1)
     )
     Xl_ref = xp.zeros_like(_Xl_ref)
-    Xl_ref[*Xl_rgf.nonzero()] = _Xl_ref[*Xl_rgf.nonzero()]
+    Xl_ref[..., a_sparray.row, a_sparray.col] = _Xl_ref[
+        ..., a_sparray.row, a_sparray.col
+    ]
 
     _Xg_ref = (
         _Xr_ref @ sigma_greater_dsdbcoo.to_dense() @ _Xr_ref.conj().swapaxes(-2, -1)
     )
     Xg_ref = xp.zeros_like(_Xg_ref)
-    Xg_ref[*Xg_rgf.nonzero()] = _Xg_ref[*Xg_rgf.nonzero()]
+    Xg_ref[..., a_sparray.row, a_sparray.col] = _Xg_ref[
+        ..., a_sparray.row, a_sparray.col
+    ]
 
     # Check results
     assert xp.allclose(Xr_rgf, Xr_ref)
