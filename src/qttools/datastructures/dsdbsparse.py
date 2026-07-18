@@ -375,16 +375,6 @@ class DSDBSparse(ABC):
 
         return row, col
 
-    def __getitem__(self, index: tuple[ArrayLike, ArrayLike]) -> NDArray:
-        """Gets a single value accross the stack."""
-        index = self._normalize_index(index)
-        return self._get_items((Ellipsis,), *index)
-
-    def __setitem__(self, index: tuple[ArrayLike, ArrayLike], value: NDArray) -> None:
-        """Sets a single value in the matrix."""
-        index = self._normalize_index(index)
-        self._set_items((Ellipsis,), *index, value)
-
     @property
     def blocks(self) -> "_DSDBlockIndexer":
         """Returns a block indexer."""
@@ -421,55 +411,6 @@ class DSDBSparse(ABC):
             f"stack_comm_rank={comm.stack.rank}, "
             f"block_comm_rank={comm.block.rank})"
         )
-
-    @abstractmethod
-    def _get_items(self, stack_index: tuple, rows: NDArray, cols: NDArray) -> NDArray:
-        """Gets the requested items from the data structure.
-
-        This is supposed to be a low-level method that does not perform
-        any checks on the input. These are handled by the __getitem__
-        method. The index is assumed to already be renormalized.
-
-        Parameters
-        ----------
-        stack_index : tuple
-            The index in the stack.
-        rows : NDArray
-            The row indices of the items.
-        cols : NDArray
-            The column indices of the items.
-
-        Returns
-        -------
-        items : NDArray
-            The requested items.
-
-        """
-        ...
-
-    @abstractmethod
-    def _set_items(
-        self, stack_index: tuple, rows: NDArray, cols: NDArray, values: NDArray
-    ) -> None:
-        """Sets the requested items in the data structure.
-
-        This is supposed to be a low-level method that does not perform
-        any checks on the input. These are handled by the __setitem__
-        method. The index is assumed to already be renormalized.
-
-        Parameters
-        ----------
-        stack_index : tuple
-            The index in the stack.
-        rows : NDArray
-            The row indices of the items.
-        cols : NDArray
-            The column indices of the items.
-        values : NDArray
-            The values to set.
-
-        """
-        ...
 
     @abstractmethod
     def _set_block(
