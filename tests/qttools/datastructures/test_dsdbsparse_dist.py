@@ -9,6 +9,7 @@ from mpi4py.MPI import COMM_WORLD as global_comm
 from qttools import NDArray, sparse, xp
 from qttools.comm import comm
 from qttools.datastructures.dsdbsparse import DSDBSparse, symmetry_ops
+from qttools.utils.gpu_utils import get_array_module_name
 from qttools.utils.mpi_utils import get_section_sizes
 
 
@@ -561,13 +562,19 @@ class TestAccess:
             "local_block_offsets",
             "global_block_offset",
             "block_offsets",
+            "_diag_inds",
+            "_diag_value_inds",
+            "_diag_value_inds_nnz",
+            "_diag_value_inds_nnz",
         ]
 
         for attr in attributes:
             actual = getattr(dsdbsparse, attr)
             expected = getattr(dsdbsparse_updated_block_sizes, attr)
-            close_fn = xp.allclose if attr == "data" else np.allclose
-            assert close_fn(actual, expected)
+            if get_array_module_name(actual) == "numpy":
+                assert np.allclose(actual, expected)
+            else:
+                assert xp.allclose(actual, expected)
 
         with pytest.raises(ValueError) if inconsistent else nullcontext():
             # Test caching
@@ -576,8 +583,10 @@ class TestAccess:
         for attr in attributes:
             actual = getattr(dsdbsparse, attr)
             expected = getattr(dsdbsparse_original, attr)
-            close_fn = xp.allclose if attr == "data" else np.allclose
-            assert close_fn(actual, expected)
+            if get_array_module_name(actual) == "numpy":
+                assert np.allclose(actual, expected)
+            else:
+                assert xp.allclose(actual, expected)
 
         with pytest.raises(ValueError) if inconsistent else nullcontext():
             dsdbsparse.block_sizes = updated_block_sizes
@@ -586,8 +595,10 @@ class TestAccess:
         for attr in attributes:
             actual = getattr(dsdbsparse, attr)
             expected = getattr(dsdbsparse_updated_block_sizes, attr)
-            close_fn = xp.allclose if attr == "data" else np.allclose
-            assert close_fn(actual, expected)
+            if get_array_module_name(actual) == "numpy":
+                assert np.allclose(actual, expected)
+            else:
+                assert xp.allclose(actual, expected)
 
     def test_spy(
         self,
