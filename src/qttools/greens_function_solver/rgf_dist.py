@@ -175,7 +175,9 @@ class RGFDist(GFSolver):
 
         """
 
-        with profiler.profile_range(label="RGF dist: init", level="default", comm=comm):
+        with profiler.profile_range(
+            label="RGF dist: init", level="default", comm=comm.block
+        ):
 
             if obc_blocks is None:
                 obc_blocks = OBCBlocks(num_blocks=sigma_lesser.num_local_blocks)
@@ -256,7 +258,7 @@ class RGFDist(GFSolver):
             xr_out_ = xr_out.stack[stack_slice] if return_retarded else None
 
             with profiler.profile_range(
-                label="RGF dist: Schur", level="default", comm=comm
+                label="RGF dist: Schur", level="default", comm=comm.block
             ):
 
                 if comm.block.rank == 0:
@@ -317,7 +319,7 @@ class RGFDist(GFSolver):
                     )
 
             with profiler.profile_range(
-                label="RGF dist: Reduce gather", level="default", comm=comm
+                label="RGF dist: Reduce gather", level="default", comm=comm.block
             ):
                 # Construct the reduced system.
                 if np.all(a.block_sizes == a.block_sizes[0]):
@@ -345,12 +347,12 @@ class RGFDist(GFSolver):
 
             # Perform selected-inversion on the reduced system.
             with profiler.profile_range(
-                label="RGF dist: Reduce solve", level="default", comm=comm
+                label="RGF dist: Reduce solve", level="default", comm=comm.block
             ):
                 reduced_system.solve()
 
             with profiler.profile_range(
-                label="RGF dist: Reduce scatter", level="default", comm=comm
+                label="RGF dist: Reduce scatter", level="default", comm=comm.block
             ):
                 # Scatter the result to the output matrix.
                 reduced_system.scatter(
@@ -372,7 +374,7 @@ class RGFDist(GFSolver):
                 )
 
             with profiler.profile_range(
-                label="RGF dist: Selinv", level="default", comm=comm
+                label="RGF dist: Selinv", level="default", comm=comm.block
             ):
 
                 if comm.block.rank == 0:
@@ -451,11 +453,12 @@ class RGFDist(GFSolver):
                         axis2=-1,
                     )
 
-                # Now we need to allreduce the current across the block
-                # communicator to get the total current for each layer.
-                # NOTE: We use allreduce instead of allgather since every
-                # rank allocates the full current
-                total_current = xp.empty_like(current)
-                comm.block.all_reduce(current, total_current, op="sum")
+        if return_current:
+            # Now we need to allreduce the current across the block
+            # communicator to get the total current for each layer.
+            # NOTE: We use allreduce instead of allgather since every
+            # rank allocates the full current
+            total_current = xp.empty_like(current)
+            comm.block.all_reduce(current, total_current, op="sum")
 
-                return total_current
+            return total_current

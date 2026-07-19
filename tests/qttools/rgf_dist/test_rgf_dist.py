@@ -157,8 +157,6 @@ def test_rgf_dist(block_sizes: NDArray, global_stack_shape: tuple):
     Xl_rgf = xl_out_dsdbcoo.to_dense()
     Xg_rgf = xg_out_dsdbcoo.to_dense()
 
-    print("Got to reference results", flush=True)
-
     _Xr_ref = xp.linalg.inv(a_dsdbcoo.to_dense())
     Xr_ref = xp.zeros_like(_Xr_ref)
     Xr_ref[..., a_sparray.row, a_sparray.col] = _Xr_ref[
@@ -291,8 +289,6 @@ def test_rgf_dist_no_retarded(block_sizes: NDArray, global_stack_shape: tuple):
     # Make reference results
     Xl_rgf = xl_out_dsdbcoo.to_dense()
     Xg_rgf = xg_out_dsdbcoo.to_dense()
-
-    print("Got to reference results", flush=True)
 
     _Xr_ref = xp.linalg.inv(a_dsdbcoo.to_dense())
 

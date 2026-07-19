@@ -571,10 +571,11 @@ class TestAccess:
         for attr in attributes:
             actual = getattr(dsdbsparse, attr)
             expected = getattr(dsdbsparse_updated_block_sizes, attr)
-            if get_array_module_name(actual) == "numpy":
-                assert np.allclose(actual, expected)
-            else:
-                assert xp.allclose(actual, expected)
+            if actual is not None:
+                if get_array_module_name(actual) == "numpy":
+                    assert np.allclose(actual, expected)
+                else:
+                    assert xp.allclose(actual, expected)
 
         with pytest.raises(ValueError) if inconsistent else nullcontext():
             # Test caching
@@ -583,10 +584,11 @@ class TestAccess:
         for attr in attributes:
             actual = getattr(dsdbsparse, attr)
             expected = getattr(dsdbsparse_original, attr)
-            if get_array_module_name(actual) == "numpy":
-                assert np.allclose(actual, expected)
-            else:
-                assert xp.allclose(actual, expected)
+            if actual is not None:
+                if get_array_module_name(actual) == "numpy":
+                    assert np.allclose(actual, expected)
+                else:
+                    assert xp.allclose(actual, expected)
 
         with pytest.raises(ValueError) if inconsistent else nullcontext():
             dsdbsparse.block_sizes = updated_block_sizes
@@ -595,10 +597,11 @@ class TestAccess:
         for attr in attributes:
             actual = getattr(dsdbsparse, attr)
             expected = getattr(dsdbsparse_updated_block_sizes, attr)
-            if get_array_module_name(actual) == "numpy":
-                assert np.allclose(actual, expected)
-            else:
-                assert xp.allclose(actual, expected)
+            if actual is not None:
+                if get_array_module_name(actual) == "numpy":
+                    assert np.allclose(actual, expected)
+                else:
+                    assert xp.allclose(actual, expected)
 
     def test_spy(
         self,
