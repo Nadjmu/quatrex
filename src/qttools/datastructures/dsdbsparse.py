@@ -4,6 +4,7 @@ import itertools
 import numbers
 import warnings
 from abc import ABC, abstractmethod
+from functools import cached_property
 
 import numpy as np
 
@@ -292,7 +293,9 @@ class DSDBSparse(ABC):
         self._add_block_config(self.num_blocks, block_sizes, block_offsets)
 
         self._block_indexer = _DSDBlockIndexer(self)
-        self._stack_indexer = _DStackIndexer(self, self.local_stack_shape)
+        self._stack_indexer = _DStackView(
+            dsdbsparse=self, stack_shape=self.local_stack_shape, stack_index=(...,)
+        )
 
         # Diagonal indices.
         self._diag_inds = None
@@ -381,7 +384,7 @@ class DSDBSparse(ABC):
         return self._block_indexer
 
     @property
-    def stack(self) -> "_DStackIndexer":
+    def stack(self) -> "_DStackView":
         """Returns a stack indexer."""
         return self._stack_indexer
 
@@ -953,16 +956,16 @@ def _compose(
 
 
 def _local_stack_shape(
-    stack_index: tuple[int | slice, ...],
-    stack_shape: tuple[int, ...],
-) -> tuple[int, ...]:
+    stack_index: tuple,
+    stack_shape: tuple,
+) -> tuple:
     """Computes the shape of the addressed substack.
 
     Parameters
     ----------
-    stack_index : tuple[int | slice, ...]
+    stack_index : tuple
         The index of the substack to address.
-    stack_shape : tuple[int, ...]
+    stack_shape : tuple
         The shape of the local stack to address.
 
     """
@@ -985,61 +988,98 @@ def _local_stack_shape(
     return tuple(sizes) + stack_shape[len(stack_index) :]
 
 
-class _DStackIndexer:
-    """A utility class to locate substacks in the distributed stack.
+class _StackView(ABC):
+    """Abstract base class for stack views.
+
+    Supports further indexing via `[...]` or `.stack[...]`, which
+    compose with the current index and return a new `_StackView`.
 
     Note
     ----
     Only continuous views are supported.
 
+    Warning
+    -------
+    If the underlying datastructure is modified, the view may become
+    invalid.
+
     Parameters
     ----------
-    dsdbsparse : DSDBSparse
-        The underlying datastructure or an intermediate view.
     local_stack_shape : tuple
         The shape of the stack to index into.
-    stack_index : tuple | None, optional
-        The base index of the substack. Default is None, which means
-        that the indexer will use the full stack.
+    stack_index : tuple
+        The base index of the substack.
 
     """
 
     def __init__(
         self,
-        dsdbsparse: DSDBSparse,
         stack_shape: tuple,
-        stack_index: tuple | None = None,
+        stack_index: tuple,
     ) -> None:
-        """Initializes the stack indexer."""
-        self._dsdbsparse = dsdbsparse
-        self.stack_shape = stack_shape
-        self._stack_index = stack_index
+        self._stack_shape = stack_shape
+        self._stack_index = _replace_ellipsis(stack_index, len(stack_shape))
 
-    def __getitem__(self, index: tuple) -> "_DStackView":
-        """Gets a substack view."""
+    def __getitem__(self, index: tuple) -> "_StackView":
+        """Composes `index` with the current index and returns a new
+        view of the same concrete type."""
+        index = _replace_ellipsis(index, len(self._stack_shape))
         if self._stack_index is not None:
-            index = _replace_ellipsis(index, len(self.stack_shape))
-            composition = _compose(self.stack_shape, self._stack_index, index)
-        else:
-            composition = index
-        return _DStackView(self._dsdbsparse, composition, self.stack_shape)
+            index = _compose(self._stack_shape, self._stack_index, index)
+        return self._reindexed(index)
+
+    @abstractmethod
+    def _reindexed(self, stack_index: tuple) -> "_StackView":
+        """Returns a new view of the same concrete type, addressing
+        `stack_index`."""
+        ...
+
+    @property
+    def stack(self) -> "_StackView":
+        """Returns self, so `.stack[...]` chains."""
+        return self
+
+    @cached_property
+    def local_stack_shape(self) -> tuple:
+        """Returns the shape of the addressed substack."""
+        return _local_stack_shape(self._stack_index, self._stack_shape)
+
+    @cached_property
+    def blocks(self) -> "_BlockIndexer":
+        """Returns a (lazily built, cached) block indexer for the substack."""
+        return self._make_block_indexer()
+
+    @abstractmethod
+    def _make_block_indexer(self) -> "_BlockIndexer":
+        """Constructs the block indexer for this view."""
+        ...
 
 
-class _DStackView:
-    """A utility class to create substack views.
+class _DStackView(_StackView):
+    """A view onto a (possibly full) substack of a `DSDBSparse` matrix.
+
+    Supports further indexing via `[...]` or `.stack[...]`, which
+    compose with the current index and return a new `_DStackView`.
+
+    Note
+    ----
+    Only continuous views are supported.
+
+    Warning
+    -------
+    If the underlying datastructure is modified, the view may become invalid.
 
     Parameters
     ----------
     dsdbsparse : DSDBSparse
         The underlying datastructure.
+    local_stack_shape : tuple
+        The shape of the stack to index into.
     stack_index : tuple
-        The index of the substack to address.
-    stack_shape : tuple
-        The shape of the local stack to address.
+        The base index of the substack.
 
     """
 
-    # Attributes that simply forward to the underlying datastructure.
     _DELEGATED = (
         "symmetry",
         "distribution_state",
@@ -1052,36 +1092,21 @@ class _DStackView:
     def __init__(
         self,
         dsdbsparse: DSDBSparse,
-        stack_index: tuple,
         stack_shape: tuple,
+        stack_index: tuple,
     ) -> None:
-        """Initializes the stack indexer."""
+        super().__init__(stack_shape, stack_index)
         self._dsdbsparse = dsdbsparse
-        self._stack_index = _replace_ellipsis(stack_index, len(stack_shape))
-        self._block_indexer = _DSDBlockIndexer(
-            dsdbsparse=self._dsdbsparse, stack_index=self._stack_index
-        )
-        self._stack_indexer = _DStackIndexer(
-            dsdbsparse=self._dsdbsparse,
-            stack_shape=stack_shape,
-            stack_index=self._stack_index,
-        )
 
-        self.local_stack_shape = _local_stack_shape(self._stack_index, stack_shape)
+    def _reindexed(self, stack_index: tuple) -> "_DStackView":
+        return _DStackView(self._dsdbsparse, self._stack_shape, stack_index)
 
     def __getattr__(self, name: str):
-        # Only called when normal attribute lookup fails, so this can't
-        # shadow anything defined explicitly above.
         if name in self._DELEGATED:
             return getattr(self._dsdbsparse, name)
         raise AttributeError(
             f"{type(self).__name__!r} object has no attribute {name!r}"
         )
-
-    @property
-    def stack(self) -> "_DStackIndexer":
-        """Returns the stack indexer on the substack."""
-        return self._stack_indexer
 
     @property
     def data(self) -> NDArray:
@@ -1093,13 +1118,43 @@ class _DStackView:
         """Sets the local slice of the data."""
         self._dsdbsparse.data[self._stack_index] = value
 
-    @property
-    def blocks(self) -> "_DSDBlockIndexer":
-        """Returns a block indexer on the substack."""
-        return self._block_indexer
+    def _make_block_indexer(self) -> "_DSDBlockIndexer":
+        """Constructs the block indexer for this view."""
+        return _DSDBlockIndexer(
+            dsdbsparse=self._dsdbsparse, stack_index=self._stack_index
+        )
 
 
-class _DSDBlockIndexer:
+class _BlockIndexer(ABC):
+    """Abstract base class for block indexers.
+
+    Parameters
+    ----------
+    stack_index : tuple, optional
+        The stack index to slice the blocks from. Default is Ellipsis,
+        i.e. we return the whole stack of blocks.
+
+    """
+
+    def __init__(
+        self,
+        stack_index: tuple = (Ellipsis,),
+    ) -> None:
+        """Initializes the block indexer."""
+        if not isinstance(stack_index, tuple):
+            stack_index = (stack_index,)
+        self._stack_index = stack_index
+
+    def __getitem__(self, index: tuple) -> NDArray | tuple:
+        """Gets the requested block from the data structure."""
+        ...
+
+    def __setitem__(self, index: tuple, block: NDArray) -> None:
+        """Sets the requested block in the data structure."""
+        ...
+
+
+class _DSDBlockIndexer(_BlockIndexer):
     """A utility class to locate blocks in the distributed stack.
 
     This uses the `_get_block` and `_set_block` methods of the
@@ -1124,10 +1179,8 @@ class _DSDBlockIndexer:
         stack_index: tuple = (Ellipsis,),
     ) -> None:
         """Initializes the block indexer."""
+        super().__init__(stack_index)
         self._dsdbsparse = dsdbsparse
-        if not isinstance(stack_index, tuple):
-            stack_index = (stack_index,)
-        self._stack_index = stack_index
 
     def _normalize_index(self, index: tuple) -> tuple:
         """Normalizes the block index."""
