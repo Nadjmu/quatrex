@@ -187,7 +187,7 @@ class RGFDist(GFSolver):
                 # between each layer and from/to the leads (in total
                 # num_blocks + 1).
                 current = xp.zeros(
-                    (*sigma_lesser.shape[:-2], sigma_lesser.num_blocks + 1),
+                    (*sigma_lesser.local_stack_shape, sigma_lesser.num_blocks + 1),
                     dtype=sigma_lesser.dtype,
                 )
                 # TODO: Only boundary currents are currently supported.
@@ -213,7 +213,7 @@ class RGFDist(GFSolver):
                 )
 
             batch_sizes, batch_offsets = get_batches(
-                sigma_lesser.shape[0], self.max_batch_size
+                sigma_lesser.local_stack_shape[0], self.max_batch_size
             )
 
         for i in range(len(batch_sizes)):

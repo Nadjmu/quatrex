@@ -161,13 +161,13 @@ class RGF(GFSolver):
             # between each layer and from/to the leads (in total
             # num_blocks + 1).
             current = xp.zeros(
-                (*sigma_lesser.shape[:-2], sigma_lesser.num_blocks + 1),
+                (*sigma_lesser.local_stack_shape, sigma_lesser.num_blocks + 1),
                 dtype=sigma_lesser.dtype,
             )
 
         # Get list of batches to perform
         batches_sizes, batches_slices = get_batches(
-            sigma_lesser.shape[0], self.max_batch_size
+            sigma_lesser.local_stack_shape[0], self.max_batch_size
         )
 
         # xr will be the third element of the tuple.

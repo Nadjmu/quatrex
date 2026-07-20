@@ -393,7 +393,7 @@ class ReducedSystem:
         j = i + 1
 
         # NOTE: This is the local shape of the stack.
-        stack_shape = a.shape[:-2]
+        stack_shape = a.local_stack_shape
         block_size = a.block_sizes[0]
         dtype = a.dtype
 

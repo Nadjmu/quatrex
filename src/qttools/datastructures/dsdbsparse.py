@@ -292,7 +292,7 @@ class DSDBSparse(ABC):
         self._add_block_config(self.num_blocks, block_sizes, block_offsets)
 
         self._block_indexer = _DSDBlockIndexer(self)
-        self._stack_indexer = _DStackIndexer(self)
+        self._stack_indexer = _DStackIndexer(self, self.local_stack_shape)
 
         # Diagonal indices.
         self._diag_inds = None
@@ -952,6 +952,39 @@ def _compose(
     return tuple(out)
 
 
+def _local_stack_shape(
+    stack_index: tuple[int | slice, ...],
+    stack_shape: tuple[int, ...],
+) -> tuple[int, ...]:
+    """Computes the shape of the addressed substack.
+
+    Parameters
+    ----------
+    stack_index : tuple[int | slice, ...]
+        The index of the substack to address.
+    stack_shape : tuple[int, ...]
+        The shape of the local stack to address.
+
+    """
+    sizes = []
+    for i, s in enumerate(stack_index):
+        if isinstance(s, slice):
+            if s.step not in (1, None):
+                raise NotImplementedError(
+                    f"Non-unit strides are not supported, step: {s.step}."
+                )
+            start = s.start if s.start is not None else 0
+            stop = s.stop if s.stop is not None else stack_shape[i]
+            sizes.append(stop - start)
+        elif isinstance(s, (int, numbers.Integral)):
+            sizes.append(1)
+        else:
+            raise IndexError(
+                f"Expected slice or int in stack index but got {type(s)} ({s=})."
+            )
+    return tuple(sizes) + stack_shape[len(stack_index) :]
+
+
 class _DStackIndexer:
     """A utility class to locate substacks in the distributed stack.
 
@@ -961,30 +994,35 @@ class _DStackIndexer:
 
     Parameters
     ----------
-    dsdbsparse : DSDBSparse | _DStackView
+    dsdbsparse : DSDBSparse
         The underlying datastructure or an intermediate view.
+    local_stack_shape : tuple
+        The shape of the stack to index into.
+    stack_index : tuple | None, optional
+        The base index of the substack. Default is None, which means
+        that the indexer will use the full stack.
 
     """
 
-    def __init__(self, dsdbsparse: "DSDBSparse | _DStackView") -> None:
+    def __init__(
+        self,
+        dsdbsparse: DSDBSparse,
+        stack_shape: tuple,
+        stack_index: tuple | None = None,
+    ) -> None:
         """Initializes the stack indexer."""
-        if isinstance(dsdbsparse, _DStackView):
-            self._dsdbsparse = dsdbsparse._dsdbsparse
-            self._base_index = dsdbsparse._stack_index
-        else:
-            self._dsdbsparse = dsdbsparse
-            self._base_index = None
+        self._dsdbsparse = dsdbsparse
+        self.stack_shape = stack_shape
+        self._stack_index = stack_index
 
     def __getitem__(self, index: tuple) -> "_DStackView":
         """Gets a substack view."""
-        if self._base_index is not None:
-            index = _replace_ellipsis(index, self._dsdbsparse.data.ndim)
-            composition = _compose(
-                self._dsdbsparse.local_stack_shape, self._base_index, index
-            )
+        if self._stack_index is not None:
+            index = _replace_ellipsis(index, len(self.stack_shape))
+            composition = _compose(self.stack_shape, self._stack_index, index)
         else:
             composition = index
-        return _DStackView(self._dsdbsparse, composition)
+        return _DStackView(self._dsdbsparse, composition, self.stack_shape)
 
 
 class _DStackView:
@@ -996,74 +1034,54 @@ class _DStackView:
         The underlying datastructure.
     stack_index : tuple
         The index of the substack to address.
+    stack_shape : tuple
+        The shape of the local stack to address.
 
     """
 
-    def __init__(self, dsdbsparse: DSDBSparse, stack_index: tuple) -> None:
+    # Attributes that simply forward to the underlying datastructure.
+    _DELEGATED = (
+        "symmetry",
+        "distribution_state",
+        "dtype",
+        "num_blocks",
+        "block_sizes",
+        "num_local_blocks",
+    )
+
+    def __init__(
+        self,
+        dsdbsparse: DSDBSparse,
+        stack_index: tuple,
+        stack_shape: tuple,
+    ) -> None:
         """Initializes the stack indexer."""
         self._dsdbsparse = dsdbsparse
-        stack_index = _replace_ellipsis(stack_index, self._dsdbsparse.data.ndim)
-        self._stack_index = stack_index
-        self._block_indexer = _DSDBlockIndexer(self._dsdbsparse, self._stack_index)
+        self._stack_index = _replace_ellipsis(stack_index, len(stack_shape))
+        self._block_indexer = _DSDBlockIndexer(
+            dsdbsparse=self._dsdbsparse, stack_index=self._stack_index
+        )
+        self._stack_indexer = _DStackIndexer(
+            dsdbsparse=self._dsdbsparse,
+            stack_shape=stack_shape,
+            stack_index=self._stack_index,
+        )
 
-        shape = self._dsdbsparse.shape
-        stack_size = []
-        for i, s in enumerate(stack_index):
-            if isinstance(s, slice):
-                start = s.start if s.start is not None else 0
-                stop = s.stop if s.stop is not None else shape[i]
-                stack_size.append(stop - start)
-                if s.step not in [1, None]:
-                    raise NotImplementedError(
-                        f"Non-unit strides are not supported, step: {s.step}."
-                    )
-            elif isinstance(s, (int, numbers.Integral)):
-                stack_size.append(1)
-            else:
-                raise IndexError(
-                    f"Expected slice or int in stack index but got {type(s)} ({s=})."
-                )
-        self.shape = tuple(stack_size) + shape[len(stack_index) :]
+        self.local_stack_shape = _local_stack_shape(self._stack_index, stack_shape)
 
-    def __getitem__(self, index: tuple[ArrayLike, ArrayLike]) -> NDArray:
-        """Gets the requested data from the substack."""
-        rows, cols = self._dsdbsparse._normalize_index(index)
-        return self._dsdbsparse._get_items(self._stack_index, rows, cols)
-
-    def __setitem__(self, index: tuple[ArrayLike, ArrayLike], values: NDArray) -> None:
-        """Sets the requested data in the substack."""
-        rows, cols = self._dsdbsparse._normalize_index(index)
-        self._dsdbsparse._set_items(self._stack_index, rows, cols, values)
-
-    @property
-    def symmetry(self):
-        """Returns the symmetry of the substack."""
-        return self._dsdbsparse.symmetry
-
-    @property
-    def distribution_state(self):
-        """Returns the distribution state of the substack."""
-        return self._dsdbsparse.distribution_state
-
-    @property
-    def dtype(self):
-        """Returns the dtype."""
-        return self._dsdbsparse.dtype
+    def __getattr__(self, name: str):
+        # Only called when normal attribute lookup fails, so this can't
+        # shadow anything defined explicitly above.
+        if name in self._DELEGATED:
+            return getattr(self._dsdbsparse, name)
+        raise AttributeError(
+            f"{type(self).__name__!r} object has no attribute {name!r}"
+        )
 
     @property
     def stack(self) -> "_DStackIndexer":
         """Returns the stack indexer on the substack."""
-        return _DStackIndexer(self)
-
-    @property
-    def num_blocks(self) -> int:
-        """Returns the number of global (?) blocks."""
-        return self._dsdbsparse.num_blocks
-
-    @property
-    def block_sizes(self) -> list[int]:
-        """Returns the global block sizes."""
-        return self._dsdbsparse.block_sizes
+        return self._stack_indexer
 
     @property
     def data(self) -> NDArray:
@@ -1074,16 +1092,6 @@ class _DStackView:
     def data(self, value: NDArray) -> None:
         """Sets the local slice of the data."""
         self._dsdbsparse.data[self._stack_index] = value
-
-    @property
-    def num_local_blocks(self) -> int:
-        """Returns the number of local blocks."""
-        return self._dsdbsparse.num_local_blocks
-
-    @property
-    def local_blocks(self) -> "_DSDBlockIndexer":
-        """Returns a block indexer on the substack."""
-        return self._block_indexer
 
     @property
     def blocks(self) -> "_DSDBlockIndexer":
