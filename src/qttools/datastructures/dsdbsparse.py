@@ -745,6 +745,7 @@ class DSDBSparse(ABC):
                 slice(None, int(self.nnz_section_offsets[-1])),
             )
             self.shape = (int(stack_size), *self.shape[1:])
+            self.local_stack_shape = self.shape[:-2]
 
         if stack_size == 0:
             warnings.warn(
