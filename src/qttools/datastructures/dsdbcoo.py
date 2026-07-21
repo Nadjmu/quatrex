@@ -9,15 +9,6 @@ from qttools.kernels.datastructure import dsdbcoo_kernels, dsdbsparse_kernels
 from qttools.utils.mpi_utils import get_section_sizes
 
 
-def _upper_triangle(rows: NDArray, cols: NDArray) -> tuple[NDArray, NDArray, NDArray]:
-    """Returns upper triangular rows and cols."""
-    mask = cols < rows
-    temp = rows[mask]
-    rows[mask] = cols[mask]
-    cols[mask] = temp
-    return rows, cols, mask
-
-
 class DSDBCOO(DSDBSparse):
     """A Distributed Stack of Distributed Block-accessible COO matrices.
 
@@ -186,7 +177,7 @@ class DSDBCOO(DSDBSparse):
         stack_index: tuple,
         row: int,
         col: int,
-    ) -> NDArray | tuple:
+    ) -> NDArray:
         """Gets a block from the data structure.
 
         This is supposed to be a low-level method that does not perform
@@ -204,7 +195,7 @@ class DSDBCOO(DSDBSparse):
 
         Returns
         -------
-        block : NDArray | tuple[NDArray, NDArray, NDArray]
+        block : NDArray
             The block at the requested index. This is an array of shape
             `(*local_stack_shape, block_sizes[row], block_sizes[col])`.
 

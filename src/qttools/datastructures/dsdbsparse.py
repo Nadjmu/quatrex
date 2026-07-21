@@ -1,6 +1,5 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
-import itertools
 import numbers
 import warnings
 from abc import ABC, abstractmethod
@@ -19,26 +18,6 @@ symmetry_ops = {
     "skew-symmetric": lambda x: -x,
     "skew-hermitian": lambda x: -xp.conj(x),
 }
-
-
-def _flatten_list(nested_lists: list[list]) -> list:
-    """Flattens a list of lists.
-
-    This should do the same as sum(l, start=[]) but is more explicit and
-    apparently faster as well.
-
-    Parameters
-    ----------
-    nested_lists : list[list]
-        The list of lists to flatten.
-
-    Returns
-    -------
-    list
-        The flattened list.
-
-    """
-    return list(itertools.chain.from_iterable(nested_lists))
 
 
 def _block_view(arr: NDArray, axis: int, num_blocks: int = comm.size) -> NDArray:
@@ -418,11 +397,10 @@ class DSDBSparse(ABC):
     @abstractmethod
     def _set_block(
         self,
-        arg: tuple | NDArray,
+        stack_index: tuple,
         row: int,
         col: int,
         block: NDArray,
-        is_index: bool = True,
     ) -> None:
         """Sets a block throughout the stack in the data structure.
 
@@ -430,10 +408,8 @@ class DSDBSparse(ABC):
 
         Parameters
         ----------
-        arg : tuple | NDArray
-            The index of the stack or a view of the data stack. The
-            is_index flag indicates whether the argument is an index or
-            a view.
+        stack_index : tuple
+            The index of the stack.
         row : int
             Row index of the block.
         col : int
@@ -441,16 +417,17 @@ class DSDBSparse(ABC):
         block : NDArray
             The block to set. This must be an array of shape
             `(*local_stack_shape, block_sizes[row], block_sizes[col])`.
-        is_index : bool, optional
-            Whether the argument is an index or a view. Default is True.
 
         """
         ...
 
     @abstractmethod
     def _get_block(
-        self, arg: tuple | NDArray, row: int, col: int, is_index: bool = True
-    ) -> NDArray | tuple:
+        self,
+        stack_index: tuple,
+        row: int,
+        col: int,
+    ) -> NDArray:
         """Gets a block from the data structure.
 
         This is supposed to be a low-level method that does not perform
@@ -459,20 +436,16 @@ class DSDBSparse(ABC):
 
         Parameters
         ----------
-        arg : tuple | NDArray
-            The index of the stack or a view of the data stack. The
-            is_index flag indicates whether the argument is an index or
-            a view.
+        stack_index : tuple
+            The index of the stack.
         row : int
             Row index of the block.
         col : int
             Column index of the block.
-        is_index : bool, optional
-            Whether the argument is an index or a view. Default is True.
 
         Returns
         -------
-        block : NDArray | tuple[NDArray, NDArray, NDArray]
+        block : NDArray
             The block at the requested index. This is an array of shape
             `(*local_stack_shape, block_sizes[row], block_sizes[col])`.
 
