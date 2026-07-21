@@ -67,11 +67,12 @@ class Device:
 
     """
 
-    def __init__(self, config: QuatrexConfig) -> None:
+    def __init__(self, config: QuatrexConfig, hamiltonians: dict | None = None) -> None:
         """Initializes a Device object from configuration."""
 
         self.config = config
 
+        self.hamiltonians = hamiltonians
         self._init_hamiltonian()
         __, self.atom_coordinates, self.atomic_species = self.load_structure(config)
         # TODO QTBM Device/Contact currently assumes that these quantities are on the host
@@ -231,7 +232,7 @@ class Device:
             raise ValueError("Hamiltonian matrix not found.")
 
         self.hamiltonians = load_matrices(
-            self.config, "hamiltonian", force_complex=False
+            self.config, "hamiltonian", force_complex=False, matrices=self.hamiltonians
         )
 
         for r, h_r in self.hamiltonians.items():
