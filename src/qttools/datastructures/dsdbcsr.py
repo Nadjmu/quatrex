@@ -175,6 +175,11 @@ class DSDBCSR(DSDBSparse):
 
         The index is assumed to already be renormalized.
 
+        Note
+        ----
+        The input block is not tested for symmetry even if the matrix is
+        symmetric.
+
         Parameters
         ----------
         stack_index : tuple
@@ -189,7 +194,6 @@ class DSDBCSR(DSDBSparse):
 
         """
         if self.symmetry and (col < row):
-            # TODO: Probably worth testing if the block is symmetric.
             self._set_block(
                 stack_index,
                 row=col,
@@ -403,8 +407,6 @@ class DSDBCSR(DSDBSparse):
             The new DSDBCSR matrix.
 
         """
-        # TODO: Problem with deepcopy in tests
-        # own copy should be provided
         return cls(
             dtype=dsdbsparse.dtype,
             cols=dsdbsparse.cols.copy(),

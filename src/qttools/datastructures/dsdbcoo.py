@@ -245,6 +245,11 @@ class DSDBCOO(DSDBSparse):
 
         The index is assumed to already be renormalized.
 
+        Note
+        ----
+        The input block is not tested for symmetry even if the matrix is
+        symmetric.
+
         Parameters
         ----------
         stack_index : tuple
@@ -259,7 +264,6 @@ class DSDBCOO(DSDBSparse):
 
         """
         if self.symmetry and (col < row):
-            # TODO: Probably worth testing if the block is symmetric.
             self._set_block(
                 stack_index,
                 row=col,
@@ -564,7 +568,6 @@ class DSDBCOO(DSDBSparse):
 
         # Determine the local slice of the data.
         # NOTE: This is arrow-wise partitioning.
-        # TODO: Allow more options, e.g., block row-wise partitioning.
         section_sizes, __ = get_section_sizes(len(block_sizes), comm.block.size)
         section_offsets = np.hstack(([0], np.cumsum(section_sizes)))
 

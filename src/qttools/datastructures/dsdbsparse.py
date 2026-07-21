@@ -406,6 +406,11 @@ class DSDBSparse(ABC):
 
         The index is assumed to already be renormalized.
 
+        Note
+        ----
+        The input block is not tested for symmetry even if the matrix is
+        symmetric.
+
         Parameters
         ----------
         stack_index : tuple

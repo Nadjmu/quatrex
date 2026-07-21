@@ -162,7 +162,7 @@ class SCBAConfig(BaseModel):
     photon: bool = False
     phonon: bool = False
 
-    symmetric: bool = False
+    symmetric: bool = True
 
     align_self_energy_to_complex_axes: bool = True
     r"""Whether to discard parts of the self-energy.
