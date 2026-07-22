@@ -341,7 +341,11 @@ class DSDBCOO(DSDBSparse):
             self._add_block_config(num_blocks, block_sizes, block_offsets)
             self._block_change_cache[self.num_blocks, num_blocks] = inds_bcoo2bcoo
 
-        self.data = self.data[..., inds_bcoo2bcoo]
+        # NOTE: The batched loop is due to the fancy indexing consuming
+        # a lot of memory.
+        data = self.data.reshape(-1, self.data.shape[-1])
+        for stack_idx in range(data.shape[0]):
+            data[stack_idx] = data[stack_idx, inds_bcoo2bcoo]
         self.rows = self.rows[inds_bcoo2bcoo]
         self.cols = self.cols[inds_bcoo2bcoo]
 

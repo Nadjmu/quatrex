@@ -18,45 +18,6 @@ __global__ void _reduction(IndexType1 *a, IndexType2 *out, IndexType2 n) {
 }
 
 template <typename IndexType>
-__global__ void _find_inds(IndexType *self_rows, IndexType *self_cols,
-                           IndexType *rows, IndexType *cols,
-                           IndexType *full_inds, IndexType *counts,
-                           IndexType num_self_rows, IndexType num_rows) {
-  IndexType global_block_offset = (IndexType)blockDim.x * blockIdx.x;
-  IndexType i = global_block_offset + threadIdx.x;
-  IndexType tid = threadIdx.x;
-  __shared__ IndexType cache_rows[THREADS_PER_BLOCK];
-  __shared__ IndexType cache_cols[THREADS_PER_BLOCK];
-
-  IndexType my_row = (i < num_self_rows) ? self_rows[i] : -1;
-  IndexType my_col = (i < num_self_rows) ? self_cols[i] : -1;
-
-  IndexType my_full_ind = 0;
-  IndexType my_count = 0;
-
-  for (IndexType j = 0; j < num_rows; j += THREADS_PER_BLOCK) {
-    if (j + tid < num_rows) {
-      cache_rows[tid] = rows[j + tid];
-      cache_cols[tid] = cols[j + tid];
-    }
-    __syncthreads();
-
-    for (IndexType idx = j; idx < min(j + THREADS_PER_BLOCK, num_rows); idx++) {
-      IndexType cond =
-          (my_row == cache_rows[idx - j]) & (my_col == cache_cols[idx - j]);
-      my_full_ind = my_full_ind * (1 - cond) + idx * cond;
-      my_count += cond;
-    }
-    __syncthreads();
-  }
-
-  if (i < num_self_rows) {
-    full_inds[i] = my_full_ind;
-    counts[i] = my_count;
-  }
-}
-
-template <typename IndexType>
 __global__ void _compute_coo_block_mask(IndexType *rows, IndexType *cols,
                                         IndexType row_start, IndexType row_stop,
                                         IndexType col_start, IndexType col_stop,

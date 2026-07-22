@@ -270,7 +270,11 @@ class DSDBCSR(DSDBSparse):
 
         self._add_block_config(num_blocks, block_sizes, block_offsets)
 
-        self.data = self.data[..., inds_bcsr2bcsr]
+        # NOTE: The batched loop is due to the fancy indexing consuming
+        # a lot of memory.
+        data = self.data.reshape(-1, self.data.shape[-1])
+        for stack_idx in range(data.shape[0]):
+            data[stack_idx] = data[stack_idx, inds_bcsr2bcsr]
         self.cols = self.cols[inds_bcsr2bcsr]
 
         # Update the block sizes and offsets as in the initializer.

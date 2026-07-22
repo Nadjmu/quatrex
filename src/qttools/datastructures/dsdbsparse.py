@@ -58,7 +58,7 @@ def _block_view(arr: NDArray, axis: int, num_blocks: int = comm.size) -> NDArray
     return xp.lib.stride_tricks.as_strided(arr, shape=new_shape, strides=new_strides)
 
 
-class BlockConfig(object):
+class BlockConfig:
     """Configuration of block-sizes and block-slices for a DSDBSparse matrix.
 
     Parameters
@@ -272,7 +272,7 @@ class DSDBSparse(ABC):
         self._add_block_config(self.num_blocks, block_sizes, block_offsets)
 
         self._block_indexer = _DSDBlockIndexer(self)
-        self._stack_indexer = _DStackView(
+        self._stack_view = _DStackView(
             dsdbsparse=self, stack_shape=self.local_stack_shape, stack_index=(...,)
         )
 
@@ -365,7 +365,7 @@ class DSDBSparse(ABC):
     @property
     def stack(self) -> "_DStackView":
         """Returns a stack indexer."""
-        return self._stack_indexer
+        return self._stack_view
 
     @property
     def data(self) -> NDArray:
