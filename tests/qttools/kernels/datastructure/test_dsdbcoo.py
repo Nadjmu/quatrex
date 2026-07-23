@@ -94,28 +94,6 @@ def _reference_compute_block_slice(rows, cols, block_offsets, row, col):
     return inds[0], inds[-1] + 1
 
 
-def test_find_inds(shape: tuple[int, int], num_inds: int):
-    """Tests that the indices are found correctly."""
-    coo = sparse.random(*shape, density=0.25, format="coo")
-    rows = xp.random.choice(shape[0], size=num_inds, replace=False).astype(
-        coo.row.dtype
-    )
-    cols = xp.random.choice(shape[1], size=num_inds, replace=False).astype(
-        coo.col.dtype
-    )
-
-    reference_inds, reference_value_inds = xp.nonzero(
-        (coo.row[:, xp.newaxis] == rows) & (coo.col[:, xp.newaxis] == cols)
-    )
-    inds, value_inds, max_count = dsdbcoo_kernels.find_inds(
-        coo.row, coo.col, rows, cols
-    )
-
-    assert max_count in (0, 1)
-    assert xp.all(inds == reference_inds)
-    assert xp.all(value_inds == reference_value_inds)
-
-
 def test_compute_block_slice(
     shape: tuple[int, int], num_blocks: int, block_coords: tuple[int, int]
 ):
@@ -198,9 +176,3 @@ def test_compute_block_sort_index(shape: tuple[int, int], num_blocks: int):
     sort_index = dsdbcoo_kernels.compute_block_sort_index(coo.row, coo.col, block_sizes)
 
     assert xp.all(sort_index == reference_sort_index)
-
-
-if __name__ == "__main__":
-    # pytest.main([__file__])
-    for i in range(10):
-        test_find_inds((2000, 2000), 2000)

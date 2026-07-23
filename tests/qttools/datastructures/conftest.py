@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from mpi4py.MPI import COMM_WORLD as global_comm
 
-from qttools import NDArray, xp
+from qttools import NDArray
 from qttools.datastructures import DSDBCOO, DSDBCSR, DSDBSparse
 
 DSDBSPARSE_TYPES = [DSDBCOO, DSDBCSR]
@@ -58,10 +58,6 @@ BLOCK_CHANGE_FACTORS = [
     pytest.param(2.0, id="double-change"),
 ]
 
-OPS = [
-    pytest.param(xp.add, id="add"),
-    pytest.param(xp.subtract, id="subtract"),
-]
 
 SYMMETRY = [
     pytest.param(None, id="non-symmetric"),
@@ -113,11 +109,6 @@ def stack_index(request: pytest.FixtureRequest) -> tuple:
 
 @pytest.fixture(params=BLOCK_CHANGE_FACTORS)
 def block_change_factor(request):
-    return request.param
-
-
-@pytest.fixture(params=OPS)
-def op(request):
     return request.param
 
 

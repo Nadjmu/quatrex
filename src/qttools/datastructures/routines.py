@@ -224,8 +224,8 @@ def arrow_partition_halo_comm(
         )
 
     num_blocks = a.dsdbsparse.num_blocks
-    a_ssz = a.dsdbsparse.shape[:-2]
-    b_ssz = b.dsdbsparse.shape[:-2]
+    a_ssz = a.dsdbsparse.local_stack_shape
+    b_ssz = b.dsdbsparse.local_stack_shape
     bsz = a.dsdbsparse.block_sizes
     dtype = a.dsdbsparse.dtype
     a_off = a_num_diag // 2

@@ -1,7 +1,6 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
 import warnings
-from typing import Callable
 
 import numpy as np
 
@@ -10,15 +9,6 @@ from qttools.comm import comm
 from qttools.datastructures.dsdbsparse import DSDBSparse, symmetry_ops
 from qttools.kernels.datastructure import dsdbcsr_kernels, dsdbsparse_kernels
 from qttools.utils.mpi_utils import get_section_sizes
-
-
-def _upper_triangle(rows: NDArray, cols: NDArray) -> tuple[NDArray, NDArray, NDArray]:
-    """Returns upper triangular rows and cols."""
-    mask = cols < rows
-    temp = rows[mask]
-    rows[mask] = cols[mask]
-    cols[mask] = temp
-    return rows, cols, mask
 
 
 class DSDBCSR(DSDBSparse):
@@ -98,7 +88,11 @@ class DSDBCSR(DSDBSparse):
         self.cols = cols
         self.rowptr_map = rowptr_map
 
-        inds = xp.arange(self.shape[-1], dtype=index_type)
+        self._set_diagonal_indices()
+
+    def _set_diagonal_indices(self) -> None:
+        """Sets the diagonal indices of the matrix."""
+        inds = xp.arange(self.shape[-1], dtype=self.index_type)
         self._diag_inds, self._diag_value_inds = dsdbcsr_kernels.find_inds(
             self.rowptr_map, xp.asarray(self.block_offsets), self.cols, inds, inds
         )
@@ -115,174 +109,7 @@ class DSDBCSR(DSDBSparse):
             - self._diag_value_inds[ranks == comm.rank][0]
         )
 
-    def _get_items(self, stack_index: tuple, rows: NDArray, cols: NDArray) -> NDArray:
-        """Gets the requested items from the data structure.
-
-        This is supposed to be a low-level method that does not perform
-        any checks on the input. These are handled by the __getitem__
-        method. The index is assumed to already be renormalized.
-
-        If we are in the "stack" distribution state, you will get an
-        array of the expected shape, padded with zeros where requested
-        elements are not in the matrix.
-
-        If we are in the "nnz" distribution state, and you are
-        requesting an element that is not in the matrix, an IndexError
-        is raised. If we are in the "nnz" distribution state, you will
-        get the requested elements that are on the current rank, and an
-        empty array on the ranks that hold none of the requested
-        elements.
-
-        Parameters
-        ----------
-        stack_index : tuple
-            The index in the stack.
-        rows : NDArray
-            The row indices of the items.
-        cols : NDArray
-            The column indices of the items.
-
-        Returns
-        -------
-        items : NDArray
-            The requested items.
-
-        """
-
-        # queried rows and cols might be in int64
-        # while the internal rows and cols are in int32
-        rows = rows.astype(self.index_type)
-        cols = cols.astype(self.index_type)
-
-        if self.symmetry is not None:
-            rows, cols, mask_transposed = _upper_triangle(rows, cols)
-
-            inds, value_inds = dsdbcsr_kernels.find_inds(
-                self.rowptr_map,
-                xp.asarray(self.block_offsets),
-                self.cols,
-                rows[~mask_transposed],
-                cols[~mask_transposed],
-            )
-            value_inds = (~mask_transposed).nonzero()[0][value_inds]
-            inds_t, value_inds_t = dsdbcsr_kernels.find_inds(
-                self.rowptr_map,
-                xp.asarray(self.block_offsets),
-                self.cols,
-                rows[mask_transposed],
-                cols[mask_transposed],
-            )  # need to split the function call into two, because we might want to get (i,j) and (j,i) at the same time
-            value_inds_t = mask_transposed.nonzero()[0][value_inds_t]
-        else:
-            inds, value_inds = dsdbcsr_kernels.find_inds(
-                self.rowptr_map, xp.asarray(self.block_offsets), self.cols, rows, cols
-            )
-
-        data_stack = self.data[stack_index]
-        if self.distribution_state == "stack":
-            arr = xp.zeros(data_stack.shape[:-1] + (rows.size,), dtype=self.dtype)
-
-            if self.symmetry is not None:
-                arr[..., value_inds] = data_stack[..., inds]
-                arr[..., value_inds_t] = symmetry_ops[self.symmetry](
-                    data_stack[..., inds_t]
-                )
-            else:
-                arr[..., value_inds] = data_stack[..., inds]
-            return xp.squeeze(arr)
-
-        if len(inds) != rows.size:
-            # We cannot know which rank is supposed to hold an element
-            # that is not in the matrix, so we raise an error.
-            raise IndexError("Requested element not in matrix.")
-
-        # If nnz are distributed accross the ranks, we need to find the
-        # rank that holds the data.
-        ranks = dsdbsparse_kernels.find_ranks(self.nnz_section_offsets, inds)
-
-        return data_stack[
-            ..., inds[ranks == comm.rank] - self.nnz_section_offsets[comm.rank]
-        ]
-
-    def _set_items(
-        self, stack_index: tuple, rows: NDArray, cols: NDArray, value: NDArray
-    ) -> None:
-        """Sets the requested items in the data structure.
-
-        This is supposed to be a low-level method that does not perform
-        any checks on the input. These are handled by the __setitem__
-        method. The index is assumed to already be renormalized.
-
-        Parameters
-        ----------
-        stack_index : tuple
-            The index in the stack.
-        rows : NDArray
-            The row indices of the items.
-        cols : NDArray
-            The column indices of the items.
-        value : NDArray
-            The value to set.
-
-        """
-        # queried rows and cols might be in int64
-        # while the internal rows and cols are in int32
-        rows = rows.astype(self.index_type)
-        cols = cols.astype(self.index_type)
-
-        if self.symmetry is not None:
-            # items of upper triangle of the matrix
-            rows, cols, mask_transposed = _upper_triangle(rows, cols)
-
-        inds, value_inds = dsdbcsr_kernels.find_inds(
-            self.rowptr_map, xp.asarray(self.block_offsets), self.cols, rows, cols
-        )
-
-        if len(inds) == 0:
-            # Nothing to do if the element is not in the matrix.
-            return
-
-        value = xp.asarray(value)
-        if self.distribution_state == "stack":
-            if value.ndim == 0:
-                self.data[*stack_index][..., inds] = value
-                if self.symmetry is not None:
-                    self.data[*stack_index][..., inds[mask_transposed]] = symmetry_ops[
-                        self.symmetry
-                    ](value)
-                return
-
-            self.data[*stack_index][..., inds] = value[..., value_inds]
-            return
-
-        # If nnz are distributed accross the stack, we need to find the
-        # rank that holds the data.
-        ranks = dsdbsparse_kernels.find_ranks(self.nnz_section_offsets, inds)
-
-        # If the rank does not hold any of the requested elements, we do
-        # nothing.
-        if not any(ranks == comm.rank):
-            return
-
-        stack_padding_inds = self._stack_padding_mask.nonzero()[0][stack_index[0]]
-        stack_inds, nnz_inds = xp.ix_(
-            stack_padding_inds,
-            inds[ranks == comm.rank] - self.nnz_section_offsets[comm.rank],
-        )
-        # We need to access the full data buffer directly to set the
-        # value since we are using advanced indexing.
-        if value.ndim == 0:
-            self._data[stack_inds, stack_index[1:] or Ellipsis, nnz_inds] = value
-            return
-
-        self._data[stack_inds, stack_index[1:] or Ellipsis, nnz_inds] = value[
-            ..., value_inds[ranks == comm.rank] - value_inds[ranks == comm.rank][0]
-        ]
-        return
-
-    def _get_block(
-        self, arg: tuple | NDArray, row: int, col: int, is_index: bool = True
-    ) -> NDArray | tuple:
+    def _get_block(self, stack_index: tuple, row: int, col: int) -> NDArray:
         """Gets a block from the data structure.
 
         This is supposed to be a low-level method that does not perform
@@ -291,34 +118,27 @@ class DSDBCSR(DSDBSparse):
 
         Parameters
         ----------
-        arg : tuple | NDArray
-            The index of the stack or a view of the data stack. The
-            is_index flag indicates whether the argument is an index or
-            a view.
+        stack_index : tuple
+            The index of the stack.
         row : int
             Row index of the block.
         col : int
             Column index of the block.
-        is_index : bool, optional
-            Whether the argument is an index or a view. Default is True.
 
         Returns
         -------
-        block : NDArray | tuple[NDArray, NDArray, NDArray]
+        block : NDArray
             The block at the requested index. This is an array of shape
             `(*local_stack_shape, block_sizes[row], block_sizes[col])`.
 
         """
         if self.symmetry and (col < row):
-            block = self._get_block(arg, row=col, col=row, is_index=is_index)
+            block = self._get_block(stack_index, row=col, col=row)
             return xp.ascontiguousarray(
                 symmetry_ops[self.symmetry](block.swapaxes(-1, -2))
             )
 
-        if is_index:
-            data_stack = self.data[*arg]
-        else:
-            data_stack = arg
+        data_stack = self.data[*stack_index]
 
         rowptr = self.rowptr_map.get((row, col), None)
 
@@ -346,22 +166,24 @@ class DSDBCSR(DSDBSparse):
 
     def _set_block(
         self,
-        arg: tuple | NDArray,
+        stack_index: tuple,
         row: int,
         col: int,
         block: NDArray,
-        is_index: bool = True,
     ) -> None:
         """Sets a block throughout the stack in the data structure.
 
         The index is assumed to already be renormalized.
 
+        Note
+        ----
+        The input block is not tested for symmetry even if the matrix is
+        symmetric.
+
         Parameters
         ----------
-        arg : tuple | NDArray
-            The index of the stack or a view of the data stack. The
-            is_index flag indicates whether the argument is an index or
-            a view.
+        stack_index : tuple
+            The index of the stack.
         row : int
             Row index of the block.
         col : int
@@ -369,24 +191,17 @@ class DSDBCSR(DSDBSparse):
         block : NDArray
             The block to set. This must be an array of shape
             `(*local_stack_shape, block_sizes[row], block_sizes[col])`.
-        is_index : bool, optional
-            Whether the argument is an index or a view. Default is True.
 
         """
         if self.symmetry and (col < row):
-            # TODO: Probably worth testing if the block is symmetric.
             self._set_block(
-                arg,
+                stack_index,
                 row=col,
                 col=row,
                 block=symmetry_ops[self.symmetry](block.swapaxes(-1, -2)),
-                is_index=is_index,
             )
 
-        if is_index:
-            data_stack = self.data[*arg]
-        else:
-            data_stack = arg
+        data_stack = self.data[*stack_index]
 
         rowptr = self.rowptr_map.get((row, col), None)
         if rowptr is None:
@@ -401,23 +216,6 @@ class DSDBCSR(DSDBSparse):
             data=data_stack,
         )
 
-    def _check_commensurable(self, other: "DSDBSparse") -> None:
-        """Checks if the other matrix is commensurate."""
-        if not isinstance(other, DSDBCSR):
-            raise TypeError("Can only add DSDBCSR matrices.")
-
-        if self.shape != other.shape:
-            raise ValueError("Matrix shapes do not match.")
-
-        if np.any(self.block_sizes != other.block_sizes):
-            raise ValueError("Block sizes do not match.")
-
-        if self.rowptr_map.keys() != other.rowptr_map.keys():
-            raise ValueError("Block sparsities do not match.")
-
-        if xp.any(self.cols != other.cols):
-            raise ValueError("Column indices do not match.")
-
     @DSDBSparse.block_sizes.setter
     def block_sizes(self, block_sizes: NDArray) -> None:
         """Sets new block sizes for the matrix.
@@ -428,52 +226,35 @@ class DSDBCSR(DSDBSparse):
             The new block sizes.
 
         """
+        num_blocks = len(block_sizes)
+
+        block_section_sizes, __ = get_section_sizes(len(block_sizes), comm.block.size)
+        block_section_offsets = np.hstack(([0], np.cumsum(block_section_sizes)))
+        local_block_sizes = block_sizes[block_section_offsets[comm.block.rank] :]
+        num_local_blocks = block_section_sizes[comm.block.rank]
+
+        if sum(local_block_sizes[:num_local_blocks]) != sum(
+            self.local_block_sizes[: self.num_local_blocks]
+        ):
+            raise ValueError(
+                f"Block sizes {block_sizes} are inconsistent with the current distribution."
+            )
+
         if self.distribution_state == "nnz":
             raise NotImplementedError(
                 "Cannot reassign block-sizes when distributed through nnz."
             )
 
-        num_blocks = len(block_sizes)
-        # Check if configuration already exists.
-        if num_blocks in self._block_config:
-            # Compute canonical ordering of the matrix.
-
-            if num_blocks == self.num_blocks:
-                return
-
-            if self._block_config[num_blocks].inds_canonical2block is None:
-                rows, cols = self.spy()
-                inds_bcsr2canonical = xp.lexsort(xp.vstack((cols, rows)))
-                canonical_rows = rows[inds_bcsr2canonical]
-                canonical_cols = cols[inds_bcsr2canonical]
-                # Compute the index for sorting by the new block-sizes.
-                inds_canonical2bcsr, rowptr_map = dsdbcsr_kernels.compute_rowptr_map(
-                    canonical_rows, canonical_cols, block_sizes
-                )
-                self._block_config[num_blocks].inds_canonical2block = (
-                    inds_canonical2bcsr
-                )
-                self._block_config[num_blocks].rowptr_map = rowptr_map
-
-            self.rowptr_map = self._block_config[num_blocks].rowptr_map
-
-            # Mapping directly from original block-ordering to the new
-            # block-ordering is achieved by chaining the two mappings.
-            inds_bcsr2bcsr = inds_bcsr2canonical[
-                self._block_config[num_blocks].inds_canonical2block
-            ]
-            data = self.data.reshape(-1, self.data.shape[-1])
-            for stack_idx in range(data.shape[0]):
-                data[stack_idx] = data[stack_idx, inds_bcsr2bcsr]
-            self.cols = self.cols[inds_bcsr2bcsr]
-
-            self.num_blocks = num_blocks
+        if num_blocks in self._block_config and num_blocks == self.num_blocks:
             return
 
         if sum(block_sizes) != self.shape[-1]:
-            raise ValueError("Block sizes do not match matrix shape.")
-        rows, cols = self.spy()
+            raise ValueError("Block sizes must sum to matrix shape.")
+
+        # NOTE: caching is not implemented for CSR
+
         # Compute canonical ordering of the matrix.
+        rows, cols = self.spy()
         inds_bcsr2canonical = xp.lexsort(xp.vstack((cols, rows)))
         canonical_rows = rows[inds_bcsr2canonical]
         canonical_cols = cols[inds_bcsr2canonical]
@@ -485,18 +266,31 @@ class DSDBCSR(DSDBSparse):
         # Mapping directly from original block-ordering to the new
         # block-ordering is achieved by chaining the two mappings.
         inds_bcsr2bcsr = inds_bcsr2canonical[inds_canonical2bcsr]
+        block_offsets = np.hstack(([0], np.cumsum(block_sizes)))
+
+        self._add_block_config(num_blocks, block_sizes, block_offsets)
+
+        # NOTE: The batched loop is due to the fancy indexing consuming
+        # a lot of memory.
         data = self.data.reshape(-1, self.data.shape[-1])
         for stack_idx in range(data.shape[0]):
             data[stack_idx] = data[stack_idx, inds_bcsr2bcsr]
         self.cols = self.cols[inds_bcsr2bcsr]
 
-        block_sizes = np.asarray(block_sizes, dtype=self.index_type)
-        block_offsets = np.hstack(([0], np.cumsum(block_sizes)), dtype=self.index_type)
+        # Update the block sizes and offsets as in the initializer.
         self.num_blocks = num_blocks
-        self._add_block_config(self.num_blocks, block_sizes, block_offsets)
+        self.block_section_offsets = block_section_offsets
+        # We need to know our local block sizes and those of all
+        # subsequent ranks.
+        self.num_local_blocks = num_local_blocks
+        self.local_block_sizes = local_block_sizes
+        self.local_block_offsets = np.hstack(([0], np.cumsum(self.local_block_sizes)))
+        # self.global_block_offset is already set in the initializer and does not change.
 
-    def symmetrize(self, op: Callable[[NDArray, NDArray], NDArray] = xp.add) -> None:
-        """Symmetrizes the matrix.
+        self._set_diagonal_indices()
+
+    def symmetrize(self, symmetry: str) -> None:
+        """Symmetrizes the matrix with a given symmetry.
 
         Note
         ----
@@ -504,12 +298,21 @@ class DSDBCSR(DSDBSparse):
 
         Parameters
         ----------
-        op : callable, optional
-            The operation to perform on the symmetric elements. Default
-            is addition.
+        symmetry : str
+            The symmetry to enforce. This can be "symmetric",
+            "hermitian", "skew-symmetric", or "skew-hermitian".
 
         """
+        if symmetry not in symmetry_ops:
+            raise ValueError(
+                f"Symmetry must be one of {list(symmetry_ops.keys())} but got {symmetry}."
+            )
+
         if self.symmetry is not None:
+            if symmetry != self.symmetry:
+                raise ValueError(
+                    f"Matrix is already {self.symmetry}. Cannot enforce {symmetry}."
+                )
             # Already symmetric, nothing to do.
             return
 
@@ -549,8 +352,9 @@ class DSDBCSR(DSDBSparse):
 
         data = self.data.reshape(-1, self.data.shape[-1])
         for stack_idx in range(data.shape[0]):
-            data[stack_idx] = 0.5 * op(
-                data[stack_idx], data[stack_idx, self._inds_bcsr2bcsr_t].conj()
+            data[stack_idx] = 0.5 * (
+                symmetry_ops[symmetry](data[stack_idx, self._inds_bcsr2bcsr_t])
+                + data[stack_idx]
             )
 
     def spy(self) -> tuple[NDArray, NDArray]:
@@ -607,8 +411,6 @@ class DSDBCSR(DSDBSparse):
             The new DSDBCSR matrix.
 
         """
-        # TODO: Problem with deepcopy in tests
-        # own copy should be provided
         return cls(
             dtype=dsdbsparse.dtype,
             cols=dsdbsparse.cols.copy(),

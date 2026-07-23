@@ -1,6 +1,5 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 from contextlib import nullcontext
-from typing import Callable
 
 import numpy as np
 import pytest
@@ -10,6 +9,7 @@ from mpi4py.MPI import COMM_WORLD as global_comm
 from qttools import NDArray, sparse, xp
 from qttools.comm import comm
 from qttools.datastructures.dsdbsparse import DSDBSparse, symmetry_ops
+from qttools.utils.gpu_utils import get_array_module_name
 from qttools.utils.mpi_utils import get_section_sizes
 
 
@@ -175,26 +175,26 @@ class TestConversion:
         dsdbsparse_type_dist: DSDBSparse,
         block_sizes: NDArray,
         global_stack_shape: tuple,
-        op: Callable[[NDArray, NDArray], NDArray],
         symmetry: str | None,
     ):
         """Tests that we can transpose a DSDBSparse matrix."""
+
+        if symmetry is None:
+            pytest.skip("Skipping test since symmetry is None.")
+
         coo, dsdbsparse = _create_coo_dsdbsparse(
             dsdbsparse_type_dist,
             block_sizes,
             global_stack_shape,
-            symmetry,
+            None,
             symmetric_sparsity=True,
         )
 
         dense = coo.toarray()
-        if symmetry is None:
-            symmetrized = 0.5 * op(dense, dense.transpose().conj())
-        else:
-            symmetrized = dense
+        symmetrized = 0.5 * (symmetry_ops[symmetry](dense.transpose()) + dense)
 
         reference = xp.broadcast_to(symmetrized, dsdbsparse.shape)
-        dsdbsparse.symmetrize(op)
+        dsdbsparse.symmetrize(symmetry)
 
         assert xp.allclose(reference, dsdbsparse.to_dense())
 
@@ -525,6 +525,10 @@ class TestAccess:
             global_stack_shape,
             symmetry,
         )
+        dsdbsparse_original = dsdbsparse_type_dist.empty_like(dsdbsparse)
+        dsdbsparse_original.allocate_data()
+        dsdbsparse_original.data = dsdbsparse.data
+
         # Create new block sizes.
         updated_block_sizes, inconsistent = _create_new_block_sizes(
             block_sizes, block_change_factor
@@ -549,7 +553,55 @@ class TestAccess:
             return
 
         # Assert that the two DSDBSparse matrices are equivalent.
-        assert xp.allclose(dsdbsparse.data, dsdbsparse_updated_block_sizes.data)
+        attributes = [
+            "data",
+            "num_blocks",
+            "block_section_offsets",
+            "num_local_blocks",
+            "local_block_sizes",
+            "local_block_offsets",
+            "global_block_offset",
+            "block_offsets",
+            "_diag_inds",
+            "_diag_value_inds",
+            "_diag_value_inds_nnz",
+            "_diag_value_inds_nnz",
+        ]
+
+        for attr in attributes:
+            actual = getattr(dsdbsparse, attr)
+            expected = getattr(dsdbsparse_updated_block_sizes, attr)
+            if actual is not None:
+                if get_array_module_name(actual) == "numpy":
+                    assert np.allclose(actual, expected)
+                else:
+                    assert xp.allclose(actual, expected)
+
+        with pytest.raises(ValueError) if inconsistent else nullcontext():
+            # Test caching
+            dsdbsparse.block_sizes = block_sizes
+
+        for attr in attributes:
+            actual = getattr(dsdbsparse, attr)
+            expected = getattr(dsdbsparse_original, attr)
+            if actual is not None:
+                if get_array_module_name(actual) == "numpy":
+                    assert np.allclose(actual, expected)
+                else:
+                    assert xp.allclose(actual, expected)
+
+        with pytest.raises(ValueError) if inconsistent else nullcontext():
+            dsdbsparse.block_sizes = updated_block_sizes
+
+        # Assert that the two DSDBSparse matrices are equivalent.
+        for attr in attributes:
+            actual = getattr(dsdbsparse, attr)
+            expected = getattr(dsdbsparse_updated_block_sizes, attr)
+            if actual is not None:
+                if get_array_module_name(actual) == "numpy":
+                    assert np.allclose(actual, expected)
+                else:
+                    assert xp.allclose(actual, expected)
 
     def test_spy(
         self,
@@ -644,141 +696,6 @@ class TestDistribution:
         comm.stack.barrier()
 
         assert xp.allclose(original_data, dsdbsparse.data)
-
-    def test_getitem_stack(
-        self,
-        dsdbsparse_type_dist: DSDBSparse,
-        block_sizes: NDArray,
-        global_stack_shape: tuple,
-        accessed_element: tuple,
-        symmetry: str | None,
-    ):
-        """Tests distributed access of individual matrix elements."""
-        coo, dsdbsparse = _create_coo_dsdbsparse(
-            dsdbsparse_type_dist,
-            block_sizes,
-            global_stack_shape,
-            symmetry,
-        )
-
-        reference = coo.tocsr()[*accessed_element]
-        test = dsdbsparse[accessed_element]
-
-        # This returns either the correct value or zeros if the element
-        # is on a different rank in the comm.block.
-        assert xp.allclose(reference, test) or (test == 0).all()
-
-    def test_getitem_nnz(
-        self,
-        dsdbsparse_type_dist: DSDBSparse,
-        block_sizes: NDArray,
-        global_stack_shape: tuple,
-        accessed_element: tuple,
-        symmetry: str | None,
-    ):
-        """Tests distributed access of individual matrix elements."""
-        coo, dsdbsparse = _create_coo_dsdbsparse(
-            dsdbsparse_type_dist,
-            block_sizes,
-            global_stack_shape,
-            symmetry,
-        )
-
-        reference = coo.tocsr()[*accessed_element]
-
-        dsdbsparse.dtranspose()
-        test = dsdbsparse[accessed_element]
-
-        # This returns either the correct value or zeros if the element
-        # is on a different rank in the comm.block.
-        assert xp.allclose(reference, test) or (test == 0).all()
-
-    def test_setitem_stack(
-        self,
-        dsdbsparse_type_dist: DSDBSparse,
-        block_sizes: NDArray,
-        global_stack_shape: tuple,
-        symmetry: str | None,
-        accessed_element: tuple,
-    ):
-        """Tests distributed setting of individual matrix elements."""
-        _, dsdbsparse = _create_coo_dsdbsparse(
-            dsdbsparse_type_dist,
-            block_sizes,
-            global_stack_shape,
-            symmetry,
-        )
-        dense = dsdbsparse.to_dense()
-
-        dsdbsparse[accessed_element] = 42
-
-        if symmetry is None:
-            dense[..., *accessed_element][dense[..., *accessed_element].nonzero()] = 42
-
-        else:
-            if accessed_element[0] == accessed_element[1]:
-                dense[..., *accessed_element][
-                    dense[..., *accessed_element].nonzero()
-                ] = 0.5 * (42 + symmetry_ops[symmetry](42))
-            else:
-                dense[..., *accessed_element[::-1]][
-                    dense[..., *accessed_element[::-1]].nonzero()
-                ] = symmetry_ops[symmetry](42)
-                dense[..., *accessed_element][
-                    dense[..., *accessed_element].nonzero()
-                ] = 42
-
-        assert xp.allclose(dense, dsdbsparse.to_dense())
-
-    def test_setitem_nnz(
-        self,
-        dsdbsparse_type_dist: DSDBSparse,
-        block_sizes: NDArray,
-        global_stack_shape: tuple,
-        symmetry: str | None,
-        accessed_element: tuple,
-    ):
-        """Tests distributed setting of individual matrix elements."""
-        _, dsdbsparse = _create_coo_dsdbsparse(
-            dsdbsparse_type_dist,
-            block_sizes,
-            global_stack_shape,
-            symmetry,
-        )
-
-        dense = dsdbsparse.to_dense()
-        rows, cols = dsdbsparse.spy()
-        rows = comm.block.all_gather_v(rows, axis=0)
-        cols = comm.block.all_gather_v(cols, axis=0)
-        row, col, __ = _unsign_index(*accessed_element, dense.shape[-1])
-        ind = xp.where((rows == row) & (cols == col))[0]
-
-        if len(ind) == 0:
-            return
-
-        if symmetry is None:
-            dense[..., *accessed_element][dense[..., *accessed_element].nonzero()] = 42
-
-        else:
-            if accessed_element[0] == accessed_element[1]:
-                dense[..., *accessed_element][
-                    dense[..., *accessed_element].nonzero()
-                ] = 0.5 * (42 + symmetry_ops[symmetry](42))
-            else:
-                dense[..., *accessed_element[::-1]][
-                    dense[..., *accessed_element[::-1]].nonzero()
-                ] = symmetry_ops[symmetry](42)
-                dense[..., *accessed_element][
-                    dense[..., *accessed_element].nonzero()
-                ] = 42
-
-        dsdbsparse.dtranspose()
-
-        dsdbsparse[accessed_element] = 42
-
-        dsdbsparse.dtranspose()
-
-        assert xp.allclose(dense, dsdbsparse.to_dense())
 
     def test_diagonal_nnz(
         self,

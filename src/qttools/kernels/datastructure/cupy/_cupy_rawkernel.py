@@ -22,7 +22,6 @@ kernels_template = kernels_template.replace(
 )
 
 kernel_names = [
-    "_find_inds",
     "_compute_coo_block_mask",
     "_find_bcoords",
     "_compute_block_mask",
@@ -61,11 +60,6 @@ module = cp.RawModule(
 )
 
 kernels = {key: module.get_function(value) for key, value in name_expressions.items()}
-
-
-def _find_inds(grid: tuple[int, int, int], block: tuple[int, int, int], args: tuple):
-    kernel = kernels[(args[0].dtype.type, "_find_inds")]
-    kernel(grid, block, args)
 
 
 def _compute_coo_block_mask(

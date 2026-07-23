@@ -224,9 +224,9 @@ class PCoulombScreening(ScatteringSelfEnergy):
             label="PCoulombScreening: Symmetrization", level="default", comm=comm
         ):
             if p_lesser.symmetry is None:
-                p_lesser.symmetrize(xp.subtract)
-                p_greater.symmetrize(xp.subtract)
-                p_retarded_hermitian.symmetrize(xp.add)
+                p_lesser.symmetrize("skew-hermitian")
+                p_greater.symmetrize("skew-hermitian")
+                p_retarded_hermitian.symmetrize("hermitian")
 
             if not self.include_energy_renormalization:
                 p_retarded_hermitian.data[:] = 0

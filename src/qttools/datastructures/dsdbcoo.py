@@ -1,7 +1,5 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
-from typing import Callable
-
 import numpy as np
 
 from qttools import NDArray, sparse, xp
@@ -9,15 +7,6 @@ from qttools.comm import comm
 from qttools.datastructures.dsdbsparse import DSDBSparse, symmetry_ops
 from qttools.kernels.datastructure import dsdbcoo_kernels, dsdbsparse_kernels
 from qttools.utils.mpi_utils import get_section_sizes
-
-
-def _upper_triangle(rows: NDArray, cols: NDArray) -> tuple[NDArray, NDArray, NDArray]:
-    """Returns upper triangular rows and cols."""
-    mask = cols < rows
-    temp = rows[mask]
-    rows[mask] = cols[mask]
-    cols[mask] = temp
-    return rows, cols, mask
 
 
 class DSDBCOO(DSDBSparse):
@@ -96,14 +85,11 @@ class DSDBCOO(DSDBSparse):
         if symmetry is None:
             self._symmetric_pattern = self._check_sparsity_pattern_symmetric()
 
+        self._set_nnz_indices()
         self._set_diagonal_indices()
 
-    def _set_diagonal_indices(self) -> None:
-        """Sets the diagonal indices of the matrix."""
-        self._diag_inds = xp.where(self.rows == self.cols)[0].astype(self.index_type)
-        self._diag_value_inds = self.rows[self._diag_inds]
-        ranks = dsdbsparse_kernels.find_ranks(self.nnz_section_offsets, self._diag_inds)
-
+    def _set_nnz_indices(self) -> None:
+        """Sets the `nnz` distributed local indices of the matrix."""
         self.rows_nnz = self.rows[
             self.nnz_section_offsets[comm.stack.rank] : self.nnz_section_offsets[
                 comm.stack.rank + 1
@@ -115,188 +101,40 @@ class DSDBCOO(DSDBSparse):
             ]
         ] + self.index_type.type(self.global_block_offset)
 
+    def _set_diagonal_indices(self) -> None:
+        """Sets the diagonal indices of the matrix."""
+
+        if self.num_blocks in self._diag_cache:
+            (
+                self._diag_inds,
+                self._diag_value_inds,
+                self._diag_inds_nnz,
+                self._diag_value_inds_nnz,
+            ) = self._diag_cache[self.num_blocks]
+            return
+
+        self._diag_inds = xp.where(self.rows == self.cols)[0].astype(self.index_type)
+        self._diag_value_inds = self.rows[self._diag_inds]
+        ranks = dsdbsparse_kernels.find_ranks(self.nnz_section_offsets, self._diag_inds)
+
         if not any(ranks == comm.stack.rank):
             self._diag_inds_nnz = None
             self._diag_value_inds_nnz = None
-            return
-        self._diag_inds_nnz = (
-            self._diag_inds[ranks == comm.stack.rank]
-            - self.nnz_section_offsets[comm.stack.rank]
+        else:
+            self._diag_inds_nnz = (
+                self._diag_inds[ranks == comm.stack.rank]
+                - self.nnz_section_offsets[comm.stack.rank]
+            )
+            self._diag_value_inds_nnz = (
+                self._diag_value_inds[ranks == comm.stack.rank]
+                - self._diag_value_inds[ranks == comm.stack.rank][0]
+            )
+        self._diag_cache[self.num_blocks] = (
+            self._diag_inds,
+            self._diag_value_inds,
+            self._diag_inds_nnz,
+            self._diag_value_inds_nnz,
         )
-        self._diag_value_inds_nnz = (
-            self._diag_value_inds[ranks == comm.stack.rank]
-            - self._diag_value_inds[ranks == comm.stack.rank][0]
-        )
-
-    def _get_items(self, stack_index: tuple, rows: NDArray, cols: NDArray) -> NDArray:
-        """Gets the requested items from the data structure.
-
-        This is supposed to be a low-level method that does not perform
-        any checks on the input. These are handled by the __getitem__
-        method. The index is assumed to already be renormalized.
-
-        You will get an array of the expected shape, padded with zeros
-        where requested elements are not in the matrix.
-
-        Note
-        ----
-        Note that in stack distribution, every rank in the
-        block-communicator will return either zeros or the requested
-        data if present.
-
-        Parameters
-        ----------
-        stack_index : tuple
-            The index in the stack.
-        rows : NDArray
-            The row indices of the items.
-        cols : NDArray
-            The column indices of the items.
-
-        Returns
-        -------
-        items : NDArray
-            The requested items.
-
-        """
-        # We need to shift the local rows and cols to the global
-        # coordinates.
-
-        if self.distribution_state == "stack":
-            self_rows = self.rows + self.global_block_offset
-            self_cols = self.cols + self.global_block_offset
-        else:
-            self_rows = self.rows_nnz
-            self_cols = self.cols_nnz
-
-        # queried rows and cols might be in int64
-        # while the internal rows and cols are in int32
-        dtype = self_rows.dtype
-        rows = rows.astype(dtype)
-        cols = cols.astype(dtype)
-
-        if self.symmetry is not None:
-            # find items in lower triangle and send them to upper triangle
-            rows, cols, mask_transposed = _upper_triangle(rows, cols)
-            inds, value_inds, max_counts = dsdbcoo_kernels.find_inds(
-                self_rows,
-                self_cols,
-                rows[~mask_transposed],
-                cols[~mask_transposed],
-            )
-            value_inds = (~mask_transposed).nonzero()[0][value_inds]
-            inds_t, value_inds_t, max_counts_t = dsdbcoo_kernels.find_inds(
-                self_rows,
-                self_cols,
-                rows[mask_transposed],
-                cols[mask_transposed],
-            )  # need to split the function call into two, because we might want to get (i,j) and (j,i) at the same time
-            value_inds_t = mask_transposed.nonzero()[0][value_inds_t]
-            if max_counts not in (0, 1) or max_counts_t not in (0, 1):
-                raise IndexError(
-                    "Request contains repeated indices. Only unique indices are supported."
-                )
-        else:
-            inds, value_inds, max_counts = dsdbcoo_kernels.find_inds(
-                self_rows,
-                self_cols,
-                rows,
-                cols,
-            )
-            if max_counts not in (0, 1):
-                raise IndexError(
-                    "Request contains repeated indices. Only unique indices are supported."
-                )
-
-        data_stack = self.data[*stack_index]
-
-        arr = xp.zeros(data_stack.shape[:-1] + (rows.size,), dtype=self.dtype)
-
-        if self.symmetry is not None:
-            arr[..., value_inds] = data_stack[..., inds]
-            arr[..., value_inds_t] = symmetry_ops[self.symmetry](
-                data_stack[..., inds_t]
-            )
-        else:
-            arr[..., value_inds] = data_stack[..., inds]
-        return xp.squeeze(arr)
-
-    def _set_items(
-        self, stack_index: tuple, rows: NDArray, cols: NDArray, value: NDArray
-    ) -> None:
-        """Sets the requested items in the data structure.
-
-        This is supposed to be a low-level method that does not perform
-        any checks on the input. These are handled by the __setitem__
-        method. The index is assumed to already be renormalized.
-
-        You need to provide an array of the expected shape. The sparsity pattern is not
-        modified. You need to provide
-        the values that are on the current rank. The sparsity pattern is
-        not modified.
-
-        If you are trying to set a value that is not in
-        the matrix, nothing happens.
-
-        Parameters
-        ----------
-        stack_index : tuple
-            The index in the stack.
-        rows : NDArray
-            The row indices of the items.
-        cols : NDArray
-            The column indices of the items.
-        value : NDArray
-            The value to set.
-
-        """
-
-        if self.distribution_state == "stack":
-            self_rows = self.rows + self.global_block_offset
-            self_cols = self.cols + self.global_block_offset
-        else:
-            self_rows = self.rows_nnz
-            self_cols = self.cols_nnz
-
-        if self.symmetry is not None:
-            # items of upper triangle of the matrix
-            rows, cols, mask_transposed = _upper_triangle(rows, cols)
-
-        # We need to shift the local rows and cols to the global
-        # coordinates.
-        inds, value_inds, max_counts = dsdbcoo_kernels.find_inds(
-            self_rows,
-            self_cols,
-            rows,
-            cols,
-        )
-        if max_counts not in (0, 1):
-            raise IndexError(
-                "Request contains repeated indices. Only unique indices are supported."
-            )
-
-        if len(inds) == 0:
-            # Nothing to do if the element is not in the matrix.
-            return
-
-        value = xp.asarray(value)
-        if value.ndim == 0:
-
-            self.data[*stack_index][..., inds] = value
-            if self.symmetry is not None:
-                self.data[*stack_index][..., inds[mask_transposed]] = symmetry_ops[
-                    self.symmetry
-                ](value)
-
-            return
-
-        self.data[*stack_index][..., inds] = value[..., value_inds]
-        if self.symmetry is not None:
-            self.data[*stack_index][..., inds[mask_transposed]] = symmetry_ops[
-                self.symmetry
-            ](value[..., value_inds[mask_transposed]])
-
-        return
 
     def _get_block_slice(self, row: int, col: int) -> slice:
         """Gets the slice of data corresponding to a given block.
@@ -335,8 +173,11 @@ class DSDBCOO(DSDBSparse):
         return block_slice
 
     def _get_block(
-        self, arg: tuple | NDArray, row: int, col: int, is_index: bool = True
-    ) -> NDArray | tuple:
+        self,
+        stack_index: tuple,
+        row: int,
+        col: int,
+    ) -> NDArray:
         """Gets a block from the data structure.
 
         This is supposed to be a low-level method that does not perform
@@ -345,34 +186,27 @@ class DSDBCOO(DSDBSparse):
 
         Parameters
         ----------
-        arg : tuple | NDArray
-            The index of the stack or a view of the data stack. The
-            is_index flag indicates whether the argument is an index or
-            a view.
+        stack_index : tuple
+            The index of the stack.
         row : int
             Row index of the block.
         col : int
             Column index of the block.
-        is_index : bool, optional
-            Whether the argument is an index or a view. Default is True.
 
         Returns
         -------
-        block : NDArray | tuple[NDArray, NDArray, NDArray]
+        block : NDArray
             The block at the requested index. This is an array of shape
             `(*local_stack_shape, block_sizes[row], block_sizes[col])`.
 
         """
         if self.symmetry and (col < row):
-            block = self._get_block(arg, row=col, col=row, is_index=is_index)
+            block = self._get_block(stack_index, row=col, col=row)
             return xp.ascontiguousarray(
                 symmetry_ops[self.symmetry](block.swapaxes(-1, -2))
             )
 
-        if is_index:
-            data_stack = self.data[*arg]
-        else:
-            data_stack = arg
+        data_stack = self.data[*stack_index]
 
         block_slice = self._get_block_slice(row, col)
 
@@ -402,22 +236,24 @@ class DSDBCOO(DSDBSparse):
 
     def _set_block(
         self,
-        arg: tuple | NDArray,
+        stack_index: tuple,
         row: int,
         col: int,
         block: NDArray,
-        is_index: bool = True,
     ) -> None:
         """Sets a block throughout the stack in the data structure.
 
         The index is assumed to already be renormalized.
 
+        Note
+        ----
+        The input block is not tested for symmetry even if the matrix is
+        symmetric.
+
         Parameters
         ----------
-        arg : tuple | NDArray
-            The index of the stack or a view of the data stack. The
-            is_index flag indicates whether the argument is an index or
-            a view.
+        stack_index : tuple
+            The index of the stack.
         row : int
             Row index of the block.
         col : int
@@ -425,25 +261,18 @@ class DSDBCOO(DSDBSparse):
         block : NDArray
             The block to set. This must be an array of shape
             `(*local_stack_shape, block_sizes[row], block_sizes[col])`.
-        is_index : bool, optional
-            Whether the argument is an index or a view. Default is True.
 
         """
         if self.symmetry and (col < row):
-            # TODO: Probably worth testing if the block is symmetric.
             self._set_block(
-                arg,
+                stack_index,
                 row=col,
                 col=row,
                 block=symmetry_ops[self.symmetry](block.swapaxes(-1, -2)),
-                is_index=is_index,
             )
             return
 
-        if is_index:
-            data_stack = self.data[*arg]
-        else:
-            data_stack = arg
+        data_stack = self.data[*stack_index]
 
         block_slice = self._get_block_slice(row, col)
         if block_slice.start is None and block_slice.stop is None:
@@ -457,23 +286,6 @@ class DSDBCOO(DSDBSparse):
             data_stack[..., block_slice],
         )
 
-    def _check_commensurable(self, other: "DSDBCOO") -> None:
-        """Checks if the other matrix is commensurate."""
-        if not isinstance(other, DSDBCOO):
-            raise TypeError("Can only add DSDBCOO matrices.")
-
-        if self.shape != other.shape:
-            raise ValueError("Matrix shapes do not match.")
-
-        if np.any(self.block_sizes != other.block_sizes):
-            raise ValueError("Block sizes do not match.")
-
-        if xp.any(self.rows != other.rows):
-            raise ValueError("Row indices do not match.")
-
-        if xp.any(self.cols != other.cols):
-            raise ValueError("Column indices do not match.")
-
     @DSDBSparse.block_sizes.setter
     def block_sizes(self, block_sizes: NDArray) -> None:
         """Sets new block sizes for the matrix.
@@ -484,138 +296,71 @@ class DSDBCOO(DSDBSparse):
             The new block sizes.
 
         """
-        block_sizes = np.asarray(block_sizes, dtype=self.index_type)
-
-        if self.distribution_state == "nnz":
-            raise NotImplementedError(
-                "Cannot reassign block-sizes when distributed through nnz."
-            )
-
         num_blocks = len(block_sizes)
-        if num_blocks in self._block_config and num_blocks == self.num_blocks:
-            return
-
-        if sum(block_sizes) != self.shape[-1]:
-            raise ValueError("Block sizes must sum to matrix shape.")
 
         block_section_sizes, __ = get_section_sizes(len(block_sizes), comm.block.size)
         block_section_offsets = np.hstack(([0], np.cumsum(block_section_sizes)))
-
         local_block_sizes = block_sizes[block_section_offsets[comm.block.rank] :]
-        if sum(local_block_sizes[: block_section_sizes[comm.block.rank]]) != sum(
+        num_local_blocks = block_section_sizes[comm.block.rank]
+
+        if sum(local_block_sizes[:num_local_blocks]) != sum(
             self.local_block_sizes[: self.num_local_blocks]
         ):
             raise ValueError(
                 f"Block sizes {block_sizes} are inconsistent with the current distribution."
             )
 
-        # Check if configuration already exists.
-        if num_blocks in self._block_config:
-            # Compute canonical ordering of the matrix.
-            inds_bcoo2canonical = xp.lexsort(xp.vstack((self.cols, self.rows)))
-
-            if self._block_config[num_blocks].inds_canonical2block is None:
-                canonical_rows = self.rows[inds_bcoo2canonical]
-                canonical_cols = self.cols[inds_bcoo2canonical]
-                # Compute the index for sorting by the new block-sizes.
-                inds_canonical2bcoo = dsdbcoo_kernels.compute_block_sort_index(
-                    canonical_rows, canonical_cols, local_block_sizes
-                )
-                self._block_config[num_blocks].inds_canonical2block = (
-                    inds_canonical2bcoo
-                )
-
-            # Mapping directly from original block-ordering to the new
-            # block-ordering is achieved by chaining the two mappings.
-            inds_bcoo2bcoo = inds_bcoo2canonical[
-                self._block_config[num_blocks].inds_canonical2block
-            ]
-            data = self.data.reshape(-1, self.data.shape[-1])
-            for stack_idx in range(data.shape[0]):
-                data[stack_idx] = data[stack_idx, inds_bcoo2bcoo]
-            self.rows = self.rows[inds_bcoo2bcoo]
-            self.cols = self.cols[inds_bcoo2bcoo]
-            self.rows_nnz = (
-                self.rows[
-                    self.nnz_section_offsets[
-                        comm.stack.rank
-                    ] : self.nnz_section_offsets[comm.stack.rank + 1]
-                ]
-                + self.global_block_offset
-            )
-            self.cols_nnz = (
-                self.cols[
-                    self.nnz_section_offsets[
-                        comm.stack.rank
-                    ] : self.nnz_section_offsets[comm.stack.rank + 1]
-                ]
-                + self.global_block_offset
-            )
-            self._set_diagonal_indices()
-
-            self.block_section_offsets = block_section_offsets
-            # We need to know our local block sizes and those of all
-            # subsequent ranks.
-            self.num_local_blocks = block_section_sizes[comm.block.rank]
-            self.local_block_sizes = block_sizes[
-                self.block_section_offsets[comm.block.rank] :
-            ]
-            self.local_block_offsets = np.hstack(
-                ([0], np.cumsum(self.local_block_sizes))
+        if self.distribution_state == "nnz":
+            raise NotImplementedError(
+                "Cannot reassign block-sizes when distributed through nnz."
             )
 
-            self.num_blocks = num_blocks
+        if num_blocks in self._block_config and num_blocks == self.num_blocks:
             return
 
-        # Compute canonical ordering of the matrix.
-        inds_bcoo2canonical = xp.lexsort(xp.vstack((self.cols, self.rows)))
-        canonical_rows = self.rows[inds_bcoo2canonical]
-        canonical_cols = self.cols[inds_bcoo2canonical]
-        # Compute the index for sorting by the new block-sizes.
-        inds_canonical2bcoo = dsdbcoo_kernels.compute_block_sort_index(
-            canonical_rows, canonical_cols, local_block_sizes
-        )
-        # Mapping directly from original block-ordering to the new
-        # block-ordering is achieved by chaining the two mappings.
-        inds_bcoo2bcoo = inds_bcoo2canonical[inds_canonical2bcoo]
+        if sum(block_sizes) != self.shape[-1]:
+            raise ValueError("Block sizes must sum to matrix shape.")
+
+        if (self.num_blocks, num_blocks) in self._block_change_cache:
+            inds_bcoo2bcoo = self._block_change_cache[self.num_blocks, num_blocks]
+
+        else:
+            # Compute canonical ordering of the matrix.
+            inds_bcoo2canonical = xp.lexsort(xp.vstack((self.cols, self.rows)))
+            canonical_rows = self.rows[inds_bcoo2canonical]
+            canonical_cols = self.cols[inds_bcoo2canonical]
+            # Compute the index for sorting by the new block-sizes.
+            inds_canonical2bcoo = dsdbcoo_kernels.compute_block_sort_index(
+                canonical_rows, canonical_cols, local_block_sizes
+            )
+            # Mapping directly from original block-ordering to the new
+            # block-ordering is achieved by chaining the two mappings.
+            inds_bcoo2bcoo = inds_bcoo2canonical[inds_canonical2bcoo]
+            block_offsets = np.hstack(([0], np.cumsum(block_sizes)))
+
+            self._add_block_config(num_blocks, block_sizes, block_offsets)
+            self._block_change_cache[self.num_blocks, num_blocks] = inds_bcoo2bcoo
+
+        # NOTE: The batched loop is due to the fancy indexing consuming
+        # a lot of memory.
         data = self.data.reshape(-1, self.data.shape[-1])
         for stack_idx in range(data.shape[0]):
             data[stack_idx] = data[stack_idx, inds_bcoo2bcoo]
         self.rows = self.rows[inds_bcoo2bcoo]
         self.cols = self.cols[inds_bcoo2bcoo]
-        self.rows_nnz = (
-            self.rows[
-                self.nnz_section_offsets[comm.stack.rank] : self.nnz_section_offsets[
-                    comm.stack.rank + 1
-                ]
-            ]
-            + self.global_block_offset
-        )
-        self.cols_nnz = (
-            self.cols[
-                self.nnz_section_offsets[comm.stack.rank] : self.nnz_section_offsets[
-                    comm.stack.rank + 1
-                ]
-            ]
-            + self.global_block_offset
-        )
-        self._set_diagonal_indices()
 
         # Update the block sizes and offsets as in the initializer.
         self.num_blocks = num_blocks
-
-        block_offsets = np.hstack(([0], np.cumsum(block_sizes)))
-
         self.block_section_offsets = block_section_offsets
         # We need to know our local block sizes and those of all
         # subsequent ranks.
-        self.num_local_blocks = block_section_sizes[comm.block.rank]
-        self.local_block_sizes = block_sizes[
-            self.block_section_offsets[comm.block.rank] :
-        ]
+        self.num_local_blocks = num_local_blocks
+        self.local_block_sizes = local_block_sizes
         self.local_block_offsets = np.hstack(([0], np.cumsum(self.local_block_sizes)))
-        self._add_block_config(num_blocks, block_sizes, block_offsets)
-        self._block_config[num_blocks].inds_canonical2block = inds_canonical2bcoo
+        # self.global_block_offset is already set in the initializer and does not change.
+
+        self._set_nnz_indices()
+        self._set_diagonal_indices()
 
     def spy(self) -> tuple[NDArray, NDArray]:
         """Returns the row and column indices of the non-zero elements.
@@ -664,11 +409,8 @@ class DSDBCOO(DSDBSparse):
 
         return xp.all(idx_original == idx_swapped)
 
-    def symmetrize(self, op: Callable[[NDArray, NDArray], NDArray] = xp.add) -> None:
-        """Symmetrizes the matrix with a given operation.
-
-        This is done by setting the data to the result of the operation
-        applied to the data and its conjugate transpose.
+    def symmetrize(self, symmetry: str) -> None:
+        """Symmetrizes the matrix with a given symmetry.
 
         Note
         ----
@@ -676,13 +418,21 @@ class DSDBCOO(DSDBSparse):
 
         Parameters
         ----------
-        op : callable, optional
-            The operation to apply to the data and its conjugate
-            transpose. Default is `xp.add`, so that the matrix is
-            Hermitian after calling.
+        symmetry : str
+            The symmetry to enforce. This can be "symmetric",
+            "hermitian", "skew-symmetric", or "skew-hermitian".
 
         """
+        if symmetry not in symmetry_ops:
+            raise ValueError(
+                f"Symmetry must be one of {list(symmetry_ops.keys())} but got {symmetry}."
+            )
+
         if self.symmetry is not None:
+            if symmetry != self.symmetry:
+                raise ValueError(
+                    f"Matrix is already {self.symmetry}. Cannot enforce {symmetry}."
+                )
             # Already symmetric, nothing to do.
             return
 
@@ -717,8 +467,9 @@ class DSDBCOO(DSDBSparse):
 
         data = self.data.reshape(-1, self.data.shape[-1])
         for stack_idx in range(data.shape[0]):
-            data[stack_idx] = 0.5 * op(
-                data[stack_idx], data[stack_idx, self._inds_bcoo2bcoo_t].conj()
+            data[stack_idx] = 0.5 * (
+                symmetry_ops[symmetry](data[stack_idx, self._inds_bcoo2bcoo_t])
+                + data[stack_idx]
             )
 
     @classmethod
@@ -821,7 +572,6 @@ class DSDBCOO(DSDBSparse):
 
         # Determine the local slice of the data.
         # NOTE: This is arrow-wise partitioning.
-        # TODO: Allow more options, e.g., block row-wise partitioning.
         section_sizes, __ = get_section_sizes(len(block_sizes), comm.block.size)
         section_offsets = np.hstack(([0], np.cumsum(section_sizes)))
 

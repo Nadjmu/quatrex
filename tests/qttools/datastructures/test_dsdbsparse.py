@@ -2,7 +2,6 @@
 
 from contextlib import nullcontext
 
-import numpy as np
 import pytest
 
 from qttools import NDArray, sparse, xp
@@ -88,145 +87,8 @@ def _create_coo_dsdbsparse(
     return coo, dsdbsparse
 
 
-def _create_new_block_sizes(
-    block_sizes: NDArray, block_change_factor: float
-) -> NDArray:
-    """Creates new block sizes based on the block change factor."""
-    rest = 0
-    updated_block_sizes = []
-    for bs in block_sizes:
-        if sum(updated_block_sizes) < sum(block_sizes):
-            # Calculate the new block size.
-            el = max(int(bs * block_change_factor), 1)
-            # Calculate the number of repetitions and the rest. The rest is added to the next block.
-            reps, rest = max(divmod(bs + rest, el), (1, 0))
-            # Add the new block size to the list.
-            updated_block_sizes = updated_block_sizes + [el] * int(reps)
-        else:
-            # Break if the sum of the updated block sizes is equal or greater than the sum of the original block sizes.
-            break
-    if sum(updated_block_sizes) != sum(block_sizes):
-        # Add the rest to the last block.
-        updated_block_sizes[-1] += sum(block_sizes) - sum(updated_block_sizes)
-    return np.asarray(updated_block_sizes)
-
-
-def _unsign_index(row: int, col: int, num_blocks) -> tuple:
-    """Adjusts the sign to allow negative indices and checks bounds."""
-    row = num_blocks + row if row < 0 else row
-    col = num_blocks + col if col < 0 else col
-    in_bounds = 0 <= row < num_blocks and 0 <= col < num_blocks
-    return row, col, in_bounds
-
-
-def _get_block_inds(block: tuple, block_sizes: NDArray) -> tuple:
-    """Returns the equivalent dense indices for a block."""
-    block_offsets = np.hstack(([0], np.cumsum(block_sizes)), dtype=np.int32)
-    num_blocks = len(block_sizes)
-
-    # Normalize negative indices.
-    row, col, in_bounds = _unsign_index(*block, num_blocks)
-    index = (
-        slice(block_offsets[row], block_offsets[row + 1]),
-        slice(block_offsets[col], block_offsets[col + 1]),
-    )
-
-    return index, in_bounds
-
-
 class TestAccess:
     """Tests for the access methods of DSDBSparse."""
-
-    def test_getitem(
-        self,
-        dsdbsparse_type: DSDBSparse,
-        block_sizes: NDArray,
-        global_stack_shape: tuple,
-        symmetry: str | None,
-        accessed_element: tuple,
-    ):
-        """Tests that we can get individual matrix elements."""
-        _, dsdbsparse = _create_coo_dsdbsparse(
-            dsdbsparse_type,
-            block_sizes,
-            global_stack_shape,
-            symmetry,
-        )
-        dense = dsdbsparse.to_dense()
-
-        reference = dense[..., *accessed_element]
-        assert xp.allclose(reference, dsdbsparse[accessed_element])
-
-    def test_getitem_with_array(
-        self,
-        dsdbsparse_type: DSDBSparse,
-        block_sizes: NDArray,
-        global_stack_shape: tuple,
-        symmetry: str | None,
-        num_inds: int,
-    ):
-        """Tests that we can get multiple matrix elements at once."""
-        coo, dsdbsparse = _create_coo_dsdbsparse(
-            dsdbsparse_type,
-            block_sizes,
-            global_stack_shape,
-            symmetry,
-        )
-
-        # Generate a number of unique indices.
-        rows = xp.random.choice(coo.shape[0], size=num_inds, replace=False)
-        cols = xp.random.choice(coo.shape[1], size=num_inds, replace=False)
-
-        reference_data = coo.tocsr()[rows, cols]
-        if sparse.issparse(reference_data):
-            reference_data = reference_data.toarray()
-        reference = xp.broadcast_to(
-            reference_data, global_stack_shape + reference_data.shape[1:]
-        )
-        assert xp.allclose(reference, dsdbsparse[rows, cols])
-
-    def test_setitem(
-        self,
-        dsdbsparse_type: DSDBSparse,
-        block_sizes: NDArray,
-        global_stack_shape: tuple,
-        symmetry: str | None,
-        accessed_element: tuple,
-    ):
-        """Tests that we can set individual matrix elements."""
-        _, dsdbsparse = _create_coo_dsdbsparse(
-            dsdbsparse_type,
-            block_sizes,
-            global_stack_shape,
-            symmetry,
-        )
-
-        dense = dsdbsparse.to_dense()
-
-        val = 42 + 42j
-
-        if symmetry:
-            sym_val = symmetry_ops[symmetry](val)
-            r, c = accessed_element
-            if r == c:
-                val = (val + sym_val) / 2
-                dsdbsparse[accessed_element] = val
-                dense[..., *accessed_element][
-                    dense[..., *accessed_element].nonzero()
-                ] = val
-            else:
-                dsdbsparse[accessed_element] = val
-                dense[..., *accessed_element][
-                    dense[..., *accessed_element].nonzero()
-                ] = val
-                dense[..., *accessed_element[::-1]][
-                    dense[..., *accessed_element[::-1]].nonzero()
-                ] = sym_val
-        else:
-            dsdbsparse[accessed_element] = val
-            dense[..., *accessed_element][dense[..., *accessed_element].nonzero()] = val
-
-        assert xp.allclose(dense, dsdbsparse.to_dense())
 
     def test_diagonal_substack(
         self,
@@ -336,55 +198,6 @@ class TestAccess:
         else:
             dense[*stack_index][..., inds, inds] = 0.5 * (symmetry_ops[symmetry](2) + 2)
         assert xp.allclose(dense, dsdbsparse.to_dense())
-
-    def test_set_stack(
-        self,
-        dsdbsparse_type_dist: DSDBSparse,
-        block_sizes: NDArray,
-        global_stack_shape: tuple,
-        symmetry: str | None,
-        stack_index: tuple,
-    ):
-        """Tests that we can set the stackview of a DSDBSparse matrix for
-        a specific stack index.
-        """
-
-        coo, dsdbsparse = _create_coo_dsdbsparse(
-            dsdbsparse_type_dist,
-            block_sizes,
-            global_stack_shape,
-            symmetry,
-        )
-
-        csr_array = coo.tocsr()[dsdbsparse.spy()]
-        csr_new = _create_coo(
-            block_sizes,
-            symmetry=symmetry,
-        ).tocsr()
-
-        # Set the stackview to a new value.
-        dsdbsparse.stack[stack_index] = csr_new
-        csr_new_array = csr_new[dsdbsparse.spy()]
-
-        # Create a boolean mask to track modified stack indices.
-        mask = np.zeros(dsdbsparse.shape[:-2], dtype=bool)
-        mask[stack_index] = True
-
-        # Check that the stackview has been updated correctly
-        # by looping through the stack indices.
-        for s_index in np.ndindex(*dsdbsparse.shape[:-2]):
-            if mask[s_index]:
-                # If the stack index is in the modified stack indices,
-                # check that the stackview has been updated correctly.
-                assert xp.array_equiv(
-                    csr_new_array,
-                    dsdbsparse.data[s_index],
-                )
-            else:
-                assert xp.array_equiv(
-                    csr_array,
-                    dsdbsparse.data[s_index],
-                )
 
 
 # Shape of the dense array.

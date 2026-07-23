@@ -5,56 +5,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 
-@nb.njit(parallel=True, cache=True, no_rewrites=True)
-def find_inds(
-    self_rows: NDArray, self_cols: NDArray, rows: NDArray, cols: NDArray
-) -> tuple[NDArray, NDArray, int]:
-    """Finds the corresponding indices of the given rows and columns.
-
-    This also counts the number of matches found, which is used to check
-    if the indices contain duplicates.
-
-    Parameters
-    ----------
-    self_rows : NDArray
-        The rows of this matrix.
-    self_cols : NDArray
-        The columns of this matrix.
-    rows : NDArray
-        The rows to find the indices for.
-    cols : NDArray
-        The columns to find the indices for.
-
-    Returns
-    -------
-    inds : NDArray
-        The indices of the given rows and columns.
-    value_inds : NDArray
-        The matching indices of this matrix.
-    max_counts : int
-        The maximum number of matches found.
-
-    """
-    dtype = rows.dtype
-    full_inds = np.zeros(self_rows.shape[0], dtype=dtype)
-    counts = np.zeros(self_rows.shape[0], dtype=dtype)
-    for i in nb.prange(self_rows.shape[0]):
-        for j in range(rows.shape[0]):
-            cond = int((self_rows[i] == rows[j]) & (self_cols[i] == cols[j]))
-            full_inds[i] = full_inds[i] * (1 - cond) + j * cond
-            counts[i] += cond
-
-    # Find the valid indices.
-    inds = np.nonzero(counts)[0]
-    value_inds = full_inds[inds]
-
-    if counts.size == 0:
-        # No data in this block, return an empty slice.
-        return inds, value_inds, 0
-
-    return inds, value_inds, np.max(counts)
-
-
 @nb.njit(parallel=True, cache=True)
 def compute_block_slice(
     rows: NDArray, cols: NDArray, block_offsets: NDArray, row: int, col: int
