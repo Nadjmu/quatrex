@@ -1,22 +1,23 @@
 # Lyapunov Problem
 
+As mentioned in [`obc`](obc.md), the Lyapunov Equation
+
 $$
 \begin{equation}
-\mathbf{w}^{\lessgtr} = \mathbf{q}^{\lessgtr} − \mathbf{a}\mathbf{w}^{\lessgtr}\mathbf{a}^{H}
+\mathbf{w}^{\lessgtr} = \mathbf{q}^{\lessgtr} −
+\mathbf{a}\mathbf{w}^{\lessgtr}\mathbf{a}^\dagger
 \label{eq:lyapunov}
 \end{equation}
 $$
 
-As mentioned in [`obc`](obc.md), the Lyapunov Equation
-$\ref{eq:lyapunov}$ needs to be solved to compute
-$\mathbf{\Sigma}^{\lessgtr}_{obc}$ (also called
-$\mathbf{L}^{\lessgtr}_{obc}$) for the screened Coulomb system. 
+needs to be solved to compute the lesser and greater surface Green's
+functions in systems where the fluctuation-dissipation theorem cannot be
+applied directly.
 
-## Derivation
-
-!!! TODO
-    include derivation of the Lyapunov equation from the derivation of
-    RGF with a non-identity right hand side matrix.
+<!--
+TODO: include derivation of the Lyapunov equation from the derivation of
+RGF with a non-identity right hand side matrix.
+-->
 
 ## Sparsity Reduction
 
@@ -27,13 +28,16 @@ large systems with sparse matrices. The sparsity reduction is controlled
 through the parameter
 [`reduce_sparsity`](../parameters/lyapunov.md#reduce_sparsity). By
 default, it is enabled, but it is assumed that the sparsity of the
-matrix $\mathbf{a}$ can change throughout the simulation. There is
-currently a "bug" in the assumption of constant sparsity and the
-parameter
-[`assume_constant_sparsity`](../parameters/lyapunov.md#assume_constant_sparsity)
-should NOT be set to `true`.
+matrix $\mathbf{a}$ can change throughout the simulation.
 
-# Solution Approaches
+!!! danger "Constant Sparsity Assumption"
+    Assuming constant sparsity is currently never valid. Thus, the
+    parameter
+    [`assume_constant_sparsity`](../parameters/lyapunov.md#assume_constant_sparsity)
+    should not be set to `true`. This is a feature that will be further
+    developed in the future, but currently it is not supported.
+
+## Solution Approaches
 
 Similar to the solution of the fixed point problem for the retarded
 boundary conditions, both iterative and direct methods can be used to
@@ -42,8 +46,8 @@ of method. The iterative method can be more memory efficient, but can
 also suffer from convergence issues. Thus, the choice of method depends
 on the well-posedness of the problem and the available computational
 resources. For the Lyapunov problem, convergence properties are known in
-the literature. Iterative methods are stable when the magnitude of the
-eigenvalues of the matrix $\mathbf{a}$ is less than one [^1].
+the literature. Iterative methods are stable when the magnitudes of all
+eigenvalues of the matrix $\mathbf{a}$ are below one [^1].
 
 !!! info "Algorithm Selection"
     The method for the Lyapunov problem can be set through the parameter
@@ -58,32 +62,35 @@ eigenvalues of the matrix $\mathbf{a}$ is less than one [^1].
 
 #### Fixed-Point Iterations
 
+The linearly convergent fixed-point iteration method is the simplest
+iterative method to solve the Lyapunov problem.
+
 $$
 \begin{equation}
-\mathbf{w}^{\lessgtr}_{n+1} = \mathbf{q}^{\lessgtr} − \mathbf{a}\mathbf{w}^{\lessgtr}_{n}\mathbf{a}^{H}
+\mathbf{w}^{\lessgtr}_{n+1} = \mathbf{q}^{\lessgtr} −
+\mathbf{a}\mathbf{w}^{\lessgtr}_{n}\mathbf{a}^\dagger
 \label{eq:lyapunov_iterative}
 \end{equation}
 $$
 
-The linearly convergent fixed-point iteration method is the simplest
-iterative method to solve the Lyapunov problem. The convergence of the
-method depends on the spectral radius of the matrix $\mathbf{a}$, which
-is defined as the largest absolute value of its eigenvalues. If the
-spectral radius is greater than or equal to one, the method may diverge. 
+The convergence of the method depends on the spectral radius of the
+matrix $\mathbf{a}$, which is defined as the largest absolute value of
+its eigenvalues. If the spectral radius is greater than or equal to one,
+the method may diverge.
 
-As for $\mathbf{g}^R$, simple fixed-point iterations are not exposed to
-the user, but are used as a refinement step in both the direct method
-and the memoizer. From experience, the iterative methods can converge
-well for the Lyapunov problem, except that spurious energies can lead to
-divergence. Thus, the iterative methods are not recommended for general
-use.
+Simple fixed-point iterations are not exposed to the user, but are used
+as a refinement step in both the direct method and the memoizer. From
+experience, the iterative methods can converge well for the Lyapunov
+problem, except that spurious energies can lead to divergence. Thus, the
+iterative methods are not recommended for general use.
 
 #### Squared Smith
 
-Similar to Sancho-Rubio, an exponentially convergent iterative method
-can be derived. This doubling method is also called squared smith method
-and is described in [^1]. As the fixed-point iterations, the method
-convergence depends on the spectral radius of the matrix $\mathbf{a}$.
+Like Sancho-Rubio, an exponentially convergent iterative method can be
+derived for this recursion relation. This doubling method is also called
+*squared Smith method* and is described in [^1]. As for fixed-point
+iterations, this method convergence depends on the spectral radius of
+the matrix $\mathbf{a}$.
 
 ### Direct
 
@@ -91,36 +98,56 @@ convergence depends on the spectral radius of the matrix $\mathbf{a}$.
 
 Solving the Lyapunov problem directly can be done by eigenvalue
 decomposing the matrix $\mathbf{a}$ and then solving the Lyapunov
-problem in the eigenbasis. We call this the spectral method. The method
-is derived in the following:
+problem in the eigenbasis. We call this the `"spectral"` method.
 
-$$
-\begin{align}
-\mathbf{a} &= \mathbf{V} \mathbf{\Lambda} \mathbf{V}^{-1} \\
-\mathbf{w}^{\lessgtr}_{n+1} &= \mathbf{q}^{\lessgtr} − \mathbf{V} \mathbf{\Lambda} \mathbf{V}^{-1}\mathbf{w}^{\lessgtr}_{n} \mathbf{V}^{-H} \mathbf{\Lambda} \mathbf{V}^{H}\\
-\hat{\mathbf{w}} &= \mathbf{V}^{-1} \mathbf{w}^{\lessgtr} \mathbf{V}^{-H} \\
-\hat{\mathbf{q}} &= \mathbf{V}^{-1} \mathbf{q}^{\lessgtr} \mathbf{V}^{-H} \\
-\hat{\mathbf{w}} &= \hat{\mathbf{q}} − \mathbf{\Lambda} \hat{\mathbf{w}} \mathbf{\Lambda} \\
-\hat{\mathbf{w}}_{ij} &= \frac{\hat{\mathbf{q}}_{ij}}{1 - \lambda_i \lambda_j^*} \label{eq:spectral_lyapunov}\\
-\mathbf{w}^{\lessgtr} &= \mathbf{V} \hat{\mathbf{w}} \mathbf{V}^{H}
-\end{align}
-$$
+??? info "Derivation of the Spectral Method"
 
-The main idea is to transform the Lyapunov problem into the eigenbasis
-of the matrix $\mathbf{a}$. In this basis, the Lyapunov problem can be
-solved element-wise as in Equation $\ref{eq:spectral_lyapunov}$. The
-solution can then be transformed back to the original basis. The method
-is efficient, but requires the eigenvalue decomposition of the matrix
-$\mathbf{a}$ which can be computationally expensive for large matrices.
-The matrix $\mathbf{a}$ has generally no symmetry properties, thus
-LAPACK `geev` has to be used.
+    The derivation of the method is as follows:
 
-!!! info "EIG Best Performance"
-    NVIDIA has an optimized routine for the eigenvalue solving. To use
-    this routine, the
+    $$
+    \mathbf{w}^{\lessgtr}_{n+1} = \mathbf{q}^{\lessgtr} −
+    \mathbf{a}\mathbf{w}^{\lessgtr}_{n}\mathbf{a}^\dagger \quad
+    \xrightarrow{\mathbf{a} = \mathbf{V} \mathbf{\Lambda} \mathbf{V}^{-1}}
+    \quad \mathbf{w}^{\lessgtr}_{n+1} = \mathbf{q}^{\lessgtr} − \mathbf{V}
+    \mathbf{\Lambda} \mathbf{V}^{-1}\mathbf{w}^{\lessgtr}_{n}
+    \mathbf{V}^{-\dagger} \mathbf{\Lambda} \mathbf{V}^\dagger
+    $$
+
+    Next, we define the transformed matrices $\hat{\mathbf{w}} \equiv
+    \mathbf{V}^{-1} \mathbf{w}^{\lessgtr} \mathbf{V}^{-\dagger}$ and
+    $\hat{\mathbf{q}} \equiv \mathbf{V}^{-1} \mathbf{q}^{\lessgtr}
+    \mathbf{V}^{-\dagger}$, which leads to
+
+    $$
+    \hat{\mathbf{w}} = \hat{\mathbf{q}} − \mathbf{\Lambda} \hat{\mathbf{w}}
+    \mathbf{\Lambda}.
+    $$
+
+    This equation can be solved element-wise as
+
+    $$
+    \hat{\mathbf{w}}_{ij} = \frac{\hat{\mathbf{q}}_{ij}}{1 - \lambda_i
+    \lambda_j^*}
+    $$
+
+    and the original matrix $\mathbf{w}^{\lessgtr}$ can be reconstructed as
+
+    $$
+    \mathbf{w}^{\lessgtr} = \mathbf{V} \hat{\mathbf{w}} \mathbf{V}^\dagger.
+    $$
+
+The method is efficient, but requires the eigenvalue decomposition of
+the matrix $\mathbf{a}$ which can be computationally expensive for large
+matrices. The matrix $\mathbf{a}$ has generally no symmetry properties,
+thus LAPACK `geev` has to be used.
+
+!!! info "Optimizing the performance of the eigenvalue solver"
+    NVIDIA has an optimized routine for solving general eigenvalue
+    problems. To use this routine, the
     [`eig_compute_location`](../parameters/nevp.md#eig_compute_location)
-    parameter should be set to `cupy`. NOTE: This configuration will be
-    refactored and automatically the best option will be determined.
+    parameter should be set to `"cupy"`. Note that this option will be
+    refactored and in the future, the best option will be determined
+    automatically.
 
 As we observed some stability issues with this method, we still do a
 fixed-point iteration refinement step after the spectral method. The

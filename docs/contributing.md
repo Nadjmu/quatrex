@@ -72,6 +72,9 @@ Python codebases.
   describing the feature or bug you want to address.
 - Create a new branch for your feature or bugfix.
 - Make your changes and commit them with clear commit messages.
+- New features should be accompanied by new unit tests and documentation
+  updates and (if applicable) a few words on the methodology behind the
+  feature.
 - Push your branch to GitHub and open a pull request, explaining your
   changes.
 - To have at least a second pair of eyes on your changes, request a
@@ -82,12 +85,11 @@ Python codebases.
 As mentioned in the [installation
 instructions](getting_started/installation/#obtaining-the-source-code),
 we provide several example configurations, input files, and reference
-outputs that we use for testing and development.
-
-This data is tracked using [Git LFS](https://git-lfs.com/). We do not
-use GitHub's built-in large file storage, as it has some bandwidth
-limitations. Instead, we use ETH Zürich's GitLab instance to host the
-LFS files in [this project](https://gitlab.ethz.ch/quatrex/quatrex).
+outputs that we use for testing and development. This data is tracked
+using [Git LFS](https://git-lfs.com/). We do not use GitHub's built-in
+large file storage, as it has some bandwidth limitations. Instead, we
+use ETH Zürich's GitLab instance to host the LFS files in [this
+project](https://gitlab.ethz.ch/quatrex/quatrex).
 
 To update the LFS files, you will need to have write access to the
 GitLab project. Contact current project maintainers for access. The

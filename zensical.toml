@@ -78,7 +78,10 @@ nav = [
         { "Examples" = [
             "user_guide/examples/index.md",
             "user_guide/examples/cnt.md",
-            "user_guide/examples/mos2.md",
+            # TODO: The examples below are currently commented out
+            # because they are not yet ready for public release. Once
+            # they are ready, we can uncomment them.
+            # "user_guide/examples/mos2.md",
             # "user_guide/examples/silicon.md",
         ] },
         { "Methodology" = [

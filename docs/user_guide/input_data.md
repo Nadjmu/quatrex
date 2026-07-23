@@ -154,9 +154,7 @@ documentation](https://wannier90.readthedocs.io/en/latest/user_guide/wannier90/f
         dtype=np.complex128,
     )
 
-
     save_hdf5_dict("hamiltonian.h5", hamiltonian)
-    save_hdf5_dict("overlap.h5", hamiltonian)
     ```
 
 ### CP2K

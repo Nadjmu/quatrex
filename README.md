@@ -36,8 +36,8 @@ simulations of realistic nanostructures.
   electronic structure packages.
 - **Self-consistent electrostatics and transport**, solving
   open-boundary Schrödinger and Poisson equations iteratively.
-- **Hardware portability** through a hardware-agnostic Python
-  abstraction layer, enabling seamless execution across CPUs and GPUs.
+- **Hardware portability** through hardware-agnostic Python
+  orchestration, enabling seamless execution across CPUs and GPUs.
 - **Specialized numerical algorithms** for open boundaries, sparse
   linear systems, and Dyson-Keldysh equations.
 
