@@ -1,0 +1,13 @@
+
+
+Table of contents
+
+1. Background QTBM/NEGF
+2. IEEE Floating Point Arithmetic, Standard model, Rounding Error Analysis
+3. Numerical linear algebra definitions, algorithms
+
+4. Condition number estimation, Non-hermiticity / Non-normality analysis 
+5. Block Thomas algorithms and error analysis 
+6. Block LU (in half precision) as preconditioner for GMRES in mixed precision iterative refinement
+
+
