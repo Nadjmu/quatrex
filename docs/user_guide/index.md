@@ -7,7 +7,9 @@ minimal example of a complete simulation workflow, please refer to the
 ["getting started" guide](../getting_started/first_simulation.md) or
 have a look at the more detailed [example setups](./examples/).
 
-## In This Section
+---
+
+**In This Section**
 
 - **[Electronic Structure Data](input_data.md)** — How to acquire the
   required electronic structure data (Hamiltonian and overlap matrices)

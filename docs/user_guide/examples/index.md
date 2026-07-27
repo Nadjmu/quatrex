@@ -14,7 +14,7 @@ most notable difference between the two is the presence/absence of an
 orbital overlap matrix, due to the orthonormality of maximally localized
 Wannier functions.
 
-!!! info "Example `README.md` Files"
+!!! tip "Example `README.md` Files"
     We aim to provide more detailed provenance information for all
     example data sets in `README.md` files that sit at the top level of
     the example directories. These can also help you better understand
