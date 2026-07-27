@@ -2,14 +2,15 @@ import h5py
 import numpy as np
 
 # ---- config: edit these ----
-FILE = "/scratch/yimili/matrices/hdf5/carbon-nanotube.h5"
-ENERGY = "E_9"
+FILE = "/scratch/yimili/matrices/hdf5/graphene.h5"
+ENERGY = "E_25"
 
 # list of (solver, dtype) to load
 SOLVERS = [
-    ("blockthomas", "complex64"),
-    ("superlu", "complex64"),
+    ("blockthomas", "complex128"),
+    ("superlu", "complex128"),
     ("mumps", "complex128"),
+    ("cudss", "complex64"),
 ]
 
 # reference (solver, dtype) used as base
