@@ -1,5 +1,9 @@
 # Electrostatics
 
+!!! Note "Work in Progress"
+    This section is still under construction. Please check back later for
+    updates.
+
 Solving the Poisson equation self-consistently with the Schrödinger
 equation is a key part of the NEGF formalism. The electrostatic
 potential is computed from the excess charge density, which is in turn
