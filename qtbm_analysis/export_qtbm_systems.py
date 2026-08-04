@@ -169,7 +169,7 @@ def _assemble_contact_self_energy(
             _,
             sigma_obc_per_contact[contact],
             _,
-        ) = contact.compute_boundary(k * 2 * np.pi, np.array([energy])) #cp.array for cupy
+        ) = contact.compute_boundary(k * 2 * np.pi, xp.array([energy])) #cp.array for cupy
 
     for contact, sigma_obc in sigma_obc_per_contact.items():
         for k_t, sigma_obc_k in sigma_obc.items():
