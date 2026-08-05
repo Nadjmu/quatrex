@@ -21,7 +21,7 @@ orbital per carbon atom, we then run Wannier90 and get the Hamiltonian
 in the Wannier basis, which is used as input for `quatrex`.
 
 A procedure for generating `quatrex` input data from Wannier90 outputs
-is described in the [electronic structure data section](../input_data)
+is described in the [electronic structure data section](../input_data).
 The resulting device structure (`structure.xyz`) and Hamiltonian
 (`hamiltonian.h5`) are stored in the
 `./examples/w90/carbon-nanotube/inputs` directory.
@@ -60,7 +60,7 @@ X        1.95921469      24.37907150      22.02629800
 ```
 
 The band structure of the device around its equilibrium Fermi level is
-captured very well by the Wannierization.
+captured very well by this Wannierization.
 
 <!-- TODO: Include proof for this -->
 
@@ -105,7 +105,9 @@ fermi_level = -3.601
 Here we added a small chemical potential difference of 1 meV to get a
 small current flowing across the device. We will compute the
 transmission function at 1000 energy points between -6.5 eV and -1.0 eV,
-which will yield an energy grid of 5.5 meV
+which will yield an energy grid of 5.5 meV. Note that this may still be
+too coarse to resolve sharp resonances in the transmission function, but
+it is sufficient for this example. We set
 
 ```toml
 energy_window_min = -6.5
@@ -197,9 +199,9 @@ phonon = true
     block-tiling ([`block_size`](../parameters/device/#block_size)) and only
     two-terminal devices can be treated.
 
-    The reason for this is that the two formalisms were developed
-    independently of one another. We are actively working on further
-    consolidating input files
+    The reason for this is that the two formalisms were implemented more
+    or less independently of one another. We are actively working on
+    further consolidating input files.
 
 As stated above, the full structure, encompassing 768 Wannier orbitals,
 is made up of 24 transport cells that contain 32 orbitals each. The

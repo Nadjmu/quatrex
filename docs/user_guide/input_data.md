@@ -2,7 +2,7 @@
 
 To compute *non-equilibrium* electronic transport properties with
 `quatrex`, we need information about the underlying electronic structure
-of the system at *equilirbium*, i.e., primarily the Hamiltonian and
+of the system at *equilibrium*, i.e., primarily the Hamiltonian and
 orbital overlap matrices. For a given system, these matrices can be
 obtained via empirical tight-binding models or from first-principles
 calculations, such as density functional theory (DFT).

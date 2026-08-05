@@ -5,16 +5,16 @@ means that charge carriers are injected into the considered simulation
 domain from one *contact*, and they are extracted from the domain at
 another *contact*. Since we have to restrict the part of the system that
 we model explicitly, these contacts are approximated as semi-infinite
-reservoirs in thermal equilibrium that are connected to the simulation
-domain and can provide or absorb charge carriers. As long as the
-contacts are sufficiently far from the active region of the device, this
-is usually a good approximation.
+reservoirs in thermodynamic equilibrium that are connected to the
+simulation domain and can provide or absorb charge carriers. As long as
+the contacts are sufficiently far from the active region of the device,
+these equilibrated reservoirs are usually a good approximation.
 
 <!-- NOTE: Included as snippet for dynamic coloring -->
 --8<-- "docs/assets/images/obc/contact_device.svg"
 
 /// figure-caption | #contact-device
-Device with semi-infinite contacts where charge carriers are injected
+Device with semi-infinite contacts, where charge carriers are injected
 and extracted. The contacts enter the transport equations through the
 open boundary self-energies.
 ///
@@ -28,8 +28,8 @@ and the provided configuration.
 
 /// figure-caption | #connecting-blocks
 The left contact blocks of the carbon nanotube system. For this example,
-the contacts are simply the left and right most blocks since the system
-is created by repeating the Wannier centers.
+the contacts are simply the left- and right-most blocks as the system is
+created by repeating the Wannier centers.
 ///
 
 Since these open contacts can be understood as "renormalizing" the
@@ -125,8 +125,8 @@ similarly to the retarded self-energy, we can obtain the lesser/greater
 self-energy in terms of the lesser/greater surface Green's functions,
 $\mathbf{w}^{\lessgtr}$, that satisfy a similar fixed-point problem as
 in Equation $\ref{eq:obc_recursion}$, but with a different structure.
-The lesser/greater self-energy is then given by the discrete-time
-Lyapunov equation (Stein equation)
+The lesser/greater self-energy is then given by the *discrete-time
+Lyapunov* equation (or *Stein equation*):
 
 $$
 \mathbf{w}^{\lessgtr} = \mathbf{q}^{\lessgtr} −
@@ -195,7 +195,7 @@ to refine solutions from previous iterations.
 
 !!! danger "Forcing Fixed-Point Iterations"
     For testing purposes, it is possible to only do fixed-point
-    iterations in NEGF. This is possible be setting the
+    iterations in NEGF. This can be done by setting the
     [`mode`](../parameters/memoizer.md#mode) parameter of the
     [`memoizer`](../parameters/memoizer.md) to `"force"`.
 
@@ -203,10 +203,10 @@ to refine solutions from previous iterations.
 
 Alternatively to simple fixed-point iterations, the Sancho-Rubio method
 is a well-established iteration scheme that accelerates the convergence
-of the surface Green's function. [^1]. The method achieves an
-exponential convergence rate, but still requires the problem to be
-well-posed. To stabilize the method, a small complex value should be
-added to the boundary blocks which can be done by setting
+of the surface Green's function [^1]. The method achieves an exponential
+convergence rate, but still requires the problem to be well-posed. To
+stabilize the method, a small complex value should be added to the
+boundary blocks which can be done by setting
 [`eta_obc`](../parameters/electron.md#eta_obc) for the electron solver.
 
 The following other parameters affect our implementation of the
@@ -274,10 +274,10 @@ Lastly, the [`memoizer`](../parameters/memoizer.md) can be used to
 accelerate `NEGF` simulations when there is limited change between
 iterations. It works by storing $\mathbf{g}^R$ of the previous SCBA
 iteration and trying to refine it with cheap fixed-point iterations. If
-the residual after a single fixed-point step is low enough (e.g., below
-a certain threshold), the solver call is skipped and a fixed number of
-iterations is performed instead. The method can be efficient, but
-requires a bit more memory.
+the residual after a single fixed-point step is low enough, the
+expensive call to the solver is skipped and a fixed number of iterations
+is performed instead. The method can be efficient, but requires a bit
+more memory.
 
 !!! info "Reducing Memory Footprint"
     We plan to compress the stored $\mathbf{g}^R$ guess to reduce the

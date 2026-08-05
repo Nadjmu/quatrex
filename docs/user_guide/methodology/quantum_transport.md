@@ -5,9 +5,8 @@
 In electronic structure calculations one is usually concerned with
 spectral properties (i.e. the eigenvalues and eigenvectors) of a quantum
 system in thermodynamic equilibrium. In ***quantum transport
-simulations***, on the other hand, we are interested in properties of
-the [resolvent](https://en.wikipedia.org/wiki/Resolvent_formalism) under
-non-equilibrium conditions.
+simulations***, on the other hand, we are interested in properties of a
+system under non-equilibrium conditions.
 
 In other words, instead of solving the eigenvalue problem
 
@@ -16,7 +15,7 @@ $$
 $$
 
 where $\mathbf{H}$ is the Hamiltonian and $\mathbf{S}$ is the orbital
-overlap matrix, we are now interested in the system matrix
+overlap matrix, we are now interested in the *system matrix*
 
 $$
 \mathbf{M}(E) = E\mathbf{S} - \mathbf{H}
@@ -57,31 +56,31 @@ system's energy levels.
 ## Atomistic Material Descriptions
 
 The matrices $\mathbf{H}$ and $\mathbf{S}$ are built from a set of
-localized basis functions $\{\phi_i\}$, rather than from a plane-wave or
+localized basis functions $\{\psi_i\}$, rather than from a plane-wave or
 real-space grid discretization. The matrix elements are given by the
 following integrals over the basis functions:
 
 $$
 \begin{aligned}
-    H_{ij} &= \bra{\phi_i} \hat{H} \ket{\phi_j} \\
-    S_{ij} &= \braket{\phi_i \vert \phi_j}
+    H_{ij} &= \bra{\psi_i} \hat{H} \ket{\psi_j} \\
+    S_{ij} &= \braket{\psi_i \vert \psi_j}
 \end{aligned}
 $$
 
-Depending on the level of theory, the basis functions $\phi_i$ and the
-matrix elements $H_{ij}$, $S_{ij}$ can be obtained from semi-empirical
-tight-binding models or from first-principles electronic structure
-calculations, e.g. using density functional theory (DFT). More
-information on how to provide this data to `quatrex` is provided in the
-section on [electronic structure input data](../input_data/).
+Depending on the level of theory, the basis functions $\psi_i$ and the
+matrix elements $H_{ij}$ and $S_{ij}$ could be obtained from
+semi-empirical tight-binding models or from first-principles electronic
+structure calculations, e.g., using density functional theory (DFT).
+More information on how to provide this data to `quatrex` is provided in
+the section on [electronic structure input data](../input_data/).
 
-In any cases, because the basis is localized, $\mathbf{H}$ and
-$\mathbf{S}$ will be sparse, i.e., an orbital only has non-negligible
-overlap and only interacts with orbitals that are centered close by.
-This sparsity is what makes atomistic quantum transport computationally
-tractable for realistically-sized systems at all, and it is heavily
-exploited in `quatrex`, both in how the matrices are stored and in how
-the transport equations are solved.
+In any case, because the basis states are localized, $\mathbf{H}$ and
+$\mathbf{S}$ will be sparse, indicating that an orbital only has
+non-negligible overlap and only interacts with orbitals that are
+centered close by. This operator sparsity is what makes atomistic
+quantum transport computationally tractable for realistically-sized
+systems at all, and it is heavily exploited in `quatrex`, both in how
+all tensors are stored and in how the transport equations are solved.
 
 In [QTBM](qtbm.md) calculations, we use optimized sparse linear solvers
 to take advantage of the system's sparsity. In [NEGF](negf.md)
@@ -98,20 +97,23 @@ matrix $\mathbf{M}(E)$ explicitly.
     the atoms should be ordered along the transport direction. This
     ensures that the system matrix $\mathbf{M}(E)$ has a
     block-tridiagonal structure, which is necessary for the efficient
-    use of RGF in NEGF calculations.
+    use of the RGF algorithm in NEGF calculations.
 
-While periodicity is broken along the transport direction, it is often
-preserved in the transverse directions. This allows us to use Bloch's
-theorem to reduce the problem size by solving the transport equations
-for a set of transverse wavevectors $\mathbf{k}_\perp$. The Hamiltonian
-and overlap matrices for every transverse wavevector $\mathbf{k}_\perp$
-are obtained by Bloch-summing the real-space matrices over the lattice
-vectors $\mathbf{R}_\perp$ in the transverse directions:
+While periodicity is always broken along the transport direction, it is
+often preserved in the transverse directions. This allows us to use
+Bloch's theorem to reduce the simulation domain size by solving the
+transport equations for a set of transverse wavevectors
+$\mathbf{k}_\perp$. The Hamiltonian and overlap matrices for every
+transverse wavevector $\mathbf{k}_\perp$ are obtained by Bloch-summation
+of the real-space matrices over the lattice vectors $\mathbf{R}_\perp$
+in the transverse directions:
 
 $$
 \begin{aligned}
-    H_{ij}(\mathbf{k}_\perp) &= \sum_{\mathbf{R}_\perp} e^{i \mathbf{k}_\perp \cdot \mathbf{R}_\perp} H_{ij}(\mathbf{R}_\perp) \\
-    S_{ij}(\mathbf{k}_\perp) &= \sum_{\mathbf{R}_\perp} e^{i \mathbf{k}_\perp \cdot \mathbf{R}_\perp} S_{ij}(\mathbf{R}_\perp)
+    H_{ij}(\mathbf{k}_\perp) &= \sum_{\mathbf{R}_\perp} e^{i
+    \mathbf{k}_\perp \cdot \mathbf{R}_\perp} H_{ij}(\mathbf{R}_\perp) \\
+    S_{ij}(\mathbf{k}_\perp) &= \sum_{\mathbf{R}_\perp}
+    e^{i \mathbf{k}_\perp \cdot \mathbf{R}_\perp} S_{ij}(\mathbf{R}_\perp)
 \end{aligned}
 $$
 
