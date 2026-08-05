@@ -43,10 +43,11 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
 from bench_all import bench, DEFAULT_SOLVERS
+from solver_classes import block_sizes_from_matrix, offband_nnz
 
 # GMRES (SciPy) is skipped at single precision for this batch run -- see
 # bench_all.bench's `exclude` docstring for the mechanism.
-EXCLUDE = {"gmres": {"complex64"}, 
+EXCLUDE = {"gmres": {"complex64"},
             "gmres_cupy": {"complex64"}}
 
 MATERIAL_BS = {
@@ -56,20 +57,58 @@ MATERIAL_BS = {
     "si-bulk": 256,
 }
 
+# Custom non-uniform partitions, keyed by material. Leave a material out (or
+# set it to None) to use the uniform MATERIAL_BS entry. Generate an entry with
+#     python ../block-thomas/determine_custom_block_size.py <material>.h5 --emit-python
+# and paste the printed line here. BLOCK_MODE below selects which is used.
+MATERIAL_BLOCKS = {}
+
+# "uniform" -- MATERIAL_BS, the historical behaviour
+# "custom"  -- MATERIAL_BLOCKS, erroring if the material has no entry
+# "auto"    -- detect the partition from the first matrix of each material
+BLOCK_MODE = "uniform"
+
 DTYPES = (np.complex128, np.complex64)     # first entry = baseline dtype
 
 # ---- plot styling (same as the notebook's comparison cell) -----------------
 PRIMARY = "c128"
 DTYPE_LS = {"c128": "-", "c64": "--"}
 STYLE = {
-    "superlu":      ("SuperLU",       "#555555", "x"),
-    "umfpack":      ("UMFPACK",       "#E67E22", "s"),
-    "mumps":        ("MUMPS",         "#27AE60", "^"),
-    "gmres":        ("GMRES (SciPy)", "#8E44AD", "D"),
-    "gmres_cupy":   ("GMRES (CuPy)",  "#C0392B", "v"),
-    "cudss":        ("cuDSS",         "#16A085", "P"),
-    "block_thomas": ("Block Thomas",  "#2E86AB", "o"),
+    "superlu":          ("SuperLU",              "#555555", "x"),
+    "umfpack":          ("UMFPACK",              "#E67E22", "s"),
+    "mumps":            ("MUMPS",                "#27AE60", "^"),
+    "gmres":            ("GMRES (SciPy)",        "#8E44AD", "D"),
+    "gmres_cupy":       ("GMRES (CuPy)",         "#C0392B", "v"),
+    "cudss":            ("cuDSS",                "#16A085", "P"),
+    "block_thomas":     ("Block Thomas (LU)",    "#2E86AB", "o"),
+    "block_thomas_inv": ("Block Thomas (inv)",   "#9B59B6", "*"),
 }
+
+
+def resolve_partition(material, M_first):
+    """The block partition to bench this material with -- see BLOCK_MODE."""
+    if BLOCK_MODE == "uniform":
+        return MATERIAL_BS[material]
+    if BLOCK_MODE == "custom":
+        sizes = MATERIAL_BLOCKS.get(material)
+        if sizes is None:
+            raise KeyError(
+                f"BLOCK_MODE='custom' but MATERIAL_BLOCKS has no entry for "
+                f"'{material}'. Generate one with determine_custom_block_size.py "
+                f"--emit-python, or switch BLOCK_MODE to 'auto'.")
+        return list(sizes)
+    if BLOCK_MODE == "auto":
+        # The sparsity pattern is identical at every energy index, so the
+        # partition is detected once per material rather than per index.
+        sizes = block_sizes_from_matrix(M_first)
+        bad = offband_nnz(M_first, sizes)
+        print(f"  auto partition: {len(sizes)} blocks, "
+              f"sizes {min(sizes)}..{max(sizes)}, off-band nnz = {bad}")
+        if bad:
+            raise ValueError(f"{material}: detected partition leaves {bad} "
+                             f"nonzeros outside the block-tridiagonal band")
+        return list(sizes)
+    raise ValueError(f"unknown BLOCK_MODE {BLOCK_MODE!r}")
 
 
 def _load_sparse(g):
@@ -202,9 +241,13 @@ def main():
             rhs = {idx: f[f"E_{idx}/rhs"][:] for idx in indices}
 
         idx_arr = np.array(indices)
-        bs = MATERIAL_BS[material]
         print(f"{material} | n_energies = {len(indices)} | E[-1] = {energies[-1]}")
-        print(f"Block size (bs) = {bs}")
+        bs = resolve_partition(material, M[indices[0]])
+        if isinstance(bs, (list, tuple)):
+            print(f"Partition: {len(bs)} custom blocks, "
+                  f"sizes {min(bs)}..{max(bs)} (BLOCK_MODE={BLOCK_MODE})")
+        else:
+            print(f"Partition: uniform, block size (bs) = {bs}")
         print(f"Indices: {idx_arr[:10]}... (total {len(idx_arr)})")
 
         # Append solver results directly into the material's own file,

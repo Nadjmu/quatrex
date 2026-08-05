@@ -17,7 +17,8 @@ from run_benchmarks import (  # reuse the plotting code as-is
     _load_sparse, plot_speedup, MATERIAL_BS,
 )
 
-GPU_SOLVERS = ("cudss")
+GPU_SOLVERS = ("cudss",)       # note the comma -- without it this is a string,
+                               # and `solver in solvers` becomes substring matching
 GPU_DTYPES = (np.complex128, np.complex64)   # cudss runs both; gmres_cupy stays c128-only
 GPU_EXCLUDE = {}
 

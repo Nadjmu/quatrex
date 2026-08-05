@@ -21,8 +21,14 @@ import numpy as np
 import scipy.sparse as sp
 
 from solver_classes import (
-    SparseLU, UMFPACK, MUMPS, GMRES, BlockThomas, extract_blocks_sparse,
+    SparseLU, UMFPACK, MUMPS, GMRES, extract_blocks_sparse,
+    BlockThomas, BlockThomasExplicitInv,
+    BlockThomasFP16, BlockThomasExplicitInvFP16,
+    block_sizes_from_matrix, offband_nnz,
 )
+
+BLOCK_SOLVERS = ("block_thomas", "block_thomas_inv",
+                 "block_thomas_fp16", "block_thomas_inv_fp16")
 
 DEFAULT_M_PATH = "/scratch/yimili/matrices/dev_12_sorted_BENCH/M_E_0.npz"
 DEFAULT_RHS_PATH = "/scratch/yimili/matrices/dev_12_sorted_BENCH/rhs_E_0.npy"
@@ -70,9 +76,18 @@ def main():
     parser.add_argument("matrix", nargs="?", default=DEFAULT_M_PATH)
     parser.add_argument("rhs", nargs="?", default=DEFAULT_RHS_PATH)
     parser.add_argument("--solvers", nargs="+", default=["superlu"],
-                        choices=["superlu", "umfpack", "mumps", "gmres", "block_thomas"])
+                        choices=["superlu", "umfpack", "mumps", "gmres"]
+                                + list(BLOCK_SOLVERS))
     parser.add_argument("--bs", type=int, default=None,
-                        help="block size, required for block_thomas")
+                        help="uniform block size, required for the block_thomas* "
+                             "solvers unless --auto-blocks is given")
+    parser.add_argument("--auto-blocks", action="store_true",
+                        help="derive a custom non-uniform partition from the "
+                             "sparsity pattern instead of using --bs")
+    parser.add_argument("--inv-dtype", choices=["float32", "float16", "float64"],
+                        default="float32",
+                        help="precision in which block_thomas_inv_fp16 forms its "
+                             "explicit inverses (default float32)")
     args = parser.parse_args()
 
     A = load_matrix(args.matrix)
@@ -119,18 +134,54 @@ def main():
         report("GMRES (scipy)", x, A, b, t_f, t_s, gm.factor_nbytes(), cpu_before, cpu_after,
                extra=f"  (it~{gm.last_iters}, info={gm.last_info})")
 
-    if "block_thomas" in args.solvers:
-        if args.bs is None:
-            print("\n--- Block Thomas ---\n  skipped (pass --bs <block_size>)")
+    wanted_blocks = [s for s in args.solvers if s in BLOCK_SOLVERS]
+    if wanted_blocks:
+        if args.auto_blocks:
+            print("[prep] detecting block partition from the sparsity pattern ...",
+                  flush=True)
+            partition = block_sizes_from_matrix(A)
+            print(f"[prep] {len(partition)} blocks, "
+                  f"sizes {min(partition)}..{max(partition)}", flush=True)
+        elif args.bs is not None:
+            partition = args.bs
         else:
-            print(f"[prep] extracting blocks (bs={args.bs}) ...", flush=True)
-            D, L, U = extract_blocks_sparse(A, args.bs)
+            partition = None
+            print(f"\n--- {', '.join(wanted_blocks)} ---\n"
+                  f"  skipped (pass --bs <block_size> or --auto-blocks)")
+
+        if partition is not None:
+            # A partition that cuts a real coupling returns a wrong x silently,
+            # so check before solving rather than trusting the input.
+            bad = offband_nnz(A, partition)
+            print(f"[prep] off-band nnz = {bad}", flush=True)
+            if bad:
+                raise SystemExit(
+                    f"partition leaves {bad} nonzeros outside the "
+                    f"block-tridiagonal band -- refusing to solve with it")
+            print("[prep] extracting blocks ...", flush=True)
+            D, L, U = extract_blocks_sparse(A, partition)
             print(f"[prep] done -- {len(D)} blocks", flush=True)
-            cpu_before = cpu_peak_mb()
-            bt, t_f = timed("Block Thomas factor", BlockThomas, D, L, U, DTYPE)
-            x, t_s = timed("Block Thomas solve", bt.solve, b)
-            cpu_after = cpu_peak_mb()
-            report("Block Thomas", x, A, b, t_f, t_s, bt.factor_nbytes(), cpu_before, cpu_after)
+
+            inv_dtype = getattr(np, args.inv_dtype)
+            variants = [
+                ("block_thomas",          "Block Thomas (LU)",
+                 lambda: BlockThomas(D, L, U, DTYPE)),
+                ("block_thomas_inv",      "Block Thomas (explicit inv)",
+                 lambda: BlockThomasExplicitInv(D, L, U, DTYPE)),
+                ("block_thomas_fp16",     "Block Thomas fp16 (LU)",
+                 lambda: BlockThomasFP16(D, L, U)),
+                ("block_thomas_inv_fp16", f"Block Thomas fp16 (inv in {args.inv_dtype})",
+                 lambda: BlockThomasExplicitInvFP16(D, L, U, inv_dtype=inv_dtype)),
+            ]
+            for key, label, ctor in variants:
+                if key not in args.solvers:
+                    continue
+                cpu_before = cpu_peak_mb()
+                bt, t_f = timed(f"{label} factor", ctor)
+                x, t_s = timed(f"{label} solve", bt.solve, b)
+                cpu_after = cpu_peak_mb()
+                report(label, x, A, b, t_f, t_s, bt.factor_nbytes(),
+                       cpu_before, cpu_after)
 
 
 if __name__ == "__main__":

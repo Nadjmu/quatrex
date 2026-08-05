@@ -22,7 +22,20 @@ defines the baseline: SuperLU at dtypes[0] is what every other (solver, dtype)
 combination's factor/solve speedup and "vs base" solution error refer to.
 
 Result keys are "<solver>_<suffix>", e.g.:
-    superlu_c128, superlu_c64, umfpack_c128, mumps_c64, block_thomas_c64, ...
+    superlu_c128, superlu_c64, umfpack_c128, mumps_c64, block_thomas_c64,
+    block_thomas_inv_c128, ...
+
+The two fp16 Block Thomas variants are the exception: they are
+precision-fixed, run once per index outside the dtype loop, and use the
+unsuffixed keys "block_thomas_fp16" / "block_thomas_inv_fp16". They are not
+in DEFAULT_SOLVERS -- the fp16 kernels are pure python and far slower than
+LAPACK, so ask for them explicitly (bench_all.FP16_SOLVERS) when you want the
+accuracy data rather than timings.
+
+The 4th argument `bs` accepts either an int (uniform partition) or a sequence
+of per-block sizes (custom partition, e.g. from
+solver_classes.block_sizes_from_matrix). The partition is validated against
+the matrix before any Block Thomas variant runs.
 
 Skips are graceful and per-(solver, dtype): UMFPACK has no single-precision
 build so umfpack_c64 prints a skip line; GPU solvers (gmres_cupy, cudss) are
@@ -45,17 +58,27 @@ import time
 import numpy as np
 
 from solver_classes import (
-    SparseLU, GMRES, BlockThomas, extract_blocks_sparse,
+    SparseLU, GMRES, extract_blocks_sparse, offband_nnz,
+    BlockThomas, BlockThomasExplicitInv,
+    BlockThomasFP16, BlockThomasExplicitInvFP16,
     UMFPACK, MUMPS, GMRESCuPy, CuDSS, gpu_available,
 )
 import factor_io as fio
 
 DEFAULT_SOLVERS = ("superlu", "umfpack", "mumps", "gmres",
-                   "gmres_cupy", "cudss", "block_thomas")
+                   "gmres_cupy", "cudss", "block_thomas", "block_thomas_inv")
+
+# fp16 Block Thomas is precision-fixed: it ignores the dtype loop and runs
+# exactly once per index, stored under the label "complex32". Not in
+# DEFAULT_SOLVERS -- the pure-python fp16 kernels are orders of magnitude
+# slower than LAPACK, so opt in explicitly when you want the accuracy data.
+FP16_SOLVERS = ("block_thomas_fp16", "block_thomas_inv_fp16")
+
 DEFAULT_DTYPES = (np.complex128, np.complex64)
 
 _SUFFIX = {"complex128": "c128", "complex64": "c64",
            "float64": "f64", "float32": "f32"}
+FP16_LABEL = "complex32"       # not a numpy dtype -- a storage label only
 
 
 def _sfx(dt):
@@ -75,13 +98,29 @@ def _line(label, t_f, t_s, res, mem, extra=""):
 
 
 def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
-          solvers=DEFAULT_SOLVERS, dtype=None, exclude=None):
+          solvers=DEFAULT_SOLVERS, dtype=None, exclude=None,
+          check_blocks=True, fp16_inv_dtype=np.float32):
     """
+    bs      : the block partition for the Block Thomas solvers -- an int for a
+              uniform partition (historical behaviour) or a sequence of
+              per-block sizes summing to n for a custom one, e.g. the output
+              of solver_classes.block_sizes_from_matrix(As). Everything else
+              in the signature is unchanged.
+
     exclude : optional dict[str, set[str]] mapping a base solver name
               ("gmres", "gmres_cupy", "umfpack", ...) to a set of dtype
               *names* ("complex64", "complex128") to skip for that solver.
               e.g. {"gmres": {"complex64"}} skips GMRES only at single
               precision; other solvers and other dtypes are unaffected.
+
+    check_blocks : verify that `bs` really is a block-tridiagonal partition of
+              As before running any Block Thomas variant. A partition that
+              cuts through real couplings does not raise -- it silently drops
+              them and returns a plausible but wrong x -- so this is on by
+              default and costs one pass over the nonzeros.
+
+    fp16_inv_dtype : precision in which BlockThomasExplicitInvFP16 forms its
+              explicit inverses before rounding them to fp16 (default fp32).
     """
     if dtype is not None:                      # old single-dtype signature
         dtypes = (dtype,)
@@ -115,7 +154,18 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
         return entry
 
     # blocks depend only on As, not on dtype -> extract once, reuse per dtype
-    if "block_thomas" in solvers:
+    bt_solvers = [s for s in solvers
+                  if s in ("block_thomas", "block_thomas_inv") + FP16_SOLVERS]
+    if bt_solvers:
+        if check_blocks:
+            bad = offband_nnz(As, bs)
+            if bad:
+                raise ValueError(
+                    f"idx={idx}: the requested partition leaves {bad} nonzeros "
+                    f"outside the block-tridiagonal band, so the Block Thomas "
+                    f"blocks would discard real couplings. Pass a valid "
+                    f"partition (see solver_classes.block_sizes_from_matrix) "
+                    f"or bench(..., check_blocks=False) to override.")
         D, Lb, Ub = extract_blocks_sparse(As, bs)
 
     for dt in dtypes:
@@ -211,7 +261,7 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
         elif "cudss" in solvers:
             print(f"  cudss {sfx:14s}: skipped (excluded)")
 
-        # ---- Block Thomas ---------------------------------------------------
+        # ---- Block Thomas, Implementation 1 (LU + substitution) -------------
         if "block_thomas" in solvers and not _excluded("block_thomas", dt):
             bt,  t_f = _timed(BlockThomas, D, Lb, Ub, dt)
             xbt, t_s = _timed(bt.solve, B)
@@ -221,6 +271,47 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
                         h5file, dt, idx, bt, x, tf, ts, mem=mem))
         elif "block_thomas" in solvers:
             print(f"  block Thomas {sfx:7s}: skipped (excluded)")
+
+        # ---- Block Thomas, Implementation 2 (explicit inverses) -------------
+        if "block_thomas_inv" in solvers and not _excluded("block_thomas_inv", dt):
+            bti,  t_f = _timed(BlockThomasExplicitInv, D, Lb, Ub, dt)
+            xbti, t_s = _timed(bti.solve, B)
+            _finish(f"block_thomas_inv_{sfx}", f"block Thomas inv {sfx}", bti,
+                    xbti, t_f, t_s, extra="  (explicit inverses)",
+                    saver=lambda x, tf, ts, mem: fio.save_blockthomas_inv(
+                        h5file, dt, idx, bti, x, tf, ts, mem=mem))
+        elif "block_thomas_inv" in solvers:
+            print(f"  block Thomas inv {sfx:3s}: skipped (excluded)")
+
+    # ---- fp16 Block Thomas ---------------------------------------------------
+    # Outside the dtype loop on purpose: both fp16 variants are precision-fixed
+    # and ignore `dtypes` entirely, so running them once per dtype would just
+    # repeat identical work. Results are stored under the label "complex32".
+    if "block_thomas_fp16" in solvers:
+        try:
+            bt16,  t_f = _timed(BlockThomasFP16, D, Lb, Ub)
+            xbt16, t_s = _timed(bt16.solve, B)
+            _finish("block_thomas_fp16", "block Thomas fp16", bt16, xbt16,
+                    t_f, t_s, extra="  (embedded real)",
+                    saver=lambda x, tf, ts, mem: fio.save_blockthomas(
+                        h5file, None, idx, bt16, x, tf, ts, mem=mem,
+                        dname=FP16_LABEL))
+        except (FloatingPointError, ZeroDivisionError) as e:
+            print(f"  block Thomas fp16   : FAILED ({type(e).__name__}: {e})")
+
+    if "block_thomas_inv_fp16" in solvers:
+        try:
+            bti16,  t_f = _timed(BlockThomasExplicitInvFP16, D, Lb, Ub,
+                                 None, fp16_inv_dtype)
+            xbti16, t_s = _timed(bti16.solve, B)
+            _finish("block_thomas_inv_fp16", "block Thomas inv fp16", bti16,
+                    xbti16, t_f, t_s,
+                    extra=f"  (inv in {np.dtype(fp16_inv_dtype).name})",
+                    saver=lambda x, tf, ts, mem: fio.save_blockthomas_inv(
+                        h5file, None, idx, bti16, x, tf, ts, mem=mem,
+                        dname=FP16_LABEL))
+        except (FloatingPointError, ZeroDivisionError) as e:
+            print(f"  block Thomas inv fp16: FAILED ({type(e).__name__}: {e})")
 
     print()
     return results

@@ -9,10 +9,26 @@ E_<idx>/superlu sits next to E_<idx>/M, not nested under it:
 
     E_<idx>/superlu/<dtype>/       L, U (sparse CSC), perm_r, perm_c, x, time_fact, time_solve
     E_<idx>/umfpack/<dtype>/       L, U, perm_r, perm_c, R, do_recip, x, time_fact, time_solve
-    E_<idx>/blockthomas/<dtype>/   L, U (stacked dense blocks), Dmod_lu, Dmod_piv, x, time_fact, time_solve
+    E_<idx>/blockthomas/<dtype>/   L, U (dense blocks), Dmod_lu, Dmod_piv, block_sizes, x, times
+    E_<idx>/blockthomas_inv/<dtype>/  L, U, Dmod_inv, Dmod, block_sizes, x, times  (Impl. 2)
     E_<idx>/mumps/<dtype>/         x, time_fact, time_solve          (no factors exposed)
     E_<idx>/cudss/<dtype>/         col/row_permutation, lu_nnz, x, time_fact, time_solve
     E_<idx>/gmres*/<dtype>/        x, time_fact, time_solve, iters, info  (iterative -- no factors)
+
+The two Block Thomas groups also carry, as attributes: `implementation`
+(1 = LU + substitution, 2 = explicit inverses), `block_sizes` (always) and
+`block_size` (int, uniform partitions only), `uniform_blocks`, and for the
+fp16 variants `scale_s` + `embedded_real` (factors are of s*A in the real
+embedding, at block size 2*bs) and `inv_dtype`. The fp16 variants are stored
+under the dtype label "complex32", which is not a real numpy dtype -- pass
+dname="complex32" explicitly, since np.dtype("complex32") does not exist.
+
+BLOCK PARTITIONS. Uniform partitions store L/U/Dmod_* as stacked (N, bs, bs)
+arrays, byte-identical to what this module always wrote. Custom non-uniform
+partitions have ragged blocks, which HDF5 cannot store as one array; those
+are flattened to a 1-D buffer plus a <name>_shapes table and tagged with a
+ragged=True dataset attribute. Read either layout back with load_blocks(g,
+name) rather than g[name][:].
 
 Every group above also carries a "factor_nbytes" attribute (best-effort
 memory footprint of the stored factors, from each solver's factor_nbytes())
@@ -92,6 +108,60 @@ def _save_dense(g, name, arr, compress=True):
         g.create_dataset(name, data=arr)
 
 
+# ---------------------------------------------------------------------------
+# block factors: stacked when the partition is uniform, ragged when it is not
+# ---------------------------------------------------------------------------
+def _save_blocks(g, name, blocks):
+    """
+    Save a Block Thomas factor part.
+
+    A uniform partition arrives as a stacked (N, bs, bs) array and is written
+    as-is, so files produced before custom block sizes existed stay readable
+    by exactly the same code. A custom partition arrives as a LIST of ragged
+    per-block arrays, which HDF5 has no native shape for; those are flattened
+    into one contiguous 1-D buffer plus an int64 (N, 2) table of per-block
+    shapes, and the dataset is tagged ragged=True so load_blocks() knows to
+    rebuild them.
+    """
+    if not isinstance(blocks, list):
+        _save_dense(g, name, blocks)
+        g[name].attrs["ragged"] = False
+        return
+    flat = np.concatenate([np.asarray(b).reshape(-1) for b in blocks]) \
+        if blocks else np.empty(0)
+    shapes = np.array([np.asarray(b).shape for b in blocks], dtype=np.int64) \
+        if blocks else np.empty((0, 2), dtype=np.int64)
+    _save_dense(g, name, flat)
+    g[name].attrs["ragged"] = True
+    _save_dense(g, f"{name}_shapes", shapes, compress=False)
+
+
+def load_blocks(g, name):
+    """Inverse of _save_blocks: returns a stacked array or a list of blocks."""
+    d = g[name]
+    if not d.attrs.get("ragged", False):
+        return d[:]
+    flat = d[:]
+    shapes = g[f"{name}_shapes"][:]
+    out, pos = [], 0
+    for shp in shapes:
+        size = int(np.prod(shp))
+        out.append(flat[pos:pos + size].reshape(tuple(int(s) for s in shp)))
+        pos += size
+    return out
+
+
+def _tag_partition(g, bt):
+    """Record the block partition on a Block Thomas group. `block_size` stays
+    an int attribute for uniform runs (what the older analysis scripts read);
+    `block_sizes` is always written so ragged runs are self-describing."""
+    g.attrs["uniform_blocks"] = bool(bt.uniform)
+    if bt.bs is not None:
+        g.attrs["block_size"] = bt.bs
+    _save_dense(g, "block_sizes", np.asarray(bt.block_sizes, dtype=np.int64),
+                compress=False)
+
+
 def _save_common(g, x, t_fact, t_solve=None):
     _save_dense(g, "x", x)
     _save_dense(g, "time_fact", t_fact, compress=False)
@@ -139,16 +209,64 @@ def save_umfpack(root, dtype, idx, umf, x, t_fact, t_solve=None, mem=None):
     _save_common(g, x, t_fact, t_solve)
 
 
-def save_blockthomas(root, dtype, idx, bt, x, t_fact, t_solve=None, mem=None):
-    dname = np.dtype(dtype).name
-    g = _fresh_group(root, _solver_group_path(idx, "blockthomas", dname))
+def save_blockthomas(root, dtype, idx, bt, x, t_fact, t_solve=None, mem=None,
+                     dname=None, group="blockthomas"):
+    """
+    Implementation 1 (LU + substitution). `dname` overrides the dtype label
+    used in the group path: BlockThomasFP16 stores embedded-real float16
+    factors at block size 2*bs, for which there is no complex dtype name, so
+    the fp16 sweep passes dname="complex32".
+    """
+    dname = dname or np.dtype(dtype).name
+    g = _fresh_group(root, _solver_group_path(idx, group, dname))
     Lb, Ub, Dlu, Dpiv = bt.get_LUP()
-    _save_dense(g, "L", Lb)
-    _save_dense(g, "U", Ub)
-    _save_dense(g, "Dmod_lu", Dlu)
-    _save_dense(g, "Dmod_piv", Dpiv)
+    _save_blocks(g, "L", Lb)
+    _save_blocks(g, "U", Ub)
+    _save_blocks(g, "Dmod_lu", Dlu)
+    _save_blocks(g, "Dmod_piv", Dpiv)
     g.attrs["dtype"] = dname
-    g.attrs["block_size"] = bt.bs
+    g.attrs["implementation"] = 1
+    _tag_partition(g, bt)
+    if getattr(bt, "s", None) is not None:      # fp16: factors are of s*A
+        g.attrs["scale_s"] = float(bt.s)
+        g.attrs["embedded_real"] = True
+    if mem is not None:
+        g.attrs["factor_nbytes"] = mem
+    _save_common(g, x, t_fact, t_solve)
+
+
+def save_blockthomas_inv(root, dtype, idx, bt, x, t_fact, t_solve=None, mem=None,
+                         dname=None, group="blockthomas_inv"):
+    """
+    Implementation 2 (explicit inverses). There are no LU factors to store --
+    get_LUP() returns None -- so this writes the explicit block inverses
+    instead, plus D_mod, which the growth-factor analysis needs to assemble
+    the global U.
+
+    The fp16 variant additionally carries per-block power-of-two scales t, so
+    the stored inverse of block k is  Dinv[k] = G[k] / t[k]  in the s-scaled
+    embedded-real space; both scales are recorded as datasets/attrs.
+    """
+    dname = dname or np.dtype(dtype).name
+    g = _fresh_group(root, _solver_group_path(idx, group, dname))
+    parts = bt.get_inverses()
+    if len(parts) == 5:                          # fp16: (G, t, D_mod, L, U)
+        Dinv, t, Dmod, Lb, Ub = parts
+        _save_dense(g, "inv_scale_t", np.asarray(t), compress=False)
+    else:                                        # complex: (Dinv, D_mod, L, U)
+        Dinv, Dmod, Lb, Ub = parts
+    _save_blocks(g, "Dmod_inv", Dinv)
+    _save_blocks(g, "Dmod", Dmod)
+    _save_blocks(g, "L", Lb)
+    _save_blocks(g, "U", Ub)
+    g.attrs["dtype"] = dname
+    g.attrs["implementation"] = 2
+    _tag_partition(g, bt)
+    if getattr(bt, "s", None) is not None:
+        g.attrs["scale_s"] = float(bt.s)
+        g.attrs["embedded_real"] = True
+    if getattr(bt, "inv_dtype", None) is not None:
+        g.attrs["inv_dtype"] = np.dtype(bt.inv_dtype).name
     if mem is not None:
         g.attrs["factor_nbytes"] = mem
     _save_common(g, x, t_fact, t_solve)
