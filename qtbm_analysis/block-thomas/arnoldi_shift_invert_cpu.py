@@ -1,56 +1,68 @@
-"""
-Smallest-magnitude eigenvalue of a large sparse matrix on CPU.
-
-Uses inverse power iteration: sparse LU factorize once (scipy splu),
-then repeatedly solve + normalize. Converges to the eigenvalue closest
-to 0. Works for general (non-Hermitian) matrices; eigenvalue is complex
-if the matrix is complex.
-"""
-
-import numpy as np
-import scipy.sparse as sp
-from scipy.sparse.linalg import spilu, LinearOperator, gmres
-
-
 def smallest_eigenvalue(A_csr, tol=1e-8, maxiter=100, gmres_tol=1e-10):
     n = A_csr.shape[0]
+
+    # Force a supported floating/complex dtype.
+    dtype = np.complex128 if np.iscomplexobj(A_csr.data) else np.float64
+    A_csr = A_csr.astype(dtype, copy=False)
     A_csc = A_csr.tocsc()
 
-    # Incomplete LU (bounded memory via drop_tol) used as a GMRES
-    # preconditioner, instead of exact splu which can blow up on fill-in.
     ilu = spilu(A_csc, drop_tol=1e-5, fill_factor=10)
-    M = LinearOperator(A_csc.shape, ilu.solve)
 
-    x = np.random.rand(n).astype(A_csr.dtype)
+    M = LinearOperator(
+        A_csc.shape,
+        matvec=ilu.solve,
+        dtype=A_csc.dtype,
+    )
+
+    rng = np.random.default_rng(1234)
+
+    if np.issubdtype(A_csr.dtype, np.complexfloating):
+        x = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+        x = x.astype(A_csr.dtype)
+    else:
+        x = rng.standard_normal(n).astype(A_csr.dtype)
+
     x /= np.linalg.norm(x)
 
-    lam_old = 0.0 + 0.0j
-    for _ in range(maxiter):
-        y, info = gmres(A_csr, x, M=M, rtol=gmres_tol, atol=0)
-        if info != 0:
-            print(f"Warning: GMRES did not fully converge (info={info})")
-        y /= np.linalg.norm(y)
-        lam = complex(y.conj() @ (A_csr @ y))
-        if abs(lam - lam_old) < tol * abs(lam):
-            x = y
-            break
-        x, lam_old = y, lam
-
-    return lam, x
-
-
-def load_csr_npz(path):
-    """Load a CSR matrix saved in the data/indices/indptr/shape format
-    used by _save_csr_npz (not scipy's own save_npz format)."""
-    with np.load(path) as f:
-        return sp.csr_matrix(
-            (f["data"], f["indices"], f["indptr"]),
-            shape=tuple(f["shape"]),
+    for iteration in range(maxiter):
+        y, info = gmres(
+            A_csr,
+            x,
+            M=M,
+            rtol=gmres_tol,
+            atol=0.0,
         )
 
+        if info != 0:
+            raise RuntimeError(
+                f"GMRES failed at inverse iteration {iteration}; info={info}"
+            )
 
-if __name__ == "__main__":
-    A_csr = load_csr_npz("/scratch/yimili/matrices/dev_12_sorted_BENCH/M_E_0.npz")
+        y_norm = np.linalg.norm(y)
+        if y_norm == 0 or not np.isfinite(y_norm):
+            raise RuntimeError("Invalid vector returned by GMRES")
 
-    eigval, _ = smallest_eigenvalue(A_csr)
-    print(f"Smallest eigenvalue: {eigval:.6e}")
+        y /= y_norm
+
+        Ay = A_csr @ y
+
+        # np.vdot conjugates its first argument.
+        lam = np.vdot(y, Ay) / np.vdot(y, y)
+
+        residual = Ay - lam * y
+        relative_residual = np.linalg.norm(residual) / max(
+            np.linalg.norm(Ay) + abs(lam) * np.linalg.norm(y),
+            np.finfo(float).tiny,
+        )
+
+        print(
+            f"iteration={iteration + 1}, "
+            f"lambda={lam}, residual={relative_residual:.3e}"
+        )
+
+        if relative_residual < tol:
+            return lam, y
+
+        x = y
+
+    raise RuntimeError("Inverse iteration did not converge")
