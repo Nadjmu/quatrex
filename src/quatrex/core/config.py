@@ -168,6 +168,10 @@ class QTBMConfig(BaseModel):
 
     """
 
+    atom_resolved_outputs: bool = False
+    """Whether to output atomic-resolved observables instead of 
+    orbital-resolved observables"""
+
 
 class SCBAConfig(BaseModel):
     """Parameters for the self-consistent Born approximation (SCBA)
@@ -2296,17 +2300,6 @@ class QuatrexConfig(BaseModel):
             if contact.fermi_level is None and contact.mid_gap_energy is None:
                 raise ValueError(
                     "Either `fermi_level` or `mid_gap_energy` must be set."
-                )
-
-            if (
-                contact.fermi_level is not None
-                and contact.mid_gap_energy is not None
-                and not (self.electron.band_edge_tracking or self.scsp is not None)
-            ):
-                raise ValueError(
-                    "Both `fermi_level` and `mid_gap_energy` cannot be set "
-                    "simultaneously, unless band edge tracking is active "
-                    "or the Schrödinger-Poisson solver is enabled."
                 )
 
         return self

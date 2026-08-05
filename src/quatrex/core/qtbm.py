@@ -49,6 +49,10 @@ class Observables:
         Contact current values for each contact pair.
     transmissions : dict, optional
         Transmission coefficients between contact pairs.
+    excess_electron_density : NDArray, optional
+        Orbital-resolved excess electron density.
+    excess_hole_density : NDArray, optional
+        Orbital-resolved excess hole density.
 
     """
 
@@ -57,6 +61,9 @@ class Observables:
         default_factory=dict
     )
     transmissions: dict[tuple[Contact, Contact], NDArray] = field(default_factory=dict)
+
+    excess_electron_density: NDArray | None = None
+    excess_hole_density: NDArray | None = None
 
 
 class QTBM(TransportSolver):
@@ -1118,7 +1125,36 @@ class QTBM(TransportSolver):
             for contact, ldos in self.observables.electron_ldos.items():
                 np.save(
                     f"{output_dir}/dos_{contact.name[0]}.npy",
-                    ldos,
+                    (
+                        np.add.reduceat(ldos, self.device.orbital_offsets[:-1], axis=1)
+                        if self.config.qtbm.atom_resolved_outputs
+                        else ldos
+                    ),
+                )
+
+            if self.observables.excess_electron_density is not None:
+                np.save(
+                    f"{output_dir}/excess_electron_density.npy",
+                    (
+                        np.add.reduceat(
+                            self.observables.excess_electron_density,
+                            self.device.orbital_offsets[:-1],
+                        )
+                        if self.config.qtbm.atom_resolved_outputs
+                        else self.observables.excess_electron_density
+                    ),
+                )
+            if self.observables.excess_hole_density is not None:
+                np.save(
+                    f"{output_dir}/excess_hole_density.npy",
+                    (
+                        np.add.reduceat(
+                            self.observables.excess_hole_density,
+                            self.device.orbital_offsets[:-1],
+                        )
+                        if self.config.qtbm.atom_resolved_outputs
+                        else self.observables.excess_hole_density
+                    ),
                 )
 
     def _compute_excess_charge_densities(self):
@@ -1144,8 +1180,8 @@ class QTBM(TransportSolver):
                 contact.temperature,
             )
 
-            electron_density += occupancy * ldos.sum(axis=0) * 2  # Spin
-            hole_density += (1 - occupancy) * ldos.sum(axis=0) * 2  # Spin
+            electron_density += occupancy * ldos.mean(axis=0) * 2  # Spin
+            hole_density += (1 - occupancy) * ldos.mean(axis=0) * 2  # Spin
 
         # Find the reference contact mid-gap energy to separate
         # electrons and holes.
@@ -1164,12 +1200,17 @@ class QTBM(TransportSolver):
         electron_density[~mask] = 0
         hole_density[mask] = 0
 
-        excess_electron_density = xp.trapezoid(
+        self.observables.excess_electron_density = xp.trapezoid(
             electron_density, self.electron_energies, axis=1
         )
-        excess_hole_density = xp.trapezoid(hole_density, self.electron_energies, axis=1)
+        self.observables.excess_hole_density = xp.trapezoid(
+            hole_density, self.electron_energies, axis=1
+        )
 
-        return excess_electron_density, excess_hole_density
+        return (
+            self.observables.excess_electron_density,
+            self.observables.excess_hole_density,
+        )
 
     def set_potential(self, potential: NDArray):
         """Sets the potential for the QTBM calculation.
@@ -1329,6 +1370,7 @@ class QTBM(TransportSolver):
             )
 
         self._compute_current()
+        self._compute_excess_charge_densities()
 
         self._write_outputs()
 
