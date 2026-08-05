@@ -4,7 +4,7 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.sparse.linalg import spilu, LinearOperator, gmres
 
-MATRIX_PATH = "/scratch/yimili/matrices/dev_12_sorted_BENCH/M_E_0.npz"
+MATRIX_PATH = "/scratch/yimili/matrices/WS2-hBN-25_benchmark-QUATREX-DZ/M_E_0.npz"
 
 
 def load_csr_npz(path):
