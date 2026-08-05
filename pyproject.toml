@@ -78,6 +78,9 @@ version = { attr = "quatrex.__about__.__version__" }
 addopts = ["--import-mode=importlib"]
 testpaths = ["tests"]
 
+[tool.coverage.run]
+relative_files = true
+
 [tool.isort]
 profile = "black"
 
