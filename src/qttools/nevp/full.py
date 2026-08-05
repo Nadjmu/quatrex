@@ -24,8 +24,7 @@ class Full(NEVP):
         The location where to compute the eigenvalues and eigenvectors.
         Can be either "numpy" or "cupy" or "nvmath".
     use_pinned_memory : bool, optional
-        Whether to use pinnend memory if cupy is used. Default is
-        `True`.
+        Whether to use pinned memory if cupy is used. Default is `True`.
     reduce : bool, optional
         Whether to reduce the problem size by eliminating columns that
         are zero in the first and last coefficient blocks. These columns
