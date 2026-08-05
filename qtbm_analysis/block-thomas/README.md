@@ -8,7 +8,7 @@ none of them solves a system or mutates the h5.
 |---|---|
 | `growth_factor.py` | is the factorization backward stable? how much did the factors grow? |
 | `determine_custom_block_size.py` | what non-uniform block partition does this matrix have? |
-| `arnoldi_shift_invert_cpu.py` / `arnodli_shift_invert_gpu.py` | smallest-magnitude eigenvalue, via inverse iteration |
+| `arnoldi_shift_invert_cpu.py` / `arnoldi_shift_invert_gpu.py` | extreme eigenvalues, singular values and the condition number |
 
 ---
 
@@ -147,9 +147,48 @@ line to paste into `run_benchmarks.MATERIAL_BLOCKS`.
 
 ## Arnoldi / shift-invert
 
-`arnoldi_shift_invert_cpu.py` and `arnodli_shift_invert_gpu.py` *(sic — the
-filename typo is preserved to avoid breaking references)* find the
-smallest-magnitude eigenvalue by inverse iteration: ILU-preconditioned GMRES
-solves, then normalize, repeat. Used for the conditioning side of the analysis,
-which is a **separate question** from the growth factor above — see the
-opening section. They are self-contained and take their input path inline.
+`arnoldi_shift_invert_cpu.py` (MUMPS / Block Thomas / SuperLU) and
+`arnoldi_shift_invert_gpu.py` (cuDSS) answer the conditioning side of the
+analysis, which is a **separate question** from the growth factor above — see
+the opening section. The GPU script imports everything but the backend list
+from the CPU one, so the two cannot drift apart.
+
+Two orthogonal choices drive the whole CLI:
+
+```bash
+--quantity {eigenvalue, singular, condition}   # what
+--end      {smallest, largest, both}           # which end of the spectrum
+```
+
+`--end largest` is the easy end: Krylov methods converge on the dominant part
+of the spectrum naturally, so it is plain matvecs and **`--backend` is
+unused**. `--end smallest` is the hard end and the reason these scripts exist
+— the spectrum is transformed so the wanted end becomes dominant
+(`eigs(A, sigma=0, OPinv=A⁻¹)`, or `svds(A⁻¹, which="LM")` then `1/σ`), and
+that transform is what `--backend` factorizes once and reuses. Singular values
+at the small end need **two** factorizations, `A` and `Aᴴ`, because `svds`
+wants `rmatvec` and neither MUMPS's nor Block Thomas's python API exposes a
+transpose solve.
+
+The matrix path is a required positional argument — a CSR `.npz` triplet, the
+format `export_qtbm_systems._save_csr_npz` writes.
+
+```bash
+python arnoldi_shift_invert_cpu.py MATRIX --quantity condition
+python arnoldi_shift_invert_cpu.py MATRIX --quantity singular --method propack -k 5
+python arnoldi_shift_invert_cpu.py MATRIX --method power --maxiter 200  # shows it stalling
+python arnoldi_shift_invert_gpu.py MATRIX --quantity singular --backend cudss
+```
+
+Reported residuals are always measured against the original `A`, never the
+transformed operator the method actually ran on — ARPACK's `--tol` refers to
+the latter, so only the residual column says whether a value is trustworthy.
+
+> **PROPACK is handicapped by scipy, not by PROPACK.** `svds` hardcodes
+> `maxiter=None` in its propack branch, so PROPACK never receives a basis-size
+> limit and falls back to its own `kmax = 10*k`. At `k=1` that is a Lanczos
+> basis of 10 against ARPACK's default `ncv=20` — and on WS2-hBN a basis of 20
+> converged where 10 did not. Raising `-k` is the only lever the public API
+> leaves. A non-convergence under `--end smallest` therefore falls back to
+> ARPACK on the already-paid-for factorizations rather than discarding ~450 s
+> of work (`--no-fallback` to disable).
