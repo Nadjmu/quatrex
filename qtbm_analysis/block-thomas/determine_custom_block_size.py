@@ -50,15 +50,23 @@ from solver_classes import block_sizes_from_matrix, offband_nnz
 
 
 def load_matrix(path, idx=0):
-    """Accept either a material HDF5 file or a bare CSR .npz triplet."""
+    """
+    Accept either a material HDF5 file (groups are CSC) or a bare CSR .npz
+    triplet as written by export_qtbm_systems._save_csr_npz.
+
+    find_block_slices walks indptr row by row, so it needs CSR -- hence the
+    .tocsr() on the h5 branch. Building csr_matrix straight from the CSC
+    triplet would hand back the transpose instead.
+    """
     path = Path(path)
     if path.suffix in (".h5", ".hdf5"):
         import h5py
         with h5py.File(path, "r") as f:
             g = f[f"E_{idx}/M"]
             n = len(g["indptr"]) - 1
-            return sp.csr_matrix((g["data"][:], g["indices"][:], g["indptr"][:]),
-                                 shape=(n, n))
+            A = sp.csc_matrix((g["data"][:], g["indices"][:], g["indptr"][:]),
+                              shape=(n, n))
+        return A.tocsr()
     d = np.load(path)
     return sp.csr_matrix((d["data"], d["indices"], d["indptr"]),
                          shape=tuple(d["shape"]))
