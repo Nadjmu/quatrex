@@ -93,52 +93,68 @@ profile = "black"
 channels = ["conda-forge"]
 platforms = ["linux-64", "linux-aarch64"]
 
+# mpi4py is not in the "common" feature because for the "hpc"
+# environment we want to install it from source (i.e., from PyPI and
+# no-binary) to ensure that it is linked against the system MPI library.
 [tool.pixi.dependencies]
-numpy = ">=2.3.0"
-scipy = ">=1.16.0"
 mpi4py = ">=4.1.0"
-numba = "*"
-pydantic = "*"
-ase = "*"
-meshio = "*"
-scikit-fem = "*"
-threadpoolctl = "*"
-typer = "*"
-h5py = "*"
-gmsh = "*"
-python-gmsh = "*"    # conda-forge gmsh does not include python bindings
-pyvista = ">=0.46.0"
-matplotlib = "*"
 
 [tool.pixi.pypi-dependencies]
 quatrex = { path = ".", editable = true }
 
 [tool.pixi.environments]
-dev = { features = ["dev"], solve-group = "dev" }
-docs = { features = ["docs"], solve-group = "dev" }
-gpu = { features = ["gpu"], solve-group = "dev" }
+default = { features = ["common"], solve-group = "dev" }
+dev = { features = ["common", "dev"], solve-group = "dev" }
+docs = { features = ["common", "docs"], solve-group = "dev" }
+
+# Separate solve group for GPU dependencies to avoid complicated version
+# resolution issues with the main environment.
+gpu = { features = ["common", "gpu"], solve-group = "gpu" }
 
 # This environment is used for GitHub CI/CD linting and testing, since
 # the low-rank reference QTBM tests require pardiso to run.
-ci = { features = ["dev", "pardiso"], solve-group = "dev" }
+ci = { features = ["common", "dev", "pardiso"], solve-group = "dev" }
 
-hpc = { features = ["hpc"], solve-group = "hpc", no-default-feature = true }
+hpc = { features = ["common", "hpc"], solve-group = "hpc", no-default-feature = true }
 
+# --- Shared features --------------------------------------------------
+[tool.pixi.feature.common]
+# Assuming here that only the "hpc" environment will be used on aarch64.
+platforms = ["linux-64"]
+
+    [tool.pixi.feature.common.dependencies]
+    numpy = ">=2.3.0"
+    scipy = ">=1.16.0"
+    numba = "*"
+    pydantic = "*"
+    threadpoolctl = "*"
+    ase = "*"
+    meshio = "*"
+    scikit-fem = "*"
+    typer = "*"
+    h5py = "*"
+    gmsh = "*"
+    python-gmsh = "*"    # conda-forge gmsh does not include python bindings
+    pyvista = ">=0.46.0"
+    matplotlib = "*"
 
 # --- Development features ---------------------------------------------
-[tool.pixi.feature.dev.dependencies]
-pytest = "*"
-pytest-cov = "*"
-pytest-mpi = "*"
-pytest-xdist = "*"
-coverage = "*"
-black = "*"
-blacken-docs = "*"
-isort = "*"
-ruff = "*"
-pre-commit = "*"
-ipykernel = "*"
-ipympl = "*"
+[tool.pixi.feature.dev]
+platforms = ["linux-64"]
+
+    [tool.pixi.feature.dev.dependencies]
+    pytest = "*"
+    pytest-cov = "*"
+    pytest-mpi = "*"
+    pytest-xdist = "*"
+    coverage = "*"
+    black = "*"
+    blacken-docs = "*"
+    isort = "*"
+    ruff = "*"
+    pre-commit = "*"
+    ipykernel = "*"
+    ipympl = "*"
 
 
 # --- Documentation features -------------------------------------------
@@ -154,29 +170,16 @@ tabulate = "*"
 cupy = ">=14.1.0"
 
 # --- HPC features -----------------------------------------------------
-[tool.pixi.feature.hpc.dependencies]
-numpy = ">=2.3.0"
-scipy = ">=1.16.0"
-numba = "*"
-pydantic = "*"
-threadpoolctl = "*"
-ase = "*"
-meshio = "*"
-scikit-fem = "*"
-typer = "*"
-h5py = "*"
-gmsh = "*"
-python-gmsh = "*"    # conda-forge gmsh does not include python bindings
-pyvista = ">=0.46.0"
-matplotlib = "*"
+[tool.pixi.feature.hpc]
+platforms = ["linux-64", "linux-aarch64"]
 
-[tool.pixi.feature.hpc.pypi-dependencies]
-mpi4py = ">=4.1.0"
-cupy = ">=14.1.0"
-quatrex = { path = ".", editable = true }
+    [tool.pixi.feature.hpc.pypi-dependencies]
+    mpi4py = ">=4.1.0"
+    cupy = ">=14.1.0"
+    quatrex = { path = ".", editable = true }
 
-[tool.pixi.feature.hpc.pypi-options]
-no-binary = ["mpi4py"]
+    [tool.pixi.feature.hpc.pypi-options]
+    no-binary = ["mpi4py"]
 
 # --- Pardiso feature --------------------------------------------------
 [tool.pixi.feature.pardiso]
