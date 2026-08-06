@@ -17,15 +17,16 @@ kpoint_shift = [0, 0.1, 0.1]
     origin = [-0.01, -0.01, -0.01]
     lattice_vectors = [[5.444, 0, 0], [0, 5.444, 0], [0, 0, 5.444]]
     direction = "a"
-    fermi_level = -3
+    fermi_level = 6.1
+    mid_gap_energy = 5.8
 
     [[device.contacts]]
     name = "right"
     origin = [161.96, -0.001, -0.001]
     lattice_vectors = [[-5.444, 0, 0], [0, 5.444, 0], [0, 0, 5.444]]
     direction = "a"
-    fermi_level = -3.001
-
+    fermi_level = 6.099
+    mid_gap_energy = 5.8
 
 [electron]
 
