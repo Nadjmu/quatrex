@@ -103,6 +103,11 @@ ALL_BACKENDS = CPU_BACKENDS + GPU_BACKENDS
 # Backends whose solve() wants an (n, nrhs) column rather than a flat (n,).
 COLUMN_RHS_BACKENDS = {"cudss"}
 
+# Factorization precision, independent of the complex128 working precision of
+# the Krylov method above it. UMFPACK is the only solver in the library that
+# refuses c64 outright, and it is not among the backends here.
+FACTOR_DTYPES = {"c128": np.complex128, "c64": np.complex64}
+
 QUANTITIES = ("eigenvalue", "singular", "condition")
 ENDS = ("smallest", "largest", "both")
 EIG_METHODS = ("arpack", "power")
@@ -226,11 +231,16 @@ class CountingSolve:
         return y
 
 
-def factorize(A, backend, block_sizes, label):
-    print(f"[factor] {backend} ({label})...", flush=True)
+def factorize(A, backend, block_sizes, label, dtype=np.complex128):
+    """
+    Factorize in `dtype`, which need not be the working precision. The Krylov
+    method above always runs in complex128; a complex64 factorization only
+    makes the shift-invert operator INEXACT, at roughly fp32 accuracy.
+    """
+    print(f"[factor] {backend} ({label}) in {np.dtype(dtype).name}...",
+          flush=True)
     t0 = time.perf_counter()
-    solver = build_solver(A, backend, dtype=np.complex128,
-                          block_sizes=block_sizes)
+    solver = build_solver(A, backend, dtype=dtype, block_sizes=block_sizes)
     dt = time.perf_counter() - t0
     print(f"[factor] {label} done in {dt:.2f} s", flush=True)
     return CountingSolve(solver, A.shape[0], label=label,
@@ -447,7 +457,7 @@ def svd_shift_invert(A, apply_inv, apply_inv_H, k=1, method="arpack", tol=0.0,
 # drivers
 # ===========================================================================
 def compute_eigenvalues(A, end, backend, method, k, tol, maxiter, ncv,
-                        shift_invert, block_sizes):
+                        shift_invert, block_sizes, factor_dtype=np.complex128):
     if end == "largest":
         print(f"[solve] eigenvalue, largest, method={method}, k={k} "
               f"(no factorization; --backend unused)", flush=True)
@@ -471,7 +481,7 @@ def compute_eigenvalues(A, end, backend, method, k, tol, maxiter, ncv,
                                 ncv=ncv, apply_inv=None)
         return vals, eig_residuals(A, vals, vecs)
 
-    apply_inv, t_factor = factorize(A, backend, block_sizes, "A")
+    apply_inv, t_factor = factorize(A, backend, block_sizes, "A", factor_dtype)
     print(f"[solve] eigenvalue, smallest, method={method}, k={k}, "
           f"shift-invert at sigma=0", flush=True)
     if method == "power":
@@ -485,7 +495,8 @@ def compute_eigenvalues(A, end, backend, method, k, tol, maxiter, ncv,
 
 
 def compute_singular(A, end, backend, method, k, tol, maxiter, ncv,
-                     shift_invert, fallback, block_sizes):
+                     shift_invert, fallback, block_sizes,
+                     factor_dtype=np.complex128):
     if end == "largest" or not shift_invert:
         which = "LM" if end == "largest" else "SM"
         print(f"[solve] singular, {end}, method={method}, k={k}, "
@@ -495,9 +506,9 @@ def compute_singular(A, end, backend, method, k, tol, maxiter, ncv,
                              maxiter=maxiter, ncv=ncv)
         return s, svd_residuals(A, s, u, v)
 
-    apply_inv, t_A = factorize(A, backend, block_sizes, "A")
+    apply_inv, t_A = factorize(A, backend, block_sizes, "A", factor_dtype)
     AH = A.conj().T.tocsr()
-    apply_inv_H, t_AH = factorize(AH, backend, block_sizes, "A^H")
+    apply_inv_H, t_AH = factorize(AH, backend, block_sizes, "A^H", factor_dtype)
 
     print(f"[solve] singular, smallest, method={method}, k={k}, "
           f"which=LM on A^-1", flush=True)
@@ -526,6 +537,12 @@ def run(args):
     ends = ("largest", "smallest") if end == "both" else (end,)
 
     shift_invert = not args.no_shift_invert
+    factor_dtype = FACTOR_DTYPES[args.factor_dtype]
+    if factor_dtype != np.complex128:
+        print(f"[precision] factorization in {np.dtype(factor_dtype).name}, "
+              f"Krylov method in complex128 -- the shift-invert operator is "
+              f"INEXACT and residuals will floor near fp32 accuracy",
+              flush=True)
     out = {}
 
     for e in ends:
@@ -533,13 +550,14 @@ def run(args):
             vals, res = compute_eigenvalues(
                 A, e, args.backend, args.method, args.k, args.tol,
                 args.maxiter, args.ncv, shift_invert, args.block_sizes,
+                factor_dtype,
             )
             out[f"eig_{e}"] = (vals, res)
         else:
             vals, res = compute_singular(
                 A, e, args.backend, args.method, args.k, args.tol,
                 args.maxiter, args.ncv, shift_invert, not args.no_fallback,
-                args.block_sizes,
+                args.block_sizes, factor_dtype,
             )
             out[f"svd_{e}"] = (vals, res)
 
@@ -666,6 +684,15 @@ def build_parser(backends=CPU_BACKENDS, default_backend="mumps", prog=None):
                     help=f"direct solver factorized for the shift-invert "
                          f"(default: {default_backend}). Unused whenever no "
                          f"factorization is needed -- see --end")
+
+    ap.add_argument("--factor-dtype", choices=tuple(FACTOR_DTYPES),
+                    default="c128",
+                    help="precision of the FACTORIZATION only (default: "
+                         "c128). The Krylov method always runs in complex128, "
+                         "so c64 halves factor memory and speeds up the "
+                         "factorization at the cost of an inexact "
+                         "shift-invert operator -- expect residuals to floor "
+                         "near 1e-7 rather than reaching --tol")
 
     ap.add_argument("-k", type=int, default=1,
                     help="how many values to return (default: 1). Note "

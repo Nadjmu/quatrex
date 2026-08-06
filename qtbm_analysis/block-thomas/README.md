@@ -148,47 +148,52 @@ line to paste into `run_benchmarks.MATERIAL_BLOCKS`.
 ## Arnoldi / shift-invert
 
 `arnoldi_shift_invert_cpu.py` (MUMPS / Block Thomas / SuperLU) and
-`arnoldi_shift_invert_gpu.py` (cuDSS) answer the conditioning side of the
-analysis, which is a **separate question** from the growth factor above — see
-the opening section. The GPU script imports everything but the backend list
-from the CPU one, so the two cannot drift apart.
-
-Two orthogonal choices drive the whole CLI:
+`arnoldi_shift_invert_gpu.py` (cuDSS). Same CLI — the GPU script imports
+everything but the backend list from the CPU one.
 
 ```bash
---quantity {eigenvalue, singular, condition}   # what
---end      {smallest, largest, both}           # which end of the spectrum
+python arnoldi_shift_invert_cpu.py MATRIX [options]     # MATRIX: CSR .npz triplet
 ```
 
-`--end largest` is the easy end: Krylov methods converge on the dominant part
-of the spectrum naturally, so it is plain matvecs and **`--backend` is
-unused**. `--end smallest` is the hard end and the reason these scripts exist
-— the spectrum is transformed so the wanted end becomes dominant
-(`eigs(A, sigma=0, OPinv=A⁻¹)`, or `svds(A⁻¹, which="LM")` then `1/σ`), and
-that transform is what `--backend` factorizes once and reuses. Singular values
-at the small end need **two** factorizations, `A` and `Aᴴ`, because `svds`
-wants `rmatvec` and neither MUMPS's nor Block Thomas's python API exposes a
-transpose solve.
+Two flags decide everything else:
 
-The matrix path is a required positional argument — a CSR `.npz` triplet, the
-format `export_qtbm_systems._save_csr_npz` writes.
+| | `--end largest` | `--end smallest` (default) |
+|---|---|---|
+| `--quantity eigenvalue` | `eigs(A, which=LM)` | `eigs(A, sigma=0, OPinv=A⁻¹)` |
+| `--quantity singular` | `svds(A, which=LM)` | `svds(A⁻¹, which=LM)` → `1/σ` |
+| factorizations | **0**, `--backend` unused | 1 eig / 2 svd (`A` and `Aᴴ`) |
+
+`--quantity condition` = singular at both ends + `σ_max/σ_min`, and reports
+`cond·u` per precision for the mixed-precision IR question.
+
+| flag | default | |
+|---|---|---|
+| `--method` | `arpack` | eig: `arpack`\|`power` · svd: `arpack`\|`propack` |
+| `--backend` | `mumps`\|`cudss` | `blockthomas`, `blockthomas_inv`, `superlu`, `gmres_cupy` |
+| `-k` | 1 | how many values |
+| `--factor-dtype` | `c128` | `c64` factorizes in single precision; Krylov stays c128 |
+| `--tol` | 1e-8 | on the *transformed* problem |
+| `--ncv` | `max(2k+1,20)` | arpack basis size; raise if it stalls |
+| `--maxiter` | — | arpack restarts / power iterations |
+| `--no-shift-invert` | off | attack the small end of `A` directly; slow, for comparison |
+| `--no-fallback` | off | don't retry propack failures with arpack |
 
 ```bash
 python arnoldi_shift_invert_cpu.py MATRIX --quantity condition
 python arnoldi_shift_invert_cpu.py MATRIX --quantity singular --method propack -k 5
-python arnoldi_shift_invert_cpu.py MATRIX --method power --maxiter 200  # shows it stalling
+python arnoldi_shift_invert_cpu.py MATRIX --method power --maxiter 200  # stalls
 python arnoldi_shift_invert_gpu.py MATRIX --quantity singular --backend cudss
 ```
 
-Reported residuals are always measured against the original `A`, never the
-transformed operator the method actually ran on — ARPACK's `--tol` refers to
-the latter, so only the residual column says whether a value is trustworthy.
+Three things worth knowing:
 
-> **PROPACK is handicapped by scipy, not by PROPACK.** `svds` hardcodes
-> `maxiter=None` in its propack branch, so PROPACK never receives a basis-size
-> limit and falls back to its own `kmax = 10*k`. At `k=1` that is a Lanczos
-> basis of 10 against ARPACK's default `ncv=20` — and on WS2-hBN a basis of 20
-> converged where 10 did not. Raising `-k` is the only lever the public API
-> leaves. A non-convergence under `--end smallest` therefore falls back to
-> ARPACK on the already-paid-for factorizations rather than discarding ~450 s
-> of work (`--no-fallback` to disable).
+- **Residuals are against the original `A`**, not the transformed operator.
+  `--tol` refers to the latter, so only the residual column says whether a
+  value is trustworthy.
+- **PROPACK is handicapped by scipy, not by PROPACK.** `svds` hardcodes
+  `maxiter=None` in its propack branch, so it falls back to `kmax = 10*k` —
+  a basis of 10 at `k=1`, against arpack's 20. Raising `-k` is the only lever.
+  A failure under `--end smallest` retries with arpack on the factorizations
+  already paid for.
+- **`--end smallest` for singular values costs two factorizations.** `svds`
+  needs `rmatvec` and neither MUMPS nor Block Thomas exposes a transpose solve.
