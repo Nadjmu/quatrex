@@ -10,13 +10,11 @@ stability figure and the accuracy figure, so figures may be compared directly.
 
 Contents
 --------
-SOLVER_STYLE   dict: HDF5 solver group name -> (legend label, colour, marker).
-               The keys are the group names written by ``solvers/factor_io.py``
-               (``blockthomas``, ``gmres_scipy``, ...), not the result keys used
-               internally by ``solvers/bench_all.py`` (``block_thomas``,
-               ``gmres``, ...). Scripts that read an HDF5 file index this map
-               directly; scripts that read a CSV written by a driver must map
-               their own labels onto these keys first.
+SOLVER_STYLE   dict: canonical solver name -> (legend label, colour, marker).
+               The keys are the canonical kebab-case names defined in
+               ``solvers/cli.py`` (``block-thomas``, ``gmres``, ...), the same
+               spelling every command line uses. A script reading an HDF5 file
+               converts the stored group name with ``cli.from_h5_group`` first.
 DTYPE_STYLE    dict: precision label -> (legend label, line style).
                ``complex32`` is not a NumPy dtype; it is the storage label used
                for the half-precision embedded-real factorizations.
@@ -39,15 +37,18 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
 # Solver identity: colour and marker are fixed per solver across all figures.
+# Keys are the canonical names of solvers/cli.py.
 SOLVER_STYLE = {
-    "superlu":         ("SuperLU",             "#555555", "x"),
-    "umfpack":         ("UMFPACK",             "#E67E22", "s"),
-    "mumps":           ("MUMPS",               "#27AE60", "^"),
-    "gmres_scipy":     ("GMRES (SciPy)",       "#8E44AD", "D"),
-    "gmres_cupy":      ("GMRES (CuPy)",        "#C0392B", "v"),
-    "cudss":           ("cuDSS",               "#16A085", "P"),
-    "blockthomas":     ("Block Thomas (LU)",   "#2E86AB", "o"),
-    "blockthomas_inv": ("Block Thomas (inv)",  "#9B59B6", "*"),
+    "superlu":               ("SuperLU",              "#555555", "x"),
+    "umfpack":               ("UMFPACK",              "#E67E22", "s"),
+    "mumps":                 ("MUMPS",                "#27AE60", "^"),
+    "gmres":                 ("GMRES (SciPy)",        "#8E44AD", "D"),
+    "gmres-cupy":            ("GMRES (CuPy)",         "#C0392B", "v"),
+    "cudss":                 ("cuDSS",                "#16A085", "P"),
+    "block-thomas":          ("Block Thomas (LU)",    "#2E86AB", "o"),
+    "block-thomas-inv":      ("Block Thomas (inv)",   "#9B59B6", "*"),
+    "block-thomas-fp16":     ("Block Thomas fp16",    "#2E86AB", "o"),
+    "block-thomas-inv-fp16": ("Block Thomas fp16 (inv)", "#9B59B6", "*"),
 }
 
 # Working precision: line style only, so precision and solver are separable.
@@ -61,7 +62,7 @@ FP16_UNIT_ROUNDOFF = 2.0 ** -11           # 4.883e-4
 
 
 def solver_label(key):
-    """Legend text for an HDF5 solver group name."""
+    """Legend text for a canonical solver name."""
     return SOLVER_STYLE.get(key, (key, None, None))[0]
 
 
@@ -77,7 +78,7 @@ def legend_handles(solvers, dtypes, extra=()):
 
     Parameters
     ----------
-    solvers : iterable of HDF5 solver group names, in the order to be listed.
+    solvers : iterable of canonical solver names, in the order to be listed.
     dtypes  : iterable of precision labels, in the order to be listed.
     extra   : iterable of (artist, label) pairs appended verbatim.
 

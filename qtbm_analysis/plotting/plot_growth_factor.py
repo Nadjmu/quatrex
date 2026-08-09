@@ -55,10 +55,13 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parent))
+_HERE = Path(__file__).resolve().parent
+sys.path.append(str(_HERE))
+sys.path.append(str((_HERE / ".." / "solvers").resolve()))
 
 import matplotlib.pyplot as plt
 
+import cli
 from style import SOLVER_STYLE, DTYPE_STYLE, save_figure
 
 NUMERIC = ("nA", "nL", "nU", "prod", "LU_abs", "rho", "loose", "tight",
@@ -137,25 +140,23 @@ def plot(records, material, norms, out_path):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = cli.new_parser(__doc__)
     ap.add_argument("csv_path", type=Path,
                     help="CSV written by block-thomas/growth_factor.py")
-    ap.add_argument("--material", type=str, default=None,
-                    help="label for titles and filenames (default: CSV stem "
-                         "with '_growth_factor' removed)")
-    ap.add_argument("--solvers", nargs="+", default=None,
-                    help="restrict to these solvers (default: all present)")
-    ap.add_argument("--dtypes", nargs="+", default=None,
-                    help="restrict to these precisions (default: all present)")
-    ap.add_argument("--norms", nargs="+", default=None,
+    cli.add_solver_selection(ap, choices=cli.FACTOR_SOLVERS, default=None,
+                             help="restrict to these solvers "
+                                  "(default: all present in the CSV)")
+    cli.add_dtypes(ap, choices=cli.COMPLEX_DTYPES, default=None,
+                   help="restrict to these precisions "
+                        "(default: all present in the CSV)")
+    ap.add_argument("--norms", nargs="+", default=None, metavar="NAME",
                     help="restrict to these norms (default: all present)")
-    ap.add_argument("--outdir", type=Path, default=None,
-                    help="output directory (default: the CSV's directory)")
+    cli.add_output(ap, outdir_help="output directory "
+                                   "(default: the CSV's directory)")
     args = ap.parse_args()
 
     material = args.material or args.csv_path.stem.replace("_growth_factor", "")
-    outdir = args.outdir or args.csv_path.parent
+    outdir = Path(args.outdir) if args.outdir else args.csv_path.parent
 
     records = read_records(args.csv_path)
     if args.solvers:

@@ -63,8 +63,8 @@ denominator throughout would misreport UMFPACK.
 
 | Solver | What `L U` reproduces |
 |---|---|
-| `blockthomas` | `A` |
-| `blockthomas_inv` | `A` |
+| `block-thomas` | `A` |
+| `block-thomas-inv` | `A` |
 | `superlu` | `Pr A Pc` |
 | `umfpack` | `Pr diag(1/R) A Pc` |
 
@@ -102,7 +102,7 @@ list, and both are indexed identically.
 python growth_factor.py /scratch/yimili/matrices/hdf5/graphene.h5 --idx 25
 python growth_factor.py .../graphene.h5 --start 1 --end 400
 python growth_factor.py .../graphene.h5 --start 1 --end 400 \
-    --solvers blockthomas superlu umfpack --dtype complex128
+    --solvers block-thomas superlu umfpack --dtypes complex128
 
 python ../plotting/plot_growth_factor.py \
     /scratch/yimili/block-thomas/graphene_growth_factor.csv
@@ -110,6 +110,8 @@ python ../plotting/plot_growth_factor.py \
 
 Writes `<material>_growth_factor.csv` to `--outdir`, default
 `/scratch/yimili/block-thomas`. `--no-csv` prints the per-index report only.
+Solver names are the canonical ones; the stored HDF5 group is resolved
+internally, so the on-disk layout is unchanged.
 
 Solvers and precisions absent from the file are reported and skipped, so
 running with the default `--solvers` on a file that contains only Block Thomas
@@ -132,13 +134,14 @@ front end and the verification wrapper.
 python determine_custom_block_size.py .../graphene.h5
 python determine_custom_block_size.py .../graphene.h5 --idx 25
 python determine_custom_block_size.py .../M_E_0.npz          # bare CSR triplet
-python determine_custom_block_size.py .../graphene.h5 --compare-bs 416
+python determine_custom_block_size.py .../graphene.h5 --compare-block-size 416
 python determine_custom_block_size.py .../graphene.h5 --emit-python
 ```
 
 Reports the block count, the size range, `sum(bs^2)` — the dense block-storage
 cost that determines whether a custom partition is worthwhile — and
-**`offband_nnz`**, exiting with status 1 if that is nonzero. `--compare-bs`
+**`offband_nnz`**, exiting with status 1 if that is nonzero.
+`--compare-block-size`
 reports the same figures for a uniform partition and their storage ratio.
 `--emit-python` prints a line to paste into `run_benchmarks.MATERIAL_BLOCKS`.
 
@@ -180,19 +183,20 @@ a mixed-precision refinement scheme can converge; see
 | Flag | Default | Meaning |
 |---|---|---|
 | `--method` | `arpack` | eigenvalues: `arpack` or `power`; singular values: `arpack` or `propack` |
-| `--backend` | `mumps` / `cudss` | also `blockthomas`, `blockthomas_inv`, `superlu`, `gmres_cupy` |
-| `-k` | 1 | how many values |
-| `--factor-dtype` | `c128` | `c64` factorizes in single precision; the Krylov method stays at c128 |
+| `--backend` | `mumps` / `cudss` | also `block-thomas`, `block-thomas-inv`, `superlu`, `gmres-cupy` |
+| `-k`, `--num-values` | 1 | how many values |
+| `--factor-dtype` | `complex128` | `complex64` factorizes in single precision; the Krylov method stays at complex128 |
 | `--tol` | 1e-8 | on the *transformed* problem |
 | `--ncv` | `max(2k+1, 20)` | ARPACK basis size; raise if convergence stalls |
-| `--maxiter` | — | ARPACK restarts or power iterations |
+| `--max-iter` | — | ARPACK restarts or power iterations |
 | `--no-shift-invert` | off | attack the small end of `A` directly; slow, for comparison |
 | `--no-fallback` | off | do not retry a PROPACK failure with ARPACK |
+| `--block-size` | detected | uniform Block Thomas block size |
 
 ```bash
 python arnoldi_shift_invert_cpu.py MATRIX --quantity condition
 python arnoldi_shift_invert_cpu.py MATRIX --quantity singular --method propack -k 5
-python arnoldi_shift_invert_cpu.py MATRIX --method power --maxiter 200
+python arnoldi_shift_invert_cpu.py MATRIX --method power --max-iter 200
 python arnoldi_shift_invert_gpu.py MATRIX --quantity singular --backend cudss
 ```
 

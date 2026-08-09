@@ -8,6 +8,7 @@ drivers are in [`../run_bench/`](../run_bench/), the analysis scripts in
 | File | Contents |
 |---|---|
 | `solver_classes.py` | every solver behind one interface, plus the block-partition utilities |
+| `cli.py` | the canonical solver and option names, and the shared argparse fragments |
 | `bench_all.py` | the single `bench()` implementation |
 | `factor_io.py` | HDF5 persistence of factors and metadata, and factor verification |
 | `generate_matrix.py` | the shared synthetic test system |
@@ -15,7 +16,36 @@ drivers are in [`../run_bench/`](../run_bench/), the analysis scripts in
 
 ---
 
-## 1. The solver interface
+## 1. Names and the shared command line
+
+`cli.py` is the single source of truth for two things that every script needs:
+the canonical name of a solver, and the canonical spelling of a command-line
+option. Every executable script builds its parser from its helpers.
+
+Canonical solver names are lower-case kebab and are used on every command line
+and in every Python API — `bench(solvers=...)`, `mpir.SOLVER_BUILDERS`, the
+Arnoldi `--backend` list:
+
+```
+superlu   umfpack   mumps   gmres   gmres-cupy   cudss
+block-thomas   block-thomas-inv   block-thomas-fp16   block-thomas-inv-fp16
+```
+
+The HDF5 group names are **not** the same strings, and deliberately so: they
+are on-disk data, and renaming them would invalidate every material file
+already written. `cli.h5_group()` and `cli.from_h5_group()` translate, so
+nothing outside `cli.py` needs to know the stored spelling. The mapping is
+tabulated in [the top-level README, section 3](../README.md#3-command-line-conventions).
+
+Precision names are spelled in full everywhere: `complex128`, `complex64`,
+`complex32`. The last is a storage label rather than a NumPy dtype, and denotes
+the half-precision embedded-real factorizations. The precision in which
+implementation 2 forms its inverses is a real dtype: `float64`, `float32`,
+`float16`.
+
+---
+
+## 2. The solver interface
 
 Every class satisfies the same contract, so `bench()` treats them uniformly:
 
@@ -32,18 +62,18 @@ solver used internally.
 
 ### What each solver exposes
 
-| Solver | Precision | Explicit factors | Reconstruction convention |
-|---|---|---|---|
-| `SparseLU` (SuperLU) | c128 / c64 | L, U, perm_r, perm_c | `Pr A Pc == L U` |
-| `UMFPACK` | **c128 only** | L, U, perm_r, perm_c, R | `Pr diag(1/R) A Pc == L U` |
-| `MUMPS` | c128 / c64 | none; Fortran-side, unexposed | — |
-| `GMRES` (SciPy) | c128 / c64 | ILU preconditioner only, not an LU of A | — |
-| `GMRESCuPy` | c128 / c64 | none; iterative | — |
-| `CuDSS` | c128 / c64 | permutations and `lu_nnz` only | — |
-| `BlockThomas` | c128 / c64 | per-block LU and pivots | `A == L U` exactly |
-| `BlockThomasExplicitInv` | c128 / c64 | per-block explicit inverses and `D_mod` | `A == L U` exactly |
-| `BlockThomasFP16` | fp16 | embedded-real LU at block size `2m` | `s embed(A) == L U` |
-| `BlockThomasExplicitInvFP16` | fp16 | embedded-real inverses and scales `t` | `s embed(A) == L U` |
+| Class | CLI name | Precision | Explicit factors | Reconstruction convention |
+|---|---|---|---|---|
+| `SparseLU` | `superlu` | complex128 / complex64 | L, U, perm_r, perm_c | `Pr A Pc == L U` |
+| `UMFPACK` | `umfpack` | **complex128 only** | L, U, perm_r, perm_c, R | `Pr diag(1/R) A Pc == L U` |
+| `MUMPS` | `mumps` | complex128 / complex64 | none; Fortran-side, unexposed | — |
+| `GMRES` | `gmres` | complex128 / complex64 | ILU preconditioner only, not an LU of A | — |
+| `GMRESCuPy` | `gmres-cupy` | complex128 / complex64 | none; iterative | — |
+| `CuDSS` | `cudss` | complex128 / complex64 | permutations and `lu_nnz` only | — |
+| `BlockThomas` | `block-thomas` | complex128 / complex64 | per-block LU and pivots | `A == L U` exactly |
+| `BlockThomasExplicitInv` | `block-thomas-inv` | complex128 / complex64 | per-block explicit inverses and `D_mod` | `A == L U` exactly |
+| `BlockThomasFP16` | `block-thomas-fp16` | fp16 | embedded-real LU at block size `2m` | `s embed(A) == L U` |
+| `BlockThomasExplicitInvFP16` | `block-thomas-inv-fp16` | fp16 | embedded-real inverses and scales `t` | `s embed(A) == L U` |
 
 `UMFPACK` raises `TypeError` rather than upcasting silently when given a
 single-precision dtype, so a single-precision batch run records a skip rather
@@ -56,7 +86,7 @@ direct solvers; the solve time and the iteration count are.
 
 ---
 
-## 2. The four Block Thomas variants
+## 3. The four Block Thomas variants
 
 All four implement Higham, *Accuracy and Stability of Numerical Algorithms*,
 2nd ed., Algorithm 13.3, in the two implementations that reference describes.
@@ -77,10 +107,10 @@ All four implement Higham, *Accuracy and Stability of Numerical Algorithms*,
 
 The full derivation, the cost and accuracy comparison, and the complete
 account of what is and is not half precision are in
-[the top-level README, section 4](../README.md#4-block-thomas). What follows is
+[the top-level README, section 5](../README.md#5-block-thomas). What follows is
 the interface summary.
 
-### 2.1 `inv_dtype`, the mixed-precision parameter
+### 3.1 `inv_dtype`, the mixed-precision parameter
 
 `BlockThomasExplicitInvFP16(..., inv_dtype=...)` controls the precision in
 which the inverse is **formed**, independently of the fp16 storage and
@@ -104,7 +134,7 @@ On the synthetic tests in `test_pipeline.py` the fp32 inverse is worth roughly
 
 ---
 
-## 3. Block partitions
+## 4. Block partitions
 
 The partition enters the pipeline at exactly one place:
 
@@ -143,7 +173,7 @@ dataset directly.
 
 ---
 
-## 4. `bench_all.bench()`
+## 5. `bench_all.bench()`
 
 One implementation, imported by every driver.
 
@@ -157,21 +187,22 @@ metrics = bench(A, B, idx, block_sizes,
 - Every solver runs once per precision. The **first** precision defines the
   baseline: `superlu` at `dtypes[0]` is what every speedup and every "vs base"
   error refers to.
-- Result keys are `<solver>_<suffix>`: `superlu_c128`, `block_thomas_inv_c64`.
+- Result keys are `<solver>_<suffix>` in the canonical spelling:
+  `superlu_c128`, `block-thomas-inv_c64`.
 - Skips are per `(solver, dtype)` and are reported rather than raised: no
   UMFPACK single-precision build, no visible GPU, a missing package. This keeps
   a batch run over heterogeneous machines comparable.
 - **The half-precision variants are the exception.** They are precision-fixed,
   so they run once per index outside the precision loop, under the unsuffixed
-  keys `block_thomas_fp16` and `block_thomas_inv_fp16` and the storage label
+  keys `block-thomas-fp16` and `block-thomas-inv-fp16` and the storage label
   `"complex32"`, which is not a NumPy dtype. They are **not** in
   `DEFAULT_SOLVERS`: their kernels are written in NumPy and are orders of
-  magnitude slower than LAPACK, so request them through `bench_all.FP16_SOLVERS`
+  magnitude slower than LAPACK, so request them through `cli.FP16_SOLVERS`
   when accuracy rather than timing is being measured.
 
 ---
 
-## 5. `factor_io.py`
+## 6. `factor_io.py`
 
 Solver output is appended into the **material's own** HDF5 file, as a direct
 sibling of each energy index's `M`, `rhs` and `Sigma`:
@@ -197,7 +228,7 @@ established rather than assumed.
 
 ---
 
-## 6. Tests
+## 7. Tests
 
 ```bash
 python test_pipeline.py

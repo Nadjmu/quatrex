@@ -38,8 +38,8 @@ The block count, the size range, sum(bs^2), which is the dense block-storage
 cost that determines whether a custom partition is worthwhile, and the
 off-band nonzero count. Exit status 1 if the off-band count is nonzero.
 
---compare-bs reports the same figures for a uniform partition and their storage
-ratio. --emit-python prints a line to paste into
+--compare-block-size reports the same figures for a uniform partition and
+their storage ratio. --emit-python prints a line to paste into
 run_benchmarks.MATERIAL_BLOCKS.
 
 Usage
@@ -47,7 +47,7 @@ Usage
     python determine_custom_block_size.py /scratch/yimili/matrices/hdf5/graphene.h5
     python determine_custom_block_size.py .../graphene.h5 --idx 25
     python determine_custom_block_size.py .../M_E_0.npz
-    python determine_custom_block_size.py .../graphene.h5 --compare-bs 416
+    python determine_custom_block_size.py .../graphene.h5 --compare-block-size 416
     python determine_custom_block_size.py .../graphene.h5 --emit-python
 """
 
@@ -60,6 +60,7 @@ sys.path.append(str((Path(__file__).parent / ".." / "solvers").resolve()))
 import numpy as np
 import scipy.sparse as sp
 
+import cli
 from solver_classes import block_sizes_from_matrix, offband_nnz
 
 
@@ -115,20 +116,22 @@ def describe(sizes, A):
 
 
 def main():
-    ap = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = cli.new_parser(__doc__)
     ap.add_argument("matrix", type=Path,
                     help="material .h5 file, or a CSR .npz triplet")
-    ap.add_argument("--idx", type=int, default=0,
-                    help="energy index to read from an .h5 file (default 0)")
-    ap.add_argument("--compare-bs", type=int, default=None,
-                    help="also report the same figures for this uniform block size")
+    ap.add_argument("--idx", type=int, nargs=1, default=[0], metavar="N",
+                    help="energy index to read from an .h5 file (default: 0). "
+                         "The sparsity pattern is the same at every index, so "
+                         "the choice does not affect the partition")
+    ap.add_argument("--compare-block-size", type=int, default=None,
+                    metavar="M",
+                    help="also report the same figures for this uniform "
+                         "block size, and the storage ratio between the two")
     ap.add_argument("--emit-python", action="store_true",
                     help="print the partition as a python list literal only")
     args = ap.parse_args()
 
-    A = load_matrix(args.matrix, args.idx)
+    A = load_matrix(args.matrix, args.idx[0])
     A.sort_indices()
     sizes = block_sizes_from_matrix(A)
 
@@ -139,14 +142,15 @@ def main():
     print(f"=== custom partition ({args.matrix.name}) ===")
     ok = describe(sizes, A)
 
-    if args.compare_bs is not None:
-        print(f"\n=== uniform partition, bs = {args.compare_bs} ===")
+    if args.compare_block_size is not None:
+        print(f"\n=== uniform partition, block size "
+              f"{args.compare_block_size} ===")
         n = A.shape[0]
-        if n % args.compare_bs:
-            print(f"n={n} is not divisible by {args.compare_bs} -- "
-                  f"uniform partition not applicable")
+        if n % args.compare_block_size:
+            print(f"n = {n} is not divisible by {args.compare_block_size}; "
+                  f"a uniform partition is not applicable")
         else:
-            uniform = [args.compare_bs] * (n // args.compare_bs)
+            uniform = [args.compare_block_size] * (n // args.compare_block_size)
             describe(uniform, A)
             print(f"\ncustom / uniform dense block storage = "
                   f"{sum(s*s for s in sizes) / sum(s*s for s in uniform):.3f}x")

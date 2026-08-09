@@ -45,8 +45,9 @@ import h5py
 from bench_all import bench
 from run_benchmarks import HDF5_DIR, MATERIAL_BS, load_sparse, resolve_partition
 
-# A one-element tuple: the trailing comma is required, since iterating a bare
-# string would make `solver in solvers` a substring test inside bench().
+# Canonical solver names, see solvers/cli.py. A one-element tuple needs its
+# trailing comma: iterating a bare string would make `solver in solvers` a
+# substring test inside bench().
 GPU_SOLVERS = ("cudss",)
 
 # cuDSS supports both precisions; GMRES on CuPy is excluded at single precision

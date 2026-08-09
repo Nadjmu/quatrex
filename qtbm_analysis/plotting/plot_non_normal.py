@@ -54,11 +54,15 @@ import gc
 import sys
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parent))
+_HERE = Path(__file__).resolve().parent
+sys.path.append(str(_HERE))
+sys.path.append(str((_HERE / ".." / "solvers").resolve()))
 
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
+
+import cli
 
 ARRAY_NAMES = {
     "ratio": "ratio_matrix.npy",
@@ -251,9 +255,8 @@ def create_gif(frame_paths, gif_path, gif_fps, ping_pong):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("out_dir", type=Path,
+    ap = cli.new_parser(__doc__)
+    ap.add_argument("data_dir", type=Path,
                     help="material output directory written by "
                          "non-normal/non-normal.py")
     ap.add_argument("--ratio-y-scale", choices=["linear", "log"],
@@ -273,7 +276,7 @@ def main():
                     help="delete existing frames before rendering")
     args = ap.parse_args()
 
-    out_dir = args.out_dir.expanduser().resolve()
+    out_dir = args.data_dir.expanduser().resolve()
     frame_dir = out_dir / "frames"
     gif_path = out_dir / "non_normal_shift.gif"
 

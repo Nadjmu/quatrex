@@ -39,6 +39,7 @@ from pathlib import Path
 import numpy as np
 import scipy.sparse as sp
 
+import cli
 from solver_classes import (
     BlockThomas, BlockThomasExplicitInv,
     BlockThomasFP16, BlockThomasExplicitInvFP16,
@@ -242,23 +243,26 @@ def test_h5_roundtrip(label, block_sizes):
         with h5py.File(h5path, "a") as f:
             bench(A, b, idx, block_sizes,
                   dtypes=(np.complex128,), h5file=f, save=True,
-                  solvers=("superlu", "block_thomas", "block_thomas_inv",
-                           "block_thomas_fp16", "block_thomas_inv_fp16"))
+                  solvers=("superlu", "block-thomas", "block-thomas-inv",
+                           "block-thomas-fp16", "block-thomas-inv-fp16"))
 
         # every stored factorization must still reproduce the matrix it
         # factored, after a full write/read cycle
         with h5py.File(h5path, "r") as f:
-            for solver, dt in (("blockthomas", "complex128"),
-                               ("blockthomas_inv", "complex128"),
-                               ("blockthomas", "complex32"),
-                               ("blockthomas_inv", "complex32"),
+            # Canonical solver names; the stored group is resolved through
+            # cli.h5_group, exactly as the analysis scripts do.
+            for solver, dt in (("block-thomas", "complex128"),
+                               ("block-thomas-inv", "complex128"),
+                               ("block-thomas-fp16", "complex32"),
+                               ("block-thomas-inv-fp16", "complex32"),
                                ("superlu", "complex128")):
-                path = f"E_{idx}/{solver}/{dt}"
+                path = f"E_{idx}/{cli.h5_group(solver)}/{dt}"
                 if path not in f:
                     check(f"{solver}/{dt} present", False)
                     continue
                 A_dt = A if dt == "complex32" else A.astype(np.dtype(dt))
-                A_eff, L, U = gf.ASSEMBLERS[solver](f[path], A_dt)
+                assembler = gf.ASSEMBLERS[solver.replace("-fp16", "")]
+                A_eff, L, U = assembler(f[path], A_dt)
                 res = gf.analyse(A_eff, L, U)
                 r = res["1-norm"]["resid_rel"]
                 # fp16 factors only reproduce A to fp16 accuracy, by definition
@@ -268,7 +272,7 @@ def test_h5_roundtrip(label, block_sizes):
 
             # ragged partitions must survive the flatten/reshape round trip
             import factor_io as fio
-            g = f[f"E_{idx}/blockthomas/complex128"]
+            g = f[f"E_{idx}/{cli.h5_group('block-thomas')}/complex128"]
             blocks = fio.load_blocks(g, "L")
             sizes = normalize_block_sizes(A.shape[0], block_sizes)
             uniform = len(set(sizes)) == 1

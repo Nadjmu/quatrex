@@ -54,11 +54,14 @@ import csv
 import sys
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parent))
+_HERE = Path(__file__).resolve().parent
+sys.path.append(str(_HERE))
+sys.path.append(str((_HERE / ".." / "solvers").resolve()))
 
 import numpy as np
 import matplotlib.pyplot as plt
 
+import cli
 from style import FP16_UNIT_ROUNDOFF, save_figure
 
 COLUMNS = ("idx", "relres_fp16", "relres_fp16_inv", "fwd_err_fp16_vs_c128",
@@ -165,19 +168,15 @@ def plot_error_vs_condition(m, material, out_path):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = cli.new_parser(__doc__)
     ap.add_argument("csv_path", type=Path,
                     help="metrics CSV written by run_bench/sweep_fp16.py")
-    ap.add_argument("--material", type=str, default=None,
-                    help="label for titles and filenames "
-                         "(default: CSV stem with '_metrics' removed)")
-    ap.add_argument("--outdir", type=Path, default=None,
-                    help="output directory (default: the CSV's directory)")
+    cli.add_output(ap, outdir_help="output directory "
+                                   "(default: the CSV's directory)")
     args = ap.parse_args()
 
     material = args.material or args.csv_path.stem.replace("_metrics", "")
-    outdir = args.outdir or args.csv_path.parent
+    outdir = Path(args.outdir) if args.outdir else args.csv_path.parent
 
     m = read_metrics(args.csv_path)
     plot_residual_and_forward_error(m, material,

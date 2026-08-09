@@ -35,16 +35,21 @@ following are recorded:
     vs_base   ||x - x_base|| / ||x_base||, where x_base is the SuperLU
               solution at the first requested precision
 
-Result keys are "<solver>_<suffix>", for example superlu_c128, umfpack_c128,
-block_thomas_inv_c64.
+Result keys are "<solver>_<suffix>" in the canonical solver spelling defined by
+cli.SOLVERS: superlu_c128, umfpack_c128, block-thomas-inv_c64.
 
 The two half-precision Block Thomas variants are the exception. They are
 precision-fixed, so running them inside the precision loop would repeat
 identical work; they run once per index outside it, under the unsuffixed keys
-block_thomas_fp16 and block_thomas_inv_fp16 and the storage label "complex32".
+block-thomas-fp16 and block-thomas-inv-fp16 and the storage label
+"complex32".
 They are absent from DEFAULT_SOLVERS because their kernels are written in
 NumPy and are orders of magnitude slower than LAPACK: request them explicitly,
-through FP16_SOLVERS, when accuracy rather than timing is being measured.
+through cli.FP16_SOLVERS, when accuracy rather than timing is being measured.
+
+Solver names are the canonical kebab-case forms of cli.SOLVERS. The HDF5 group
+each result is written to is resolved through cli.h5_group, so the stored
+layout is unchanged.
 
 Skips are per (solver, dtype) and are reported rather than raised: UMFPACK has
 no single-precision build, the GPU solvers require a visible CUDA device, and
@@ -75,20 +80,11 @@ from solver_classes import (
     UMFPACK, MUMPS, GMRESCuPy, CuDSS, gpu_available,
 )
 import factor_io as fio
-
-DEFAULT_SOLVERS = ("superlu", "umfpack", "mumps", "gmres",
-                   "gmres_cupy", "cudss", "block_thomas", "block_thomas_inv")
-
-# The half-precision variants are precision-fixed: they ignore the precision
-# loop and run exactly once per index, stored under the label "complex32".
-# They are excluded from DEFAULT_SOLVERS because their NumPy kernels are orders
-# of magnitude slower than LAPACK; request them explicitly.
-FP16_SOLVERS = ("block_thomas_fp16", "block_thomas_inv_fp16")
+from cli import (
+    DEFAULT_SOLVERS, FP16_SOLVERS, dtype_suffix, h5_group, label,
+)
 
 DEFAULT_DTYPES = (np.complex128, np.complex64)
-
-_SUFFIX = {"complex128": "c128", "complex64": "c64",
-           "float64": "f64", "float32": "f32"}
 
 # Storage label for the half-precision results. Not a NumPy dtype:
 # np.dtype("complex32") does not exist.
@@ -97,8 +93,7 @@ FP16_LABEL = "complex32"
 
 def _sfx(dt):
     """Short suffix for a precision, used in the result keys."""
-    name = np.dtype(dt).name
-    return _SUFFIX.get(name, name)
+    return dtype_suffix(np.dtype(dt).name)
 
 
 def _timed(fn, *args, **kwargs):
@@ -179,7 +174,7 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
     # The blocks depend on As alone, not on the precision, so they are
     # extracted once and reused for every requested precision.
     bt_solvers = [s for s in solvers
-                  if s in ("block_thomas", "block_thomas_inv") + FP16_SOLVERS]
+                  if s in ("block-thomas", "block-thomas-inv") + FP16_SOLVERS]
     if bt_solvers:
         if check_blocks:
             bad = offband_nnz(As, bs)
@@ -226,7 +221,7 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
                 _finish(f"mumps_{sfx}", f"mumps {sfx}", mmp, xm, t_f, t_s,
                         extra="  (no L/U exposed)",
                         saver=lambda x, tf, ts, mem: fio.save_metadata(
-                            h5file, "mumps", dt, idx, x, tf, ts, mem=mem))
+                            h5file, h5_group("mumps"), dt, idx, x, tf, ts, mem=mem))
             except ImportError as e:
                 print(f"  mumps {sfx:14s}: skipped ({e})")
         elif "mumps" in solvers:
@@ -239,14 +234,14 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
             _finish(f"gmres_{sfx}", f"gmres (scipy) {sfx}", gm, xg, t_f, t_s,
                     extra=f"  (it~{gm.last_iters})",
                     saver=lambda x, tf, ts, mem: fio.save_metadata(
-                        h5file, "gmres_scipy", dt, idx, x, tf, ts,
+                        h5file, h5_group("gmres"), dt, idx, x, tf, ts,
                         metadata={"iters": gm.last_iters, "info": gm.last_info},
                         mem=mem))
         elif "gmres" in solvers:
             print(f"  gmres (scipy) {sfx:7s}: skipped (excluded)")
 
         # ---- GMRES on the GPU, through CuPy -------------------------------
-        if "gmres_cupy" in solvers and not _excluded("gmres_cupy", dt):
+        if "gmres-cupy" in solvers and not _excluded("gmres-cupy", dt):
             if not gpu_available():
                 print(f"  gmres (cupy) {sfx:7s}: skipped (no GPU / CuPy not installed)")
             else:
@@ -254,16 +249,16 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
                     # The construction step is the host-to-device transfer.
                     gmc, t_f = _timed(GMRESCuPy, As, dt)
                     xgc, t_s = _timed(gmc.solve, B)
-                    _finish(f"gmres_cupy_{sfx}", f"gmres (cupy) {sfx}", gmc,
+                    _finish(f"gmres-cupy_{sfx}", f"gmres (cupy) {sfx}", gmc,
                             xgc, t_f, t_s, extra=f"  (it~{gmc.last_iters})",
                             saver=lambda x, tf, ts, mem: fio.save_metadata(
-                                h5file, "gmres_cupy", dt, idx, x, tf, ts,
+                                h5file, "gmres-cupy", dt, idx, x, tf, ts,
                                 metadata={"iters": gmc.last_iters,
                                           "info": gmc.last_info},
                                 mem=mem))
                 except Exception as e:
                     print(f"  gmres (cupy) {sfx:7s}: FAILED ({type(e).__name__}: {e})")
-        elif "gmres_cupy" in solvers:
+        elif "gmres-cupy" in solvers:
             print(f"  gmres (cupy) {sfx:7s}: skipped (excluded)")
 
         # ---- cuDSS: GPU direct solver, no explicit factor values ----------
@@ -278,7 +273,7 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
                     _finish(f"cudss_{sfx}", f"cudss {sfx}", cud, xc, t_f, t_s,
                             extra="  (no L/U values exposed)",
                             saver=lambda x, tf, ts, mem: fio.save_metadata(
-                                h5file, "cudss", dt, idx, x, tf, ts,
+                                h5file, h5_group("cudss"), dt, idx, x, tf, ts,
                                 metadata=cud.get_metadata(), mem=mem))
                     cud.free()
                 except Exception as e:
@@ -287,25 +282,25 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
             print(f"  cudss {sfx:14s}: skipped (excluded)")
 
         # ---- Block Thomas, implementation 1: LU with substitution ---------
-        if "block_thomas" in solvers and not _excluded("block_thomas", dt):
+        if "block-thomas" in solvers and not _excluded("block-thomas", dt):
             bt,  t_f = _timed(BlockThomas, D, Lb, Ub, dt)
             xbt, t_s = _timed(bt.solve, B)
-            _finish(f"block_thomas_{sfx}", f"block Thomas {sfx}", bt, xbt,
+            _finish(f"block-thomas_{sfx}", f"block Thomas {sfx}", bt, xbt,
                     t_f, t_s,
                     saver=lambda x, tf, ts, mem: fio.save_blockthomas(
                         h5file, dt, idx, bt, x, tf, ts, mem=mem))
-        elif "block_thomas" in solvers:
+        elif "block-thomas" in solvers:
             print(f"  block Thomas {sfx:7s}: skipped (excluded)")
 
         # ---- Block Thomas, implementation 2: explicit inverses ------------
-        if "block_thomas_inv" in solvers and not _excluded("block_thomas_inv", dt):
+        if "block-thomas-inv" in solvers and not _excluded("block-thomas-inv", dt):
             bti,  t_f = _timed(BlockThomasExplicitInv, D, Lb, Ub, dt)
             xbti, t_s = _timed(bti.solve, B)
-            _finish(f"block_thomas_inv_{sfx}", f"block Thomas inv {sfx}", bti,
+            _finish(f"block-thomas-inv_{sfx}", f"block Thomas inv {sfx}", bti,
                     xbti, t_f, t_s, extra="  (explicit inverses)",
                     saver=lambda x, tf, ts, mem: fio.save_blockthomas_inv(
                         h5file, dt, idx, bti, x, tf, ts, mem=mem))
-        elif "block_thomas_inv" in solvers:
+        elif "block-thomas-inv" in solvers:
             print(f"  block Thomas inv {sfx:3s}: skipped (excluded)")
 
     # ---- Block Thomas in half precision --------------------------------------
@@ -313,11 +308,11 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
     # precision-fixed and ignore `dtypes`, so running them once per precision
     # would repeat identical work. Results are stored under the label
     # "complex32", which is not a NumPy dtype.
-    if "block_thomas_fp16" in solvers:
+    if "block-thomas-fp16" in solvers:
         try:
             bt16,  t_f = _timed(BlockThomasFP16, D, Lb, Ub)
             xbt16, t_s = _timed(bt16.solve, B)
-            _finish("block_thomas_fp16", "block Thomas fp16", bt16, xbt16,
+            _finish("block-thomas-fp16", "block Thomas fp16", bt16, xbt16,
                     t_f, t_s, extra="  (embedded real)",
                     saver=lambda x, tf, ts, mem: fio.save_blockthomas(
                         h5file, None, idx, bt16, x, tf, ts, mem=mem,
@@ -325,12 +320,12 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
         except (FloatingPointError, ZeroDivisionError) as e:
             print(f"  block Thomas fp16   : FAILED ({type(e).__name__}: {e})")
 
-    if "block_thomas_inv_fp16" in solvers:
+    if "block-thomas-inv-fp16" in solvers:
         try:
             bti16,  t_f = _timed(BlockThomasExplicitInvFP16, D, Lb, Ub,
                                  None, fp16_inv_dtype)
             xbti16, t_s = _timed(bti16.solve, B)
-            _finish("block_thomas_inv_fp16", "block Thomas inv fp16", bti16,
+            _finish("block-thomas-inv-fp16", "block Thomas inv fp16", bti16,
                     xbti16, t_f, t_s,
                     extra=f"  (inv in {np.dtype(fp16_inv_dtype).name})",
                     saver=lambda x, tf, ts, mem: fio.save_blockthomas_inv(

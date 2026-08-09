@@ -32,7 +32,7 @@ inside each E_<idx> group; see its module docstring for that layout.
 Usage
 -----
     python make_hdf5.py /scratch/yimili/matrices2 --material carbon-nanotube
-    python make_hdf5.py /scratch/yimili/matrices2 --all
+    python make_hdf5.py /scratch/yimili/matrices2 --all --start 0 --end 401
 """
 
 import argparse
@@ -135,14 +135,25 @@ def build_material(folder: Path, material: str, out_dir: Path,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Pack matrix datasets into HDF5")
-    parser.add_argument("folder", type=str, help="Root folder containing material subfolders")
-    parser.add_argument("--material", type=str, help="Single material to pack")
-    parser.add_argument("--all", action="store_true", help="Pack all known materials")
-    parser.add_argument("--out", type=str, default=None,
-                         help="Output dir for .h5 files (default: <folder>/hdf5)")
-    parser.add_argument("--start", type=int, default=0)
-    parser.add_argument("--end", type=int, default=401)
+    sys.path.insert(0, str((Path(__file__).resolve().parent
+                            / "solvers").resolve()))
+    import cli
+
+    parser = cli.new_parser(__doc__)
+    parser.add_argument("folder", type=str,
+                        help="root directory containing the per-material "
+                             "subdirectories")
+    parser.add_argument("--material", type=str, metavar="NAME",
+                        help="pack this material only")
+    parser.add_argument("--all", action="store_true",
+                        help="pack every material listed in MATERIALS")
+    parser.add_argument("--outdir", type=str, default=None, metavar="DIR",
+                        help="output directory for the .h5 files "
+                             "(default: <folder>/hdf5)")
+    parser.add_argument("--start", type=int, default=0, metavar="N",
+                        help="first energy index of the range, inclusive")
+    parser.add_argument("--end", type=int, default=401, metavar="N",
+                        help="last energy index of the range, inclusive")
     args = parser.parse_args()
 
     folder = Path(args.folder)
@@ -150,7 +161,7 @@ def main():
         print(f"Error: folder '{folder}' does not exist.")
         sys.exit(1)
 
-    out_dir = Path(args.out) if args.out else folder / "hdf5"
+    out_dir = Path(args.outdir) if args.outdir else folder / "hdf5"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if args.all:

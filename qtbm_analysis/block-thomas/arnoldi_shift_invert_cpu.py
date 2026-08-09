@@ -93,6 +93,7 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.sparse.linalg import LinearOperator, eigs, svds
 
+import cli
 from solver_classes import (
     BlockThomas,
     BlockThomasExplicitInv,
@@ -106,8 +107,9 @@ from solver_classes import (
     offband_nnz,
 )
 
-CPU_BACKENDS = ("mumps", "blockthomas", "blockthomas_inv", "superlu")
-GPU_BACKENDS = ("cudss", "gmres_cupy")
+# Canonical solver names; see solvers/cli.py.
+CPU_BACKENDS = ("mumps", "block-thomas", "block-thomas-inv", "superlu")
+GPU_BACKENDS = ("cudss", "gmres-cupy")
 ALL_BACKENDS = CPU_BACKENDS + GPU_BACKENDS
 
 # Backends whose solve() wants an (n, nrhs) column rather than a flat (n,).
@@ -115,8 +117,8 @@ COLUMN_RHS_BACKENDS = {"cudss"}
 
 # Factorization precision, independent of the complex128 working precision of
 # the Krylov method above it. UMFPACK is the only solver in the library that
-# refuses c64 outright, and it is not among the backends here.
-FACTOR_DTYPES = {"c128": np.complex128, "c64": np.complex64}
+# refuses single precision outright, and it is not among the backends here.
+FACTOR_DTYPES = {name: np.dtype(name) for name in cli.WORKING_DTYPES}
 
 QUANTITIES = ("eigenvalue", "singular", "condition")
 ENDS = ("smallest", "largest", "both")
@@ -179,16 +181,16 @@ def build_solver(A, backend, dtype=np.complex128, block_sizes=None):
     if backend == "cudss":
         return CuDSS(A, dtype=dtype)
 
-    if backend == "gmres_cupy":
+    if backend == "gmres-cupy":
         # Iterative, so each solve is accurate only to rtol, whereas the outer
         # Krylov method assumes an exact solve. Adequate for a timing
         # comparison, not for a converged eigenvalue.
         return GMRESCuPy(A, dtype=dtype)
 
-    if backend in ("blockthomas", "blockthomas_inv"):
+    if backend in ("block-thomas", "block-thomas-inv"):
         Ac = A.tocsr()
         Ac.sort_indices()
-        # block_sizes may be an int (uniform) from --block-sizes; normalize so
+        # block_sizes may be an int (uniform) from --block-size; normalize so
         # the report below and the partition itself see the same tuple.
         sizes = (normalize_block_sizes(Ac.shape[0], block_sizes)
                  if block_sizes else block_sizes_from_matrix(Ac))
@@ -205,7 +207,7 @@ def build_solver(A, backend, dtype=np.complex128, block_sizes=None):
                 "Block Thomas would silently discard those couplings"
             )
         D, L, U = extract_blocks_sparse(Ac, sizes)
-        cls = BlockThomas if backend == "blockthomas" else BlockThomasExplicitInv
+        cls = BlockThomas if backend == "block-thomas" else BlockThomasExplicitInv
         return cls(D, L, U, dtype=dtype)
 
     raise ValueError(f"unknown backend {backend!r}, expected one of {ALL_BACKENDS}")
@@ -558,16 +560,16 @@ def run(args):
     for e in ends:
         if quantity == "eigenvalue":
             vals, res = compute_eigenvalues(
-                A, e, args.backend, args.method, args.k, args.tol,
-                args.maxiter, args.ncv, shift_invert, args.block_sizes,
+                A, e, args.backend, args.method, args.num_values, args.tol,
+                args.max_iter, args.ncv, shift_invert, args.block_size,
                 factor_dtype,
             )
             out[f"eig_{e}"] = (vals, res)
         else:
             vals, res = compute_singular(
-                A, e, args.backend, args.method, args.k, args.tol,
-                args.maxiter, args.ncv, shift_invert, not args.no_fallback,
-                args.block_sizes, factor_dtype,
+                A, e, args.backend, args.method, args.num_values, args.tol,
+                args.max_iter, args.ncv, shift_invert, not args.no_fallback,
+                args.block_size, factor_dtype,
             )
             out[f"svd_{e}"] = (vals, res)
 
@@ -642,10 +644,10 @@ examples   (MATRIX is the required path to a CSR .npz triplet)
   %(prog)s MATRIX
 
   # 10 smallest eigenvalues with Block Thomas instead of MUMPS
-  %(prog)s MATRIX -k 10 --backend blockthomas
+  %(prog)s MATRIX -k 10 --backend block-thomas
 
   # show that the power method stalls where Arnoldi does not
-  %(prog)s MATRIX --method power --maxiter 200
+  %(prog)s MATRIX --method power --max-iter 200
 
   # largest eigenvalue -- no factorization, --backend unused
   %(prog)s MATRIX --end largest
@@ -666,11 +668,7 @@ examples   (MATRIX is the required path to a CSR .npz triplet)
 
 
 def build_parser(backends=CPU_BACKENDS, default_backend="mumps", prog=None):
-    ap = argparse.ArgumentParser(
-        prog=prog,
-        description=__doc__,
-        epilog=EPILOG,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = cli.new_parser(__doc__, epilog=EPILOG, prog=prog)
 
     ap.add_argument("matrix", type=Path,
                     help="path to the matrix: a CSR .npz triplet "
@@ -695,19 +693,18 @@ def build_parser(backends=CPU_BACKENDS, default_backend="mumps", prog=None):
                          f"(default: {default_backend}). Unused whenever no "
                          f"factorization is needed -- see --end")
 
-    ap.add_argument("--factor-dtype", choices=tuple(FACTOR_DTYPES),
-                    default="c128",
-                    help="precision of the FACTORIZATION only (default: "
-                         "c128). The Krylov method always runs in complex128, "
-                         "so c64 halves factor memory and speeds up the "
-                         "factorization at the cost of an inexact "
-                         "shift-invert operator -- expect residuals to floor "
-                         "near 1e-7 rather than reaching --tol")
+    cli.add_factor_dtype(
+        ap, choices=tuple(FACTOR_DTYPES), default="complex128",
+        help="precision of the factorization only (default: complex128). The "
+             "Krylov method always runs in complex128, so complex64 halves "
+             "factor memory and speeds up the factorization at the cost of an "
+             "inexact shift-invert operator: expect residuals to floor near "
+             "1e-7 rather than reaching --tol")
 
-    ap.add_argument("-k", type=int, default=1,
+    ap.add_argument("-k", "--num-values", type=int, default=1, metavar="K",
                     help="how many values to return (default: 1). Note "
                          "propack ties its basis size to this: kmax = 10*k, "
-                         "and svds does not forward --maxiter to propack, so "
+                         "and svds does not forward --max-iter to propack, so "
                          "raising -k is the only way to give it more room")
     ap.add_argument("--tol", type=float, default=1e-8,
                     help="convergence tolerance on the TRANSFORMED problem "
@@ -718,10 +715,10 @@ def build_parser(backends=CPU_BACKENDS, default_backend="mumps", prog=None):
                     help="arpack Krylov subspace size (default: scipy's "
                          "max(2k+1, 20)); raise it if convergence stalls on "
                          "a clustered spectrum. Not used by propack")
-    ap.add_argument("--maxiter", type=int, default=None,
-                    help="arpack restart cycles, or power iterations "
-                         "(default: 100 for power). NOT forwarded to propack "
-                         "by scipy")
+    ap.add_argument("--max-iter", type=int, default=None, metavar="N",
+                    help="ARPACK restart cycles, or power iterations "
+                         "(default: 100 for power). Not forwarded to "
+                         "PROPACK by SciPy")
 
     ap.add_argument("--no-shift-invert", action="store_true",
                     help="attack the small end of A directly instead of "
@@ -731,9 +728,7 @@ def build_parser(backends=CPU_BACKENDS, default_backend="mumps", prog=None):
                     help="do not retry with arpack when propack fails to "
                          "converge (default: retry, reusing the "
                          "factorizations already paid for)")
-    ap.add_argument("--block-sizes", type=int, default=None,
-                    help="uniform Block Thomas block size; default is to "
-                         "detect a custom partition from the sparsity pattern")
+    cli.add_block_partition(ap, auto=False)
     return ap
 
 
@@ -750,7 +745,7 @@ def resolve_args(ap, args):
 
     if args.quantity == "condition" and args.end != "smallest":
         ap.error("--quantity condition computes both ends itself; drop --end")
-    if args.method == "power" and args.k != 1:
+    if args.method == "power" and args.num_values != 1:
         ap.error("--method power carries a single vector and can only return "
                  "k=1; use --method arpack for k > 1")
     return args

@@ -29,11 +29,11 @@ a measurement.
 identically in the timing, stability and accuracy figures and the three may be
 compared directly:
 
-- **Colour and marker identify the solver**, keyed by the HDF5 group name that
-  `solvers/factor_io.py` writes: `blockthomas`, `gmres_scipy`, and so on. These
-  are not the internal result keys used by `solvers/bench_all.py`
-  (`block_thomas`, `gmres`); a script reading a CSV must map its own labels onto
-  these keys first.
+- **Colour and marker identify the solver**, keyed by the canonical solver name
+  defined in `solvers/cli.py`: `block-thomas`, `gmres`, and so on — the same
+  spelling every command line uses. A script that reads an HDF5 file converts
+  the stored group name with `cli.from_h5_group` first, and `plot_speedup.py`
+  goes the other way with `cli.h5_group` when it opens the file.
 - **Line style identifies the precision.** `complex32` is not a NumPy dtype; it
   is the storage label used for the half-precision embedded-real
   factorizations.
@@ -74,9 +74,11 @@ python plot_non_normal.py     /scratch/yimili/non-normal/carbon-chain --ping-pon
 python plot_qtbm_spectra.py   /scratch/yimili/matrices/dev_12_sorted_BENCH
 ```
 
-Every script defaults its output directory to that of its input, and accepts
-`--outdir` to override it. Each has a `--help` describing the quantities it
-plots and how they are to be read.
+Every script defaults its output directory to that of its input and accepts
+`--outdir` to override it, `--material` to set the label used in filenames and
+titles, and where applicable `--solvers` and `--dtypes` in the canonical
+spellings. Each has a `--help` describing the quantities it plots and how they
+are to be read.
 
 ---
 

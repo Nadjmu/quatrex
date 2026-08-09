@@ -21,7 +21,7 @@ Input
     h5path              a material HDF5 file, read for E_<idx>/M and
                         E_<idx>/rhs and for global/condition_full_svd
     --idx / --start,--end   the energy indices to process
-    --bs                the Block Thomas block size
+    --block-size        the Block Thomas block size
     --tol, --max-iter   the outer refinement criterion
     --gmres-*           the inner GMRES parameters
 
@@ -77,11 +77,10 @@ No figures are produced; see plotting/plot_mixed_prec_ir.py.
 
 Usage
 -----
-    python c32_gmres_ir.py /scratch/yimili/matrices/hdf5/carbon-nanotube.h5 \
-        --idx 84 --bs 32
+    python c32_gmres_ir.py .../carbon-nanotube.h5 --idx 84 --block-size 32
 
-    python c32_gmres_ir.py /scratch/yimili/matrices/hdf5/carbon-nanotube.h5 \
-        --start 0 --end 401 --bs 32 --outdir plots
+    python c32_gmres_ir.py .../carbon-nanotube.h5 --start 0 --end 401 \
+        --block-size 32 --outdir plots
 
     python ../plotting/plot_mixed_prec_ir.py \
         plots/carbon-nanotube_fp16_gmres_ir.csv
@@ -96,10 +95,14 @@ from pathlib import Path
 
 import numpy as np
 
-# mpir lives beside this file and appends ../solvers to sys.path itself when
-# imported, so solver_classes becomes importable along with it.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# mpir lives beside this file; the solver library, including cli, is one
+# directory up. Both are added explicitly rather than relying on mpir's own
+# sys.path side effect, so the import order here does not matter.
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE))
+sys.path.insert(0, str((_HERE / ".." / "solvers").resolve()))
 
+import cli
 import mpir
 from solver_classes import extract_blocks_sparse, BlockThomasFP16
 
@@ -109,7 +112,7 @@ from solver_classes import extract_blocks_sparse, BlockThomasFP16
 # ---------------------------------------------------------------------------
 def register_fp16_builder():
     """
-    Add a block_thomas_fp16 entry to mpir.SOLVER_BUILDERS, in memory only.
+    Add a block-thomas-fp16 entry to mpir.SOLVER_BUILDERS, in memory only.
 
     mpir's builder contract is builder(A, dtype, bs, b) returning an object
     exposing solve(b) and factor_nbytes(). BlockThomasFP16 satisfies both and
@@ -117,11 +120,11 @@ def register_fp16_builder():
     """
     def _build(A, dtype, bs, b):
         if bs is None:
-            raise ValueError("--bs is required for block_thomas_fp16")
+            raise ValueError("--block-size is required for block-thomas-fp16")
         D, L, U = extract_blocks_sparse(A, bs)
         return BlockThomasFP16(D, L, U)
 
-    mpir.SOLVER_BUILDERS["block_thomas_fp16"] = _build
+    mpir.SOLVER_BUILDERS["block-thomas-fp16"] = _build
 
 
 # ---------------------------------------------------------------------------
@@ -164,39 +167,39 @@ def run_index(h5path, idx, bs, args):
 
     variants.append((
         "fp16 direct",
-        lambda: mpir.solve_direct("block_thomas_fp16", A, b, bs, FP16_CAST),
+        lambda: mpir.solve_direct("block-thomas-fp16", A, b, bs, FP16_CAST),
     ))
 
     if not args.skip_lu_ir:
         variants.append((
             "fp16 + LU-IR",
-            lambda: mpir.solve_mixed_ir("block_thomas_fp16", A, b, bs, FP16_CAST,
+            lambda: mpir.solve_mixed_ir("block-thomas-fp16", A, b, bs, FP16_CAST,
                                         args.tol, args.max_iter, x_true=x_true),
         ))
 
     variants.append((
         "fp16 + GMRES-IR",
-        lambda: mpir.solve_gmres_ir("block_thomas_fp16", A, b, bs, FP16_CAST,
+        lambda: mpir.solve_gmres_ir("block-thomas-fp16", A, b, bs, FP16_CAST,
                                     args.tol, args.max_iter, x_true=x_true,
                                     gmres_tol=args.gmres_tol,
                                     gmres_restart=args.gmres_restart,
-                                    gmres_maxiter=args.gmres_maxiter),
+                                    gmres_max_iter=args.gmres_max_iter),
     ))
 
     if not args.skip_c64:
         variants.append((
             "c64 + GMRES-IR",
-            lambda: mpir.solve_gmres_ir("block_thomas", A, b, bs, np.complex64,
+            lambda: mpir.solve_gmres_ir("block-thomas", A, b, bs, np.complex64,
                                         args.tol, args.max_iter, x_true=x_true,
                                         gmres_tol=args.gmres_tol,
                                         gmres_restart=args.gmres_restart,
-                                        gmres_maxiter=args.gmres_maxiter),
+                                        gmres_max_iter=args.gmres_max_iter),
         ))
 
     if not args.skip_c128:
         variants.append((
             "c128 direct",
-            lambda: mpir.solve_direct("block_thomas", A, b, bs, HIGH),
+            lambda: mpir.solve_direct("block-thomas", A, b, bs, HIGH),
         ))
 
     rows = []
@@ -264,48 +267,42 @@ def run_index(h5path, idx, bs, args):
 
 # ---------------------------------------------------------------------------
 def parse_args():
-    p = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("h5path", type=Path, help="material HDF5 file")
-    p.add_argument("--idx", type=int, nargs="*", default=None,
-                   help="one or more energy indices (alternative to --start/--end)")
-    p.add_argument("--start", type=int, default=None, help="first energy index (inclusive)")
-    p.add_argument("--end", type=int, default=None, help="last energy index (inclusive)")
-    p.add_argument("--bs", type=int, default=32, help="block size")
+    ap = cli.new_parser(__doc__)
+    cli.add_h5_input(ap)
+    cli.add_index_selection(ap, default_all=False)
+    cli.add_block_partition(ap, default_block_size=32, auto=False)
 
-    p.add_argument("--tol", type=float, default=1e-14,
-                   help="outer IR convergence tolerance on ||r||/||b||")
-    p.add_argument("--max-iter", type=int, default=10, help="max outer IR iterations")
-    p.add_argument("--gmres-tol", type=float, default=1e-8, help="inner GMRES rtol")
-    p.add_argument("--gmres-restart", type=int, default=30, help="inner GMRES restart")
-    p.add_argument("--gmres-maxiter", type=int, default=50, help="inner GMRES maxiter")
-    p.add_argument("--repeats", type=int, default=1, help="repeats per variant (median reported)")
+    ap.add_argument("--tol", type=float, default=1e-14,
+                    help="outer convergence tolerance on ||r||/||b||")
+    ap.add_argument("--max-iter", type=int, default=10, metavar="N",
+                    help="maximum outer refinement iterations")
+    ap.add_argument("--gmres-tol", type=float, default=1e-8,
+                    help="relative tolerance of the inner GMRES solve")
+    ap.add_argument("--gmres-restart", type=int, default=30,
+                    help="inner GMRES restart parameter")
+    ap.add_argument("--gmres-max-iter", type=int, default=50,
+                    help="maximum inner GMRES iterations per outer step")
+    ap.add_argument("--repeats", type=int, default=1,
+                    help="repeats per variant; the median is reported")
 
-    p.add_argument("--skip-lu-ir", action="store_true", help="skip the fp16 + LU-IR variant")
-    p.add_argument("--skip-c64", action="store_true", help="skip the c64 + GMRES-IR variant")
-    p.add_argument("--skip-c128", action="store_true", help="skip the c128 direct variant")
+    ap.add_argument("--skip-lu-ir", action="store_true",
+                    help="skip the fp16 + LU-IR variant")
+    ap.add_argument("--skip-c64", action="store_true",
+                    help="skip the complex64 + GMRES-IR variant")
+    ap.add_argument("--skip-c128", action="store_true",
+                    help="skip the complex128 direct variant")
 
-    p.add_argument("--material", type=str, default=None,
-                   help="tag for output filename (default: h5 filename stem)")
-    p.add_argument("--outdir", type=str, default=None,
-                   help="output directory (default: <script_dir>/plots)")
-    return p.parse_args()
+    cli.add_output(ap, outdir_help="output directory "
+                                   "(default: <script_dir>/plots)")
+    return ap, ap.parse_args()
 
 
 def main():
-    args = parse_args()
-
+    ap, args = parse_args()
     register_fp16_builder()
 
-    # Index selection: --idx and --start/--end are alternatives.
-    if args.idx:
-        indices = list(args.idx)
-    elif args.start is not None and args.end is not None:
-        indices = list(range(args.start, args.end + 1))
-    else:
-        raise SystemExit("give either --idx N [N ...] or --start S --end E")
-
+    args.h5path = Path(args.h5path)
+    indices = cli.resolve_indices(ap, args)
     material = args.material or args.h5path.stem
     script_dir = Path(__file__).resolve().parent
     outdir = Path(args.outdir) if args.outdir else script_dir / "plots"
@@ -314,17 +311,17 @@ def main():
 
     print(f"material   : {material}")
     print(f"h5path     : {args.h5path}")
-    print(f"block size : {args.bs}")
+    print(f"block size : {args.block_size}")
     print(f"indices    : {len(indices)} ({indices[0]}..{indices[-1]})")
     print(f"outer tol  : {args.tol:.1e}   max outer iters: {args.max_iter}")
     print(f"inner GMRES: rtol {args.gmres_tol:.1e}  restart {args.gmres_restart}  "
-          f"maxiter {args.gmres_maxiter}")
+          f"maxiter {args.gmres_max_iter}")
 
     all_rows = []
     skipped = []
     for idx in indices:
         try:
-            all_rows.extend(run_index(args.h5path, idx, args.bs, args))
+            all_rows.extend(run_index(args.h5path, idx, args.block_size, args))
         except SystemExit as e:            # raised by mpir.load_system for a bad index
             skipped.append((idx, str(e)))
             print(f"\nE_{idx}: skipped ({e})")
@@ -339,11 +336,11 @@ def main():
     with open(csv_path, "w", newline="") as f:
         f.write(f"# material     : {material}\n")
         f.write(f"# h5path       : {args.h5path}\n")
-        f.write(f"# block size   : {args.bs}\n")
+        f.write(f"# block size   : {args.block_size}\n")
         f.write(f"# indices      : {indices[0]}..{indices[-1]} ({len(indices)} requested)\n")
         f.write(f"# outer tol    : {args.tol}   max_iter {args.max_iter}\n")
         f.write(f"# inner gmres  : rtol {args.gmres_tol} restart {args.gmres_restart} "
-                f"maxiter {args.gmres_maxiter}\n")
+                f"maxiter {args.gmres_max_iter}\n")
         f.write(f"# x_true       : superlu complex128\n")
         f.write(f"# skipped      : {len(skipped)}\n")
         for i, msg in skipped:

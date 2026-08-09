@@ -4,6 +4,9 @@ If a reduced-precision factorization is not accurate enough on its own, can it
 still be *used*, as the inner solver or the preconditioner of a refinement
 scheme? These scripts answer that for the QTBM systems.
 
+All scripts here take the canonical option names; see
+[the top-level README, section 3](../README.md#3-command-line-conventions).
+
 | Script | Scope |
 |---|---|
 | `mpir.py` | the library and the single-index driver: LU-IR and GMRES-IR over any solver in `../solvers/` |
@@ -24,7 +27,7 @@ modern analysis (Carson and Higham, 2017 and 2018) distinguishes:
 
 | Symbol | Meaning | Value here |
 |---|---|---|
-| `u_f` | precision of the factorization | `--low-dtype`; `complex64` or half |
+| `u_f` | precision of the factorization | `--factor-dtype`; `complex64` or half |
 | `u` | working precision, in which `x` and the corrections are held | `complex128` |
 | `u_r` | precision of the residual computation | `complex128` |
 
@@ -89,12 +92,13 @@ at all.
 ## 4. `mpir.py`
 
 ```bash
-python mpir.py .../carbon-nanotube.h5 --idx 5 --solver superlu --low-dtype complex64
-python mpir.py .../carbon-nanotube.h5 --idx 5 --solver block_thomas --bs 32 \
-    --low-dtype complex64
-python mpir.py .../si-bulk.h5 --idx 254 --solver mumps --low-dtype complex64 \
-    --inner gmres --gmres-tol 1e-8 --gmres-restart 30 --gmres-maxiter 50
-python mpir.py .../si-bulk.h5 --idx 254 --solver cudss --low-dtype complex64
+python mpir.py .../carbon-nanotube.h5 --idx 5 --solver superlu \
+    --factor-dtype complex64
+python mpir.py .../carbon-nanotube.h5 --idx 5 --solver block-thomas \
+    --block-size 32 --factor-dtype complex64
+python mpir.py .../si-bulk.h5 --idx 254 --solver mumps --factor-dtype complex64 \
+    --inner gmres --gmres-tol 1e-8 --gmres-restart 30 --gmres-max-iter 50
+python mpir.py .../si-bulk.h5 --idx 254 --solver cudss --factor-dtype complex64
 ```
 
 Three variants of the **same** solver family are measured, so the comparison
@@ -113,7 +117,7 @@ counts.
 ### Practical notes
 
 **UMFPACK has no single-precision build**, so `solver_classes.UMFPACK` raises
-`TypeError` for `--low-dtype complex64`. This is a property of the library, not
+`TypeError` for `--factor-dtype complex64`. This is a property of the library, not
 of this script; select a different solver for a low-precision comparison.
 
 **cuDSS start-up cost.** The first cuDSS call in a process pays a fixed cost
@@ -142,14 +146,15 @@ Extends the study to the half-precision Block Thomas factorization and sweeps
 an energy range.
 
 ```bash
-python c32_gmres_ir.py .../carbon-nanotube.h5 --idx 84 --bs 32
-python c32_gmres_ir.py .../carbon-nanotube.h5 --start 0 --end 401 --bs 32 \
-    --outdir plots
+python c32_gmres_ir.py .../carbon-nanotube.h5 --idx 84 --block-size 32
+python c32_gmres_ir.py .../carbon-nanotube.h5 --start 0 --end 401 \
+    --block-size 32 --outdir plots
 python ../plotting/plot_mixed_prec_ir.py plots/carbon-nanotube_fp16_gmres_ir.csv
 ```
 
 The refinement drivers are not reimplemented. This script imports `mpir` and
-registers one additional builder into `mpir.SOLVER_BUILDERS` at run time — an
+registers one additional builder, `block-thomas-fp16`, into
+`mpir.SOLVER_BUILDERS` at run time — an
 in-memory dict insertion, not a modification of any file — so that `mpir`'s own
 `solve_gmres_ir`, `solve_mixed_ir`, `solve_direct` and `benchmark_solver` drive
 the half-precision solver unchanged. Any correction to the refinement logic

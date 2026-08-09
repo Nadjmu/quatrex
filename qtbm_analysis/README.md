@@ -119,11 +119,11 @@ cd ../block-thomas
 python growth_factor.py /scratch/yimili/matrices/hdf5/graphene.h5 \
     --start 1 --end 400
 cd ../run_bench
-python sweep_fp16.py --h5path /scratch/yimili/matrices/hdf5/graphene.h5 \
-    --start 0 --end 401 --bs 416
+python sweep_fp16.py /scratch/yimili/matrices/hdf5/graphene.h5 \
+    --start 0 --end 401 --block-size 416
 cd ../mixed_prec_ir
 python c32_gmres_ir.py /scratch/yimili/matrices/hdf5/graphene.h5 \
-    --start 0 --end 401 --bs 416 --outdir plots
+    --start 0 --end 401 --block-size 416 --outdir plots
 
 # Stage 5: figures.
 cd ../plotting
@@ -151,7 +151,103 @@ modify a material file. Everything else opens it read-only.
 
 ---
 
-## 3. Directory layout
+## 3. Command-line conventions
+
+Every executable script builds its parser from `solvers/cli.py`, so an option
+means the same thing and is spelled the same way wherever it appears. Adding a
+script means using those helpers, not inventing a new spelling.
+
+### 3.1 Solver names
+
+One canonical spelling, lower-case kebab, used on every command line and in
+every Python API — `bench(solvers=...)`, `mpir.SOLVER_BUILDERS`, the Arnoldi
+`--backend` list, and the figure legends:
+
+```
+superlu   umfpack   mumps   gmres   gmres-cupy   cudss
+block-thomas   block-thomas-inv   block-thomas-fp16   block-thomas-inv-fp16
+```
+
+**HDF5 group names are deliberately not renamed.** The groups inside a material
+file (`blockthomas`, `blockthomas_inv`, `gmres_scipy`) are on-disk data;
+renaming them would make every material file already written unreadable, for no
+numerical benefit. The mapping lives in `cli.SOLVERS` and is applied by
+`cli.h5_group()` and `cli.from_h5_group()`, so nothing outside `cli.py` needs
+to know the stored spelling.
+
+| Canonical name | Stored group | Precision level beneath it |
+|---|---|---|
+| `superlu` | `superlu` | `complex128`, `complex64` |
+| `umfpack` | `umfpack` | `complex128` |
+| `mumps` | `mumps` | `complex128`, `complex64` |
+| `gmres` | `gmres_scipy` | `complex128`, `complex64` |
+| `gmres-cupy` | `gmres_cupy` | `complex128`, `complex64` |
+| `cudss` | `cudss` | `complex128`, `complex64` |
+| `block-thomas` | `blockthomas` | `complex128`, `complex64` |
+| `block-thomas-inv` | `blockthomas_inv` | `complex128`, `complex64` |
+| `block-thomas-fp16` | `blockthomas` | `complex32` |
+| `block-thomas-inv-fp16` | `blockthomas_inv` | `complex32` |
+
+### 3.2 Precision names
+
+Complex working precisions are spelled in full everywhere: `complex128`,
+`complex64`, and `complex32`. The last is a storage label, not a NumPy dtype —
+`np.dtype("complex32")` does not exist — and denotes the half-precision
+embedded-real factorizations.
+
+The precision in which implementation 2 forms its explicit inverses is a real
+dtype and is spelled `float64`, `float32`, `float16`.
+
+### 3.3 Option vocabulary
+
+| Concept | Option | Notes |
+|---|---|---|
+| material HDF5 file | positional `h5path` | never a flag |
+| matrix, right-hand side | positional `matrix`, `rhs` | `.npz` triplet, `.npy` |
+| explicit energy indices | `--idx N [N ...]` | mutually exclusive with `--start` |
+| index range | `--start S --end E` | inclusive at both ends |
+| one solver | `--solver NAME` | canonical names |
+| several solvers | `--solvers NAME [NAME ...]` | canonical names |
+| working precisions | `--dtypes NAME [NAME ...]` | |
+| factorization precision | `--factor-dtype NAME` | `u_f` in the refinement analysis |
+| inverse-formation precision | `--inv-dtype NAME` | real dtype |
+| uniform block size | `--block-size M` | |
+| detected partition | `--auto-blocks` | overrides `--block-size` |
+| output directory | `--outdir DIR` | never `--out`, `--plotdir`, `--out-root` |
+| output label | `--material NAME` | defaults to the input stem |
+| iteration limit | `--max-iter N` | never `--maxiter` |
+
+Where a script takes no index selection it takes none; where it takes one, it
+takes exactly this one. `--idx` always accepts several values, so `--idx 25`
+and `--idx 0 25 50` are both valid.
+
+### 3.4 Renames from the previous interface
+
+| Was | Now | Where |
+|---|---|---|
+| `--bs` | `--block-size` | `sweep_fp16`, `single_solve`, `mpir`, `c32_gmres_ir` |
+| `--block-sizes` | `--block-size` | `arnoldi_shift_invert_*` |
+| `--compare-bs` | `--compare-block-size` | `determine_custom_block_size` |
+| `--low-dtype` | `--factor-dtype` | `mpir` |
+| `--factor-dtype c128\|c64` | `--factor-dtype complex128\|complex64` | `arnoldi_shift_invert_*` |
+| `--dtype` | `--dtypes` | `growth_factor` |
+| `--h5path PATH` | positional `h5path` | `sweep_fp16`, `non-normal` |
+| `--material-name` | `--material` | `non-normal` |
+| `--out-root`, `--out`, `--plotdir` | `--outdir` | `non-normal`, `plot_speedup`, `make_hdf5`, `growth_factor` |
+| `--indices 0:401` | `--start 0 --end 401` | `non-normal` |
+| `--idx N` (single) | `--idx N [N ...]` | `growth_factor`, `mpir` |
+| `--maxiter` | `--max-iter` | `arnoldi_shift_invert_*` |
+| `--gmres-maxiter` | `--gmres-max-iter` | `mpir`, `c32_gmres_ir` |
+| `-k` | `-k`, `--num-values` | `arnoldi_shift_invert_*` |
+| `block_thomas`, `blockthomas` | `block-thomas` | everywhere |
+| `block_thomas_inv`, `blockthomas_inv` | `block-thomas-inv` | everywhere |
+| `block_thomas_fp16` | `block-thomas-fp16` | everywhere |
+| `gmres_cupy` | `gmres-cupy` | everywhere |
+| `gmres_scipy` (as a CLI name) | `gmres` | figure scripts |
+
+---
+
+## 4. Directory layout
 
 The three principal directories are strictly layered: library, drivers,
 analysis. There is exactly one `bench()` implementation and one copy of each
@@ -159,7 +255,7 @@ solver.
 
 | Directory | Role | README |
 |---|---|---|
-| [`solvers/`](solvers/) | the solver library: every solver behind one interface, the block-partition utilities, HDF5 persistence, tests | [README](solvers/README.md) |
+| [`solvers/`](solvers/) | the solver library: every solver behind one interface, the canonical names and shared CLI, the block-partition utilities, HDF5 persistence, tests | [README](solvers/README.md) |
 | [`run_bench/`](run_bench/) | batch drivers: load, call `bench()`, write results back | [README](run_bench/README.md) |
 | [`block-thomas/`](block-thomas/) | post-hoc stability and spectral analysis, read-only | [README](block-thomas/README.md) |
 | [`mixed_prec_ir/`](mixed_prec_ir/) | mixed-precision iterative refinement, LU-IR and GMRES-IR | [README](mixed_prec_ir/README.md) |
@@ -176,7 +272,7 @@ solver.
 
 ---
 
-## 4. Block Thomas
+## 5. Block Thomas
 
 Both implementations of Higham, *Accuracy and Stability of Numerical
 Algorithms*, 2nd ed., Algorithm 13.3 are provided, each at complex double and
@@ -188,7 +284,7 @@ single precision and at half precision, giving four classes in
 | complex128 / complex64 | `BlockThomas` | `BlockThomasExplicitInv` |
 | half precision | `BlockThomasFP16` | `BlockThomasExplicitInvFP16` |
 
-### 4.1 The factorization
+### 5.1 The factorization
 
 For the block-tridiagonal matrix
 
@@ -226,7 +322,7 @@ The solve is the corresponding two-sweep substitution:
 Both implementations compute the same `D_mod` recursion and the same solve.
 They differ solely in how `D_mod_k^-1` is realized.
 
-### 4.2 Implementation 1 — LU with substitution
+### 5.2 Implementation 1 — LU with substitution
 
 Each `D_mod_k` is factorized by Gaussian elimination with partial pivoting
 (LAPACK `getrf`, through `scipy.linalg.lu_factor`), and every occurrence of
@@ -235,7 +331,7 @@ Each `D_mod_k` is factorized by Gaussian elimination with partial pivoting
 
 Stored per block: the packed LU and its pivot vector, plus `L_k` and `U_k`.
 
-### 4.3 Implementation 2 — explicit inverses
+### 5.3 Implementation 2 — explicit inverses
 
 Each `D_mod_k^-1` is formed explicitly, once, and stored. Every operation that
 implementation 1 performs as a triangular substitution becomes a dense matrix
@@ -252,7 +348,7 @@ Stored per block: the explicit inverse, plus `L_k` and `U_k`. No LU factors and
 no pivot vectors exist, so `get_LUP()` returns `None` and `get_inverses()` is
 used instead.
 
-### 4.4 Cost and accuracy comparison
+### 5.4 Cost and accuracy comparison
 
 | | Implementation 1 | Implementation 2 |
 |---|---|---|
@@ -271,7 +367,7 @@ well-conditioned diagonal blocks the difference is modest.
 SuperLU and UMFPACK, whose global partial pivoting with column ordering is
 strictly stronger than the block-local pivoting Block Thomas performs.
 
-### 4.5 Half precision: what is and is not fp16
+### 5.5 Half precision: what is and is not fp16
 
 This is the point on which the half-precision results must be read carefully.
 
@@ -380,13 +476,13 @@ they only move where the computation sits in the exponent range.
 
 ---
 
-## 5. Mixed-precision iterative refinement
+## 6. Mixed-precision iterative refinement
 
 `mixed_prec_ir/` addresses the complementary question: if a reduced-precision
 factorization is not accurate enough on its own, can it still be *used*, as the
 inner solver or the preconditioner of a refinement scheme?
 
-### 5.1 The three precisions
+### 6.1 The three precisions
 
 Iterative refinement solves `A x = b` by computing a solution in a low
 precision and correcting it using residuals computed in a higher one. The
@@ -405,7 +501,7 @@ factorization is `O(n^3)` and a residual is `O(nnz)`, so accuracy characteristic
 of a high-precision factorization is obtained at the cost of a low-precision
 one.
 
-### 5.2 The algorithms
+### 6.2 The algorithms
 
 Both variants share the outer loop and differ only in step 4.
 
@@ -428,7 +524,7 @@ the same factorization. One triangular solve per outer iteration.
 back up. GMRES itself runs at the working precision; only the preconditioner
 applications are low-precision solves, and they reuse the same factorization.
 
-### 5.3 Why both are implemented
+### 6.3 Why both are implemented
 
 The practical question is the condition under which refinement converges.
 
@@ -450,7 +546,7 @@ never explicit access to `L` and `U`. The same code therefore drives SuperLU,
 Block Thomas, MUMPS and cuDSS identically — including the two solvers that
 expose no factors at all.
 
-### 5.4 What is measured
+### 6.4 What is measured
 
 `mpir.py` compares three variants of the **same** solver family, so that the
 comparison isolates the effect of precision and refinement rather than of the
@@ -472,7 +568,7 @@ number; both are recorded per index.
 
 ---
 
-## 6. References
+## 7. References
 
 - N. J. Higham, *Accuracy and Stability of Numerical Algorithms*, 2nd ed.,
   SIAM, 2002. Algorithm 13.3 and its two implementations; Chapter 14 on the

@@ -38,8 +38,8 @@ baseline.
 Usage
 -----
     python plot_speedup.py /scratch/yimili/matrices/hdf5/graphene.h5
-    python plot_speedup.py .../graphene.h5 --out .../plots/graphene_speedup.png
-    python plot_speedup.py .../graphene.h5 --solvers cudss gmres_cupy \
+    python plot_speedup.py .../graphene.h5 --outdir figures
+    python plot_speedup.py .../graphene.h5 --solvers cudss gmres-cupy \
         --suffix _gpu
 """
 
@@ -47,14 +47,18 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parent))
+_HERE = Path(__file__).resolve().parent
+sys.path.append(str(_HERE))
+sys.path.append(str((_HERE / ".." / "solvers").resolve()))
 
 import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 
+import cli
 from style import SOLVER_STYLE, DTYPE_STYLE, legend_handles, save_figure
 
+# Canonical (solver, precision) of the baseline every ratio refers to.
 BASELINE = ("superlu", "complex128")
 FIELDS = (("time_fact", "Factorization time"), ("time_solve", "Solve time"))
 
@@ -79,7 +83,7 @@ def read_timings(h5path, solvers, dtypes):
         for idx in indices:
             for solver in solvers:
                 for dtype in dtypes:
-                    g = f.get(f"E_{idx}/{solver}/{dtype}")
+                    g = f.get(f"E_{idx}/{cli.h5_group(solver)}/{dtype}")
                     if g is None:
                         continue
                     entry = {}
@@ -193,24 +197,25 @@ def plot(times, indices, material, out_path):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("h5path", type=Path, help="material HDF5 file")
-    ap.add_argument("--solvers", nargs="+", default=list(SOLVER_STYLE),
-                    help="HDF5 solver group names to include "
-                         "(default: all known solvers)")
-    ap.add_argument("--dtypes", nargs="+", default=["complex128", "complex64"],
-                    help="precision labels to include")
-    ap.add_argument("--out", type=Path, default=None,
-                    help="output PNG (default: <h5 dir>/../plots/"
-                         "<material>_speedup<suffix>.png)")
-    ap.add_argument("--suffix", type=str, default="",
-                    help="appended to the default output stem, e.g. '_gpu'")
+    ap = cli.new_parser(__doc__)
+    cli.add_h5_input(ap)
+    cli.add_solver_selection(ap, choices=cli.ALL_SOLVERS,
+                             default=cli.ALL_SOLVERS,
+                             help="solvers to include; those absent from the "
+                                  "file are skipped")
+    cli.add_dtypes(ap, choices=cli.COMPLEX_DTYPES,
+                   default=("complex128", "complex64"))
+    cli.add_output(ap, outdir_help="output directory "
+                                   "(default: <h5 dir>/../plots)")
+    ap.add_argument("--suffix", type=str, default="", metavar="TEXT",
+                    help="appended to the output filename stem, e.g. '_gpu'")
     args = ap.parse_args()
 
-    material = args.h5path.stem
-    out_path = args.out or (args.h5path.parent.parent / "plots" /
-                            f"{material}_speedup{args.suffix}.png")
+    args.h5path = Path(args.h5path)
+    material = args.material or args.h5path.stem
+    outdir = Path(args.outdir) if args.outdir \
+        else args.h5path.parent.parent / "plots"
+    out_path = outdir / f"{material}_speedup{args.suffix}.png"
 
     solvers = list(dict.fromkeys([BASELINE[0]] + list(args.solvers)))
     dtypes = list(dict.fromkeys([BASELINE[1]] + list(args.dtypes)))

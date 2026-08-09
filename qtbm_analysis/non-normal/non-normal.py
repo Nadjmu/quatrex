@@ -5,8 +5,9 @@ decomposition of every M(E) in an energy sweep.
 
 Input
 -----
-A material HDF5 file providing E_<idx>/M as a CSC triplet. --indices selects
-the subset of energy indices to process.
+A material HDF5 file providing E_<idx>/M as a CSC triplet. --idx or
+--start/--end select the subset of energy indices to process; the default is
+every index present.
 
 Algorithm
 ---------
@@ -36,7 +37,7 @@ factorization unless --no-memory-check is given.
 
 Output
 ------
-Written to <out-root>/<material>/:
+Written to <outdir>/<material>/:
 
     ratio_matrix.npy                 (num_indices, n)  ratio_i per index
     log_cumulative_ratio_matrix.npy  (num_indices, n)  logcum_k per index
@@ -52,9 +53,9 @@ arrays and renders the per-index frames and the animation.
 
 Usage
 -----
-    python non-normal.py --h5path /scratch/yimili/matrices/hdf5/carbon-chain.h5 \
-        --indices 0:401
-    python plot_non_normal.py /scratch/yimili/non-normal/carbon-chain
+    python non-normal.py /scratch/yimili/matrices/hdf5/carbon-chain.h5 \
+        --start 0 --end 401
+    python ../plotting/plot_non_normal.py /scratch/yimili/non-normal/carbon-chain
 """
 
 import argparse
@@ -97,53 +98,25 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.linalg import svd
 
+sys.path.insert(0, str((Path(__file__).resolve().parent / ".."
+                        / "solvers").resolve()))
+import cli
+
 
 # ============================================================
 # CLI
 # ============================================================
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description=(
-            "Compute the full SVD and eigendecomposition of every E_<index> "
-            "matrix in an HDF5 file and record the singular-value to "
-            "eigenvalue-magnitude ratios."
-        )
-    )
+    parser = cli.new_parser(__doc__)
 
-    parser.add_argument(
-        "--h5path",
-        type=str,
-        required=True,
-        help="Path to HDF5 file, e.g. /scratch/yimili/matrices/hdf5/carbon-chain.h5",
-    )
-
-    parser.add_argument(
-        "--out-root",
-        type=str,
-        default="/scratch/yimili/non-normal",
-        help="Root output folder. Material folder is created inside this.",
-    )
-
-    parser.add_argument(
-        "--material-name",
-        type=str,
-        default=None,
-        help=(
-            "Optional output material name. "
-            "Default: inferred from HDF5 filename stem, e.g. carbon-chain."
-        ),
-    )
-
-    parser.add_argument(
-        "--indices",
-        type=str,
-        default="all",
-        help=(
-            "Indices to process. Use 'all', '0:401', '0:401:2', "
-            "or comma list like '0,5,10,60'."
-        ),
-    )
+    cli.add_h5_input(parser)
+    cli.add_index_selection(parser)
+    cli.add_output(
+        parser,
+        outdir_default="/scratch/yimili/non-normal",
+        outdir_help="root output directory; a per-material subdirectory is "
+                    "created inside it (default: /scratch/yimili/non-normal)")
 
     parser.add_argument(
         "--threads",
@@ -186,52 +159,12 @@ def parse_args():
         help="Disable estimated memory safety check.",
     )
 
-    return parser.parse_args()
+    return parser, parser.parse_args()
 
 
 # ============================================================
 # Helpers
 # ============================================================
-
-def parse_indices_spec(spec, available_indices):
-    available_indices = sorted(available_indices)
-
-    if spec == "all":
-        return available_indices
-
-    if ":" in spec:
-        parts = spec.split(":")
-        if len(parts) not in (2, 3):
-            raise ValueError(
-                "--indices range must look like start:stop or start:stop:step"
-            )
-
-        start = int(parts[0])
-        stop = int(parts[1])
-        step = int(parts[2]) if len(parts) == 3 else 1
-
-        requested = set(range(start, stop, step))
-        selected = [idx for idx in available_indices if idx in requested]
-
-        missing = sorted(requested.difference(selected))
-        if missing:
-            shown = missing[:20]
-            suffix = " ..." if len(missing) > 20 else ""
-            print(f"[warning] requested indices not found: {shown}{suffix}")
-
-        return selected
-
-    requested = set(int(x.strip()) for x in spec.split(",") if x.strip())
-    selected = [idx for idx in available_indices if idx in requested]
-
-    missing = sorted(requested.difference(selected))
-    if missing:
-        shown = missing[:20]
-        suffix = " ..." if len(missing) > 20 else ""
-        print(f"[warning] requested indices not found: {shown}{suffix}")
-
-    return selected
-
 
 def discover_indices(h5_file):
     pattern = re.compile(r"^E_(\d+)$")
@@ -406,18 +339,16 @@ def save_csv(
 # ============================================================
 
 def main():
-    args = parse_args()
+    parser, args = parse_args()
 
     h5_path = Path(args.h5path).expanduser().resolve()
 
     if not h5_path.exists():
         raise FileNotFoundError(f"HDF5 file not found: {h5_path}")
 
-    material_name = args.material_name
-    if material_name is None:
-        material_name = h5_path.stem
+    material_name = args.material or h5_path.stem
 
-    out_root = Path(args.out_root)
+    out_root = Path(args.outdir)
     out_dir = out_root / material_name
 
     ratio_path = out_dir / "ratio_matrix.npy"
@@ -452,7 +383,7 @@ def main():
     print(f"Material name:   {material_name}")
     print(f"Output folder:   {out_dir}")
     print(f"Threads:         {args.threads}")
-    print(f"Indices spec:    {args.indices}")
+
     print(f"Resume:          {args.resume}")
     print(f"Overwrite:       {args.overwrite}")
     print("=" * 72)
@@ -467,7 +398,7 @@ def main():
         if not available_indices:
             raise RuntimeError("No E_<index> groups with M and spectrum found.")
 
-        selected_indices = parse_indices_spec(args.indices, available_indices)
+        selected_indices = cli.resolve_indices(parser, args, available_indices)
         selected_indices = sorted(selected_indices)
 
         if not selected_indices:

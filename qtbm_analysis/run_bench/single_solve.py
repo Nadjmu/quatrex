@@ -6,8 +6,8 @@ Input
 -----
     matrix    a CSR .npz triplet holding data, indices, indptr and shape
     rhs       a .npy right-hand side
-    --solvers which solvers to run
-    --bs / --auto-blocks   the partition, required by the block solvers
+    --solvers which solvers to run, canonical names from solvers/cli.py
+    --block-size / --auto-blocks   the partition, required by the block solvers
 
 Purpose
 -------
@@ -37,9 +37,10 @@ A per-solver report on stdout. Nothing is written to disk.
 Usage
 -----
     python single_solve.py --solvers superlu mumps
-    python single_solve.py --solvers block_thomas block_thomas_inv --bs 104
-    python single_solve.py --solvers block_thomas --auto-blocks
-    python single_solve.py --solvers block_thomas_inv_fp16 --bs 32 --inv-dtype float16
+    python single_solve.py --solvers block-thomas block-thomas-inv --block-size 104
+    python single_solve.py --solvers block-thomas --auto-blocks
+    python single_solve.py --solvers block-thomas-inv-fp16 --block-size 32 \
+        --inv-dtype float16
     python single_solve.py /path/M.npz /path/rhs.npy --solvers superlu umfpack
 """
 
@@ -54,6 +55,8 @@ sys.path.append(str((Path(__file__).parent / ".." / "solvers").resolve()))
 import numpy as np
 import scipy.sparse as sp
 
+import cli
+from cli import BLOCK_SOLVERS
 from solver_classes import (
     SparseLU, UMFPACK, MUMPS, GMRES, extract_blocks_sparse,
     BlockThomas, BlockThomasExplicitInv,
@@ -61,8 +64,8 @@ from solver_classes import (
     block_sizes_from_matrix, offband_nnz,
 )
 
-BLOCK_SOLVERS = ("block_thomas", "block_thomas_inv",
-                 "block_thomas_fp16", "block_thomas_inv_fp16")
+# Solvers this script can drive: the CPU set, since it has no device handling.
+CPU_SOLVERS = ("superlu", "umfpack", "mumps", "gmres") + BLOCK_SOLVERS
 
 DEFAULT_M_PATH = "/scratch/yimili/matrices/dev_12_sorted_BENCH/M_E_0.npz"
 DEFAULT_RHS_PATH = "/scratch/yimili/matrices/dev_12_sorted_BENCH/rhs_E_0.npy"
@@ -113,23 +116,15 @@ def report(label, x, A, b, t_factor, t_solve, mem_factor_bytes,
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("matrix", nargs="?", default=DEFAULT_M_PATH)
-    parser.add_argument("rhs", nargs="?", default=DEFAULT_RHS_PATH)
-    parser.add_argument("--solvers", nargs="+", default=["superlu"],
-                        choices=["superlu", "umfpack", "mumps", "gmres"]
-                                + list(BLOCK_SOLVERS))
-    parser.add_argument("--bs", type=int, default=None,
-                        help="uniform block size, required for the block_thomas* "
-                             "solvers unless --auto-blocks is given")
-    parser.add_argument("--auto-blocks", action="store_true",
-                        help="derive a custom non-uniform partition from the "
-                             "sparsity pattern instead of using --bs")
-    parser.add_argument("--inv-dtype", choices=["float32", "float16", "float64"],
-                        default="float32",
-                        help="precision in which block_thomas_inv_fp16 forms its "
-                             "explicit inverses (default float32)")
-    args = parser.parse_args()
+    ap = cli.new_parser(__doc__)
+    ap.add_argument("matrix", nargs="?", default=DEFAULT_M_PATH,
+                    help="CSR .npz triplet (data, indices, indptr, shape)")
+    ap.add_argument("rhs", nargs="?", default=DEFAULT_RHS_PATH,
+                    help=".npy right-hand side")
+    cli.add_solver_selection(ap, choices=CPU_SOLVERS, default=("superlu",))
+    cli.add_block_partition(ap)
+    cli.add_inv_dtype(ap)
+    args = ap.parse_args()
 
     A = load_matrix(args.matrix)
 
@@ -183,12 +178,12 @@ def main():
             partition = block_sizes_from_matrix(A)
             print(f"[prep] {len(partition)} blocks, "
                   f"sizes {min(partition)}..{max(partition)}", flush=True)
-        elif args.bs is not None:
-            partition = args.bs
+        elif args.block_size is not None:
+            partition = args.block_size
         else:
             partition = None
             print(f"\n--- {', '.join(wanted_blocks)} ---\n"
-                  f"  skipped (pass --bs <block_size> or --auto-blocks)")
+                  f"  skipped (pass --block-size M or --auto-blocks)")
 
         if partition is not None:
             # A partition that cuts a real coupling yields a wrong solution
@@ -205,13 +200,13 @@ def main():
 
             inv_dtype = getattr(np, args.inv_dtype)
             variants = [
-                ("block_thomas",          "Block Thomas (LU)",
+                ("block-thomas",          "Block Thomas (LU)",
                  lambda: BlockThomas(D, L, U, DTYPE)),
-                ("block_thomas_inv",      "Block Thomas (explicit inv)",
+                ("block-thomas-inv",      "Block Thomas (explicit inv)",
                  lambda: BlockThomasExplicitInv(D, L, U, DTYPE)),
-                ("block_thomas_fp16",     "Block Thomas fp16 (LU)",
+                ("block-thomas-fp16",     "Block Thomas fp16 (LU)",
                  lambda: BlockThomasFP16(D, L, U)),
-                ("block_thomas_inv_fp16", f"Block Thomas fp16 (inv in {args.inv_dtype})",
+                ("block-thomas-inv-fp16", f"Block Thomas fp16 (inv in {args.inv_dtype})",
                  lambda: BlockThomasExplicitInvFP16(D, L, U, inv_dtype=inv_dtype)),
             ]
             for key, label, ctor in variants:

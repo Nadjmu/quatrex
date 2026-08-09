@@ -86,7 +86,7 @@ DTYPES = (np.complex128, np.complex64)
 # does not reach a useful tolerance on these systems, so it is excluded rather
 # than recorded as a failure.
 EXCLUDE = {"gmres": {"complex64"},
-           "gmres_cupy": {"complex64"}}
+           "gmres-cupy": {"complex64"}}
 
 
 def resolve_partition(material, M_first):

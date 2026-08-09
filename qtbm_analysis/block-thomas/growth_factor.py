@@ -61,10 +61,10 @@ A_eff is solver dependent
 Each solver's factors reconstruct a different matrix, and using ||A|| as the
 denominator throughout would misreport UMFPACK:
 
-    blockthomas      A                          == L U
-    blockthomas_inv  A                          == L U
-    superlu          Pr A Pc                    == L U
-    umfpack          Pr diag(1/R) A Pc          == L U
+    block-thomas       A                        == L U
+    block-thomas-inv   A                        == L U
+    superlu            Pr A Pc                  == L U
+    umfpack            Pr diag(1/R) A Pc        == L U
 
 A permutation alone leaves the 1-norm and the infinity norm unchanged: a row
 permutation reorders rows, and a column permutation permutes entries within
@@ -80,7 +80,7 @@ the solver did, from the recorded partition.
 
 Output
 ------
-    <plotdir>/<material>_growth_factor.csv
+    <outdir>/<material>_growth_factor.csv
 
 one row per (index, solver, dtype, norm), plus a per-index report on stdout.
 No figures are produced; see plotting/plot_growth_factor.py, which consumes the
@@ -91,7 +91,7 @@ Usage
     python growth_factor.py /scratch/yimili/matrices/hdf5/graphene.h5 --idx 25
     python growth_factor.py .../graphene.h5 --start 1 --end 400
     python growth_factor.py .../graphene.h5 --start 1 --end 400 \
-        --solvers blockthomas superlu umfpack --dtype complex128
+        --solvers block-thomas superlu umfpack --dtypes complex128
     python ../plotting/plot_growth_factor.py \
         /scratch/yimili/block-thomas/graphene_growth_factor.csv
 """
@@ -109,15 +109,13 @@ import scipy.sparse as sp
 import scipy.linalg as sla
 from scipy.sparse.linalg import norm as spnorm
 
+import cli
+from cli import COMPLEX_DTYPES as DTYPES, FACTOR_SOLVERS as SOLVERS
 from factor_io import load_sparse_factor, load_blocks
 from solver_classes import extract_blocks_sparse, embed_block
 
-# "complex32" is not a NumPy dtype; it is the storage label used for the
-# half-precision embedded-real factorizations.
-DTYPES = ("complex128", "complex64", "complex32")
-SOLVERS = ("blockthomas", "blockthomas_inv", "superlu", "umfpack")
 NORMS = ("1-norm", "inf-norm")
-DEFAULT_OUTDIR = Path("/scratch/yimili/block-thomas")
+DEFAULT_OUTDIR = "/scratch/yimili/block-thomas"
 
 
 # ---------------------------------------------------------------------------
@@ -328,11 +326,12 @@ def assemble_umfpack(group, A):
     return (Pr @ A_scaled @ Pc).tocsc(), L.tocsc(), U.tocsc()
 
 
+# Keyed by canonical solver name; see solvers/cli.py.
 ASSEMBLERS = {
-    "blockthomas":     assemble_blockthomas_lu,
-    "blockthomas_inv": assemble_blockthomas_inv_lu,
-    "superlu":         assemble_superlu,
-    "umfpack":         assemble_umfpack,
+    "block-thomas":     assemble_blockthomas_lu,
+    "block-thomas-inv": assemble_blockthomas_inv_lu,
+    "superlu":          assemble_superlu,
+    "umfpack":          assemble_umfpack,
 }
 
 
@@ -425,7 +424,7 @@ def process_index(f, idx, solvers, dtypes, records):
     per_key = {}
 
     for solver in solvers:
-        root = f.get(f"E_{idx}/{solver}")
+        root = f.get(f"E_{idx}/{cli.h5_group(solver)}")
         if root is None:
             print(f"    {solver}: no group at this index, skipping")
             continue
@@ -487,36 +486,30 @@ def write_csv(records, csv_path):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("h5path", type=Path, help="material HDF5 file")
-    grp = ap.add_mutually_exclusive_group(required=True)
-    grp.add_argument("--idx", type=int, help="a single energy index")
-    grp.add_argument("--start", type=int, help="first index, inclusive, with --end")
-    ap.add_argument("--end", type=int, help="last index, inclusive, with --start")
-    ap.add_argument("--solvers", nargs="+", choices=list(SOLVERS),
-                    default=list(SOLVERS),
-                    help="solvers whose stored factors to analyse "
-                         "(default: all that are present)")
-    ap.add_argument("--dtype", choices=list(DTYPES), default=None,
-                    help="restrict to one precision (default: all present)")
-    ap.add_argument("--outdir", type=Path, default=DEFAULT_OUTDIR,
-                    help=f"where to write the CSV (default: {DEFAULT_OUTDIR})")
+    ap = cli.new_parser(__doc__)
+    cli.add_h5_input(ap)
+    cli.add_index_selection(ap, default_all=False)
+    cli.add_solver_selection(
+        ap, choices=SOLVERS, default=SOLVERS,
+        help="solvers whose stored factors to analyse; those absent from the "
+             "file are skipped")
+    cli.add_dtypes(ap, choices=DTYPES, default=DTYPES,
+                   help="precisions to analyse; those absent are skipped")
+    cli.add_output(ap, material=True, outdir_default=DEFAULT_OUTDIR,
+                   outdir_help=f"where to write the CSV "
+                               f"(default: {DEFAULT_OUTDIR})")
     ap.add_argument("--no-csv", action="store_true",
                     help="print the per-index report only, write no CSV")
     args = ap.parse_args()
 
-    if args.start is not None and args.end is None:
-        ap.error("--start requires --end")
-    indices = [args.idx] if args.idx is not None else range(args.start, args.end + 1)
-    dtypes = (args.dtype,) if args.dtype else DTYPES
-
-    material = args.h5path.stem
+    h5path = Path(args.h5path)
+    indices = cli.resolve_indices(ap, args)
+    material = args.material or h5path.stem
     records = []
 
-    with h5py.File(args.h5path, "r") as f:
+    with h5py.File(h5path, "r") as f:
         for idx in indices:
-            process_index(f, idx, args.solvers, dtypes, records)
+            process_index(f, idx, args.solvers, args.dtypes, records)
 
     if args.no_csv:
         return
@@ -524,8 +517,9 @@ def main():
         print("no metrics collected; nothing to write")
         return
 
-    args.outdir.mkdir(parents=True, exist_ok=True)
-    csv_path = args.outdir / f"{material}_growth_factor.csv"
+    outdir = Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    csv_path = outdir / f"{material}_growth_factor.csv"
     write_csv(records, csv_path)
     print(f"Plot with: python ../plotting/plot_growth_factor.py {csv_path}")
 

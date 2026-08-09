@@ -9,7 +9,7 @@ Input
     --solver           which solver family provides the low-precision
                        factorization: superlu, umfpack, mumps, block_thomas or
                        cudss
-    --low-dtype        the factorization precision, u_f below
+    --factor-dtype     the factorization precision, u_f below
     --inner            the inner correction solve, direct or gmres
     --tol, --max-iter  the outer convergence criterion
 
@@ -21,7 +21,7 @@ Iterative refinement solves A x = b by computing a solution in a low precision
 and correcting it using residuals computed in a higher one. Three precisions
 appear in the modern analysis (Carson and Higham, 2017 and 2018):
 
-    u_f   the precision of the factorization, --low-dtype here
+    u_f   the precision of the factorization, --factor-dtype here
     u     the working precision, in which x and the corrections are stored,
           complex128 here
     u_r   the precision in which the residual is computed, complex128 here
@@ -93,8 +93,8 @@ implementation:
 Limitations
 -----------
 UMFPACK has no single-precision build, so solver_classes.UMFPACK raises
-TypeError for --low-dtype complex64. This is a property of the library and not
-of this script; select a different solver for a low-precision comparison.
+TypeError for --factor-dtype complex64. This is a property of the library and
+not of this script; select a different solver for a low-precision comparison.
 
 The first cuDSS call in a process pays a fixed start-up cost for CUDA context
 creation and kernel compilation that is independent of problem size, measured
@@ -111,18 +111,18 @@ sweeps and figures see c32_gmres_ir.py and plotting/plot_mixed_prec_ir.py.
 
 Usage
 -----
-    python mpir.py /scratch/yimili/matrices/hdf5/carbon-nanotube.h5 \\
-        --idx 5 --solver superlu --low-dtype complex64
+    python mpir.py .../carbon-nanotube.h5 --idx 5 --solver superlu \\
+        --factor-dtype complex64
 
-    python mpir.py /scratch/yimili/matrices/hdf5/carbon-nanotube.h5 \\
-        --idx 5 --solver block_thomas --bs 32 --low-dtype complex64
+    python mpir.py .../carbon-nanotube.h5 --idx 5 --solver block-thomas \\
+        --block-size 32 --factor-dtype complex64
 
-    python mpir.py /scratch/yimili/matrices/hdf5/si-bulk.h5 \\
-        --idx 254 --solver mumps --low-dtype complex64 --inner gmres \\
-        --gmres-tol 1e-8 --gmres-restart 30 --gmres-maxiter 50
+    python mpir.py .../si-bulk.h5 --idx 254 --solver mumps \\
+        --factor-dtype complex64 --inner gmres --gmres-tol 1e-8 \\
+        --gmres-restart 30 --gmres-max-iter 50
 
-    python mpir.py /scratch/yimili/matrices/hdf5/si-bulk.h5 \\
-        --idx 254 --solver cudss --low-dtype complex64
+    python mpir.py .../si-bulk.h5 --idx 254 --solver cudss \\
+        --factor-dtype complex64
 
 References
 ----------
@@ -152,6 +152,7 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
 sys.path.append(str((Path(__file__).parent / ".." / "solvers").resolve()))
+import cli
 from solver_classes import (
     SparseLU, UMFPACK, MUMPS, BlockThomas, CuDSS, extract_blocks_sparse,
 )
@@ -213,7 +214,7 @@ class _PeakRSSTracker:
 
 def _build_block_thomas(A, dtype, bs, b):
     if bs is None:
-        raise ValueError("--bs is required for --solver block_thomas")
+        raise ValueError("--block-size is required for --solver block-thomas")
     D, L, U = extract_blocks_sparse(A, bs)
     return BlockThomas(D, L, U, dtype=dtype)
 
@@ -293,11 +294,12 @@ class _CuDSSSolver:
             self._one.free()
 
 
+# Keyed by canonical solver name; see solvers/cli.py.
 SOLVER_BUILDERS = {
     "superlu":      lambda A, dtype, bs, b: SparseLU(A, dtype=dtype),
     "umfpack":      lambda A, dtype, bs, b: UMFPACK(A, dtype=dtype),
     "mumps":        lambda A, dtype, bs, b: MUMPS(A, dtype=dtype),
-    "block_thomas": _build_block_thomas,
+    "block-thomas": _build_block_thomas,
     "cudss":        lambda A, dtype, bs, b: _CuDSSSolver(
         A, dtype, b.shape[1] if np.asarray(b).ndim == 2 else 1),
 }
@@ -414,7 +416,7 @@ def _gmres_solve(A_op, rhs, M_op, tol, restart, maxiter, callback):
 
 
 def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
-                   gmres_tol=1e-8, gmres_restart=30, gmres_maxiter=50):
+                   gmres_tol=1e-8, gmres_restart=30, gmres_max_iter=50):
     """
     GMRES-IR: iterative refinement whose correction solve is preconditioned
     GMRES at the working precision.
@@ -492,7 +494,7 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
                 counter[0] += 1
 
             dj, info = _gmres_solve(A_op, r2[:, j], M_op, gmres_tol, gmres_restart,
-                                    gmres_maxiter, callback=_cb)
+                                    gmres_max_iter, callback=_cb)
             if info != 0:
                 warnings.warn(
                     f"GMRES-IR: inner GMRES did not fully converge for rhs "
@@ -643,7 +645,7 @@ def benchmark_solver(fn, A_high, b_high, repeats, x_true=None):
 
 def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repeats,
                    reference_solver=None, inner="direct",
-                   gmres_tol=1e-8, gmres_restart=30, gmres_maxiter=50):
+                   gmres_tol=1e-8, gmres_restart=30, gmres_max_iter=50):
     A, b = load_system(h5path, idx)
     A_high = A.tocsc().astype(HIGH_DTYPE)
     b_high = np.asarray(b, dtype=HIGH_DTYPE)
@@ -657,7 +659,7 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
         inner_label = "GMRES-IR"
         print(f"Inner   : GMRES(A) in complex128, preconditioned by {solver_name} "
               f"{low_name}   [gmres_tol={gmres_tol:.1e}  restart={gmres_restart}  "
-              f"maxiter={gmres_maxiter}]")
+              f"max_iter={gmres_max_iter}]")
     else:
         inner_label = "LU-IR"
         print(f"Inner   : single {low_name} triangular solve (classic LU-IR)")
@@ -696,7 +698,7 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
         ir_fn = lambda: solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter,
                                        x_true=x_true, gmres_tol=gmres_tol,
                                        gmres_restart=gmres_restart,
-                                       gmres_maxiter=gmres_maxiter)
+                                       gmres_max_iter=gmres_max_iter)
     else:
         ir_fn = lambda: solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter,
                                        x_true=x_true)
@@ -805,41 +807,54 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("h5path", type=Path, help="material HDF5 file")
-    parser.add_argument("--idx", type=int, required=True)
-    parser.add_argument("--solver", choices=list(SOLVER_BUILDERS), default="superlu")
-    parser.add_argument("--bs", type=int, default=None,
-                        help="block size, required for --solver block_thomas")
-    parser.add_argument("--low-dtype", choices=["complex64", "complex128"],
-                        default="complex64")
-    parser.add_argument("--tol", type=float, default=1e-14)
-    parser.add_argument("--max-iter", type=int, default=10)
-    parser.add_argument("--repeats", type=int, default=1)
-    parser.add_argument("--reference-solver", choices=["superlu", "mumps"], default="superlu",
-                        help="compute x_true via this solver at complex128 and report "
-                             "||x-x_true||/||x_true|| for every variant (default: off, "
-                             "residual-only)")
-    parser.add_argument("--inner", choices=["direct", "gmres"], default="direct",
-                        help="inner correction solve: 'direct' = classic LU-IR "
-                             "(single low-precision triangular solve, default); "
-                             "'gmres' = GMRES-IR (GMRES in complex128 preconditioned "
-                             "by the low-precision factorization)")
-    parser.add_argument("--gmres-tol", type=float, default=1e-8,
-                        help="relative tolerance for the inner GMRES solve "
-                             "(--inner gmres only)")
-    parser.add_argument("--gmres-restart", type=int, default=30,
-                        help="GMRES restart parameter (--inner gmres only)")
-    parser.add_argument("--gmres-maxiter", type=int, default=50,
-                        help="max GMRES (restart cycles/iterations) per outer IR "
-                             "step (--inner gmres only)")
-    args = parser.parse_args()
+    ap = cli.new_parser(__doc__)
+    cli.add_h5_input(ap)
+    cli.add_index_selection(ap, default_all=False)
+    cli.add_solver_selection(ap, choices=tuple(SOLVER_BUILDERS),
+                             default="superlu", multiple=False)
+    cli.add_block_partition(ap, auto=False)
+    cli.add_factor_dtype(
+        ap, default="complex64",
+        help="precision of the low-precision factorization, u_f "
+             "(default: complex64)")
+    ap.add_argument("--inner", choices=["direct", "gmres"], default="direct",
+                    help="inner correction solve: 'direct' is classic LU-IR, "
+                         "a single low-precision triangular solve; 'gmres' is "
+                         "GMRES-IR, GMRES in complex128 preconditioned by the "
+                         "low-precision factorization")
+    ap.add_argument("--tol", type=float, default=1e-14,
+                    help="outer convergence tolerance on ||r||/||b||")
+    ap.add_argument("--max-iter", type=int, default=10, metavar="N",
+                    help="maximum outer refinement iterations")
+    ap.add_argument("--repeats", type=int, default=1,
+                    help="repeats per variant; the median is reported")
+    ap.add_argument("--reference-solver", choices=["superlu", "mumps"],
+                    default="superlu", metavar="NAME",
+                    help="compute x_true with this solver at complex128 and "
+                         "report ||x - x_true||/||x_true|| for every variant")
+    ap.add_argument("--gmres-tol", type=float, default=1e-8,
+                    help="relative tolerance of the inner GMRES solve "
+                         "(--inner gmres only)")
+    ap.add_argument("--gmres-restart", type=int, default=30,
+                    help="inner GMRES restart parameter (--inner gmres only)")
+    ap.add_argument("--gmres-max-iter", type=int, default=50,
+                    help="maximum inner GMRES iterations per outer step "
+                         "(--inner gmres only)")
+    args = ap.parse_args()
 
-    run_benchmarks(args.h5path, args.idx, args.solver, args.bs,
-                   np.dtype(args.low_dtype), args.tol, args.max_iter, args.repeats,
-                   reference_solver=args.reference_solver, inner=args.inner,
-                   gmres_tol=args.gmres_tol, gmres_restart=args.gmres_restart,
-                   gmres_maxiter=args.gmres_maxiter)
+    h5path = Path(args.h5path)
+    indices = cli.resolve_indices(ap, args)
+    factor_dtype = np.dtype(args.factor_dtype)
+
+    for idx in indices:
+        if len(indices) > 1:
+            print("=" * 78)
+        run_benchmarks(h5path, idx, args.solver, args.block_size,
+                       factor_dtype, args.tol, args.max_iter, args.repeats,
+                       reference_solver=args.reference_solver,
+                       inner=args.inner, gmres_tol=args.gmres_tol,
+                       gmres_restart=args.gmres_restart,
+                       gmres_max_iter=args.gmres_max_iter)
 
 
 if __name__ == "__main__":

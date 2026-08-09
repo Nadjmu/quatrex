@@ -56,11 +56,14 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parent))
+_HERE = Path(__file__).resolve().parent
+sys.path.append(str(_HERE))
+sys.path.append(str((_HERE / ".." / "solvers").resolve()))
 
 import numpy as np
 import matplotlib.pyplot as plt
 
+import cli
 from style import save_figure
 
 
@@ -140,23 +143,19 @@ def plot_singular_values(energies, sigma_max, sigma_min, band_edge, material,
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = cli.new_parser(__doc__)
     ap.add_argument("data_dir", type=Path,
                     help="per-material directory written by main3.py")
-    ap.add_argument("--material", type=str, default=None,
-                    help="label for titles and filenames "
-                         "(default: the directory name)")
-    ap.add_argument("--zoom", type=float, default=0.1,
+    ap.add_argument("--zoom", type=float, default=0.1, metavar="EV",
                     help="half-width in eV of the band-edge window in the "
                          "spectrum figure")
-    ap.add_argument("--outdir", type=Path, default=None,
-                    help="output directory (default: the input directory)")
+    cli.add_output(ap, outdir_help="output directory "
+                                   "(default: the input directory)")
     args = ap.parse_args()
 
     data_dir = args.data_dir.expanduser().resolve()
     material = args.material or data_dir.name
-    outdir = args.outdir or data_dir
+    outdir = Path(args.outdir) if args.outdir else data_dir
 
     energies = load_optional(data_dir, "energies.npy")
     band_edge_arr = load_optional(data_dir, "band_edge.npy")

@@ -61,11 +61,14 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-sys.path.append(str(Path(__file__).resolve().parent))
+_HERE = Path(__file__).resolve().parent
+sys.path.append(str(_HERE))
+sys.path.append(str((_HERE / ".." / "solvers").resolve()))
 
 import numpy as np
 import matplotlib.pyplot as plt
 
+import cli
 from style import save_figure
 
 # Variant identity. Keys are matched case-sensitively against the CSV column;
@@ -197,22 +200,18 @@ def plot_error_vs_condition(series, material, out_path):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = cli.new_parser(__doc__)
     ap.add_argument("csv_path", type=Path,
                     help="CSV written by mixed_prec_ir/c32_gmres_ir.py")
-    ap.add_argument("--material", type=str, default=None,
-                    help="label for titles and filenames (default: CSV stem "
-                         "with '_fp16_gmres_ir' removed)")
     ap.add_argument("--variants", nargs="+", default=None,
                     help="restrict to these variants, in this order "
                          "(default: all present)")
-    ap.add_argument("--outdir", type=Path, default=None,
-                    help="output directory (default: the CSV's directory)")
+    cli.add_output(ap, outdir_help="output directory "
+                                   "(default: the CSV's directory)")
     args = ap.parse_args()
 
     material = args.material or args.csv_path.stem.replace("_fp16_gmres_ir", "")
-    outdir = args.outdir or args.csv_path.parent
+    outdir = Path(args.outdir) if args.outdir else args.csv_path.parent
 
     series = group_by_variant(read_records(args.csv_path), args.variants)
     if not series:

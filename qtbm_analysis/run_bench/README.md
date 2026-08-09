@@ -11,7 +11,9 @@ HDF5 file or to a CSV, and the corresponding figure is produced by a script in
 [the pipeline description](../README.md#2-the-pipeline).
 
 Each script resolves `../solvers` relative to its own file rather than to the
-working directory, so it runs correctly from anywhere.
+working directory, so it runs correctly from anywhere, and builds its parser
+from `solvers/cli.py`, so the option names match every other script; see
+[the top-level README, section 3](../README.md#3-command-line-conventions).
 
 | Script | Function |
 |---|---|
@@ -63,7 +65,7 @@ precision does not reach a useful tolerance on these systems, so it is excluded
 rather than recorded as a failure:
 
 ```python
-EXCLUDE = {"gmres": {"complex64"}, "gmres_cupy": {"complex64"}}
+EXCLUDE = {"gmres": {"complex64"}, "gmres-cupy": {"complex64"}}
 ```
 
 ---
@@ -75,9 +77,10 @@ at every stage, and peak RSS alongside the solver-reported factor memory.
 
 ```bash
 python single_solve.py --solvers superlu mumps
-python single_solve.py --solvers block_thomas block_thomas_inv --bs 104
-python single_solve.py --solvers block_thomas --auto-blocks
-python single_solve.py --solvers block_thomas_inv_fp16 --bs 32 --inv-dtype float16
+python single_solve.py --solvers block-thomas block-thomas-inv --block-size 104
+python single_solve.py --solvers block-thomas --auto-blocks
+python single_solve.py --solvers block-thomas-inv-fp16 --block-size 32 \
+    --inv-dtype float16
 python single_solve.py /path/M.npz /path/rhs.npy --solvers superlu umfpack
 ```
 
@@ -86,11 +89,11 @@ solver believes it stores, while the peak RSS delta is what the process
 actually consumed, including workspace and fill-in the solver does not account
 for.
 
-Block solvers require either `--bs` or `--auto-blocks`; the partition is
+Block solvers require either `--block-size` or `--auto-blocks`; the partition is
 checked with `offband_nnz` and the run **aborts** rather than returning a
 silently wrong solution. `--inv-dtype` sets the precision in which the
 half-precision explicit-inverse variant forms its inverses; see the
-[solvers README](../solvers/README.md#21-inv_dtype-the-mixed-precision-parameter).
+[solvers README](../solvers/README.md#31-inv_dtype-the-mixed-precision-parameter).
 
 ---
 
@@ -100,9 +103,9 @@ Accuracy sweep of both half-precision variants across a material's energy
 range, against the stored `complex128` Block Thomas solution as reference.
 
 ```bash
-python sweep_fp16.py --h5path .../carbon-nanotube.h5 --start 0 --end 401 --bs 32
-python sweep_fp16.py --h5path .../graphene.h5 --start 0 --end 401 --auto-blocks
-python sweep_fp16.py --h5path .../graphene.h5 --start 0 --end 50 --inv-dtype float16
+python sweep_fp16.py .../carbon-nanotube.h5 --start 0 --end 401 --block-size 32
+python sweep_fp16.py .../graphene.h5 --start 0 --end 401 --auto-blocks
+python sweep_fp16.py .../graphene.h5 --idx 0 25 50 --inv-dtype float16
 python ../plotting/plot_fp16_accuracy.py plots/graphene_metrics.csv
 ```
 

@@ -18,11 +18,11 @@ back into the HDF5 file, so a sweep may be repeated freely.
 
 Algorithm
 ---------
-For every energy index in [--start, --end]:
+For every selected energy index:
 
 1. Extract the block-tridiagonal blocks of M under the requested partition,
-   either the uniform --bs or, with --auto-blocks, the partition detected from
-   the sparsity pattern once on the first matrix.
+   either the uniform --block-size or, with --auto-blocks, the partition
+   detected from the sparsity pattern once on the first matrix.
 2. Solve M x = b with both half-precision variants,
        implementation 1  BlockThomasFP16             LU with substitution,
        implementation 2  BlockThomasExplicitInvFP16  explicit block inverses.
@@ -59,9 +59,9 @@ CSV.
 
 Usage
 -----
-    python sweep_fp16.py --h5path .../carbon-nanotube.h5 --start 0 --end 401 --bs 32
-    python sweep_fp16.py --h5path .../graphene.h5 --start 0 --end 401 --auto-blocks
-    python sweep_fp16.py --h5path .../graphene.h5 --start 0 --end 50 --inv-dtype float16
+    python sweep_fp16.py .../carbon-nanotube.h5 --start 0 --end 401 --block-size 32
+    python sweep_fp16.py .../graphene.h5 --start 0 --end 401 --auto-blocks
+    python sweep_fp16.py .../graphene.h5 --idx 0 25 50 --inv-dtype float16
     python ../plotting/plot_fp16_accuracy.py plots/carbon-nanotube_metrics.csv
 """
 
@@ -76,6 +76,7 @@ import h5py
 import numpy as np
 import scipy.sparse as sp
 
+import cli
 from solver_classes import (
     extract_blocks_sparse, block_sizes_from_matrix, offband_nnz,
     BlockThomasFP16, BlockThomasExplicitInvFP16,
@@ -87,34 +88,18 @@ CSV_COLUMNS = ["idx", "relres_fp16", "relres_fp16_inv",
 
 
 def parse_args():
-    p = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--h5path", type=str,
-                   default="/scratch/yimili/matrices/hdf5/carbon-nanotube.h5",
-                   help="material HDF5 file")
-    p.add_argument("--material", type=str, default=None,
-                   help="tag for output filenames (default: the h5 stem)")
-    p.add_argument("--bs", type=int, default=32,
-                   help="uniform block size, ignored under --auto-blocks")
-    p.add_argument("--auto-blocks", action="store_true",
-                   help="derive a non-uniform partition from the sparsity "
-                        "pattern instead of using --bs. The pattern is the "
-                        "same at every energy index, so it is detected once "
-                        "on the first matrix processed.")
-    p.add_argument("--inv-dtype", choices=["float32", "float16", "float64"],
-                   default="float32",
-                   help="precision in which implementation 2 forms its "
-                        "explicit inverses before rounding them to fp16")
-    p.add_argument("--start", type=int, default=0,
-                   help="first energy index, inclusive")
-    p.add_argument("--end", type=int, default=401,
-                   help="last energy index, inclusive")
-    p.add_argument("--cond-path", type=str, default="global/condition_full_svd",
-                   help="dataset holding one condition number per index")
-    p.add_argument("--outdir", type=str, default=None,
-                   help="output directory (default: <script_dir>/plots)")
-    return p.parse_args()
+    ap = cli.new_parser(__doc__)
+    cli.add_h5_input(ap, required=False,
+                     default="/scratch/yimili/matrices/hdf5/carbon-nanotube.h5")
+    cli.add_index_selection(ap)
+    cli.add_block_partition(ap, default_block_size=32)
+    cli.add_inv_dtype(ap)
+    ap.add_argument("--cond-path", type=str,
+                    default="global/condition_full_svd", metavar="PATH",
+                    help="dataset holding one condition number per index")
+    cli.add_output(ap, outdir_help="output directory "
+                                   "(default: <script_dir>/plots)")
+    return ap, ap.parse_args()
 
 
 def load_matrix(g):
@@ -130,8 +115,9 @@ def resolve_partition(M, partition, auto_blocks):
 
     Returns `partition` unchanged unless --auto-blocks was given and no
     partition has been detected yet, in which case it is derived from the
-    sparsity pattern and validated. Detection happens once because the pattern
-    does not depend on the energy index.
+    sparsity pattern and validated. `partition` is None on the first call under
+    --auto-blocks. Detection happens once because the pattern does not depend
+    on the energy index.
 
     Raises ValueError if the detected partition is not block tridiagonal:
     extract_blocks_sparse would then silently discard the out-of-band entries
@@ -149,7 +135,7 @@ def resolve_partition(M, partition, auto_blocks):
     return partition
 
 
-def sweep(args, inv_dtype):
+def sweep(args, indices, inv_dtype):
     """
     Run both half-precision variants over the requested index range.
 
@@ -158,7 +144,7 @@ def sweep(args, inv_dtype):
     a list of (index, exception repr).
     """
     rows, failed = [], []
-    partition = args.bs
+    partition = cli.resolve_partition(args)
 
     with h5py.File(args.h5path, "r") as f:
         cond_arr = f[args.cond_path][:] if args.cond_path in f else None
@@ -166,7 +152,7 @@ def sweep(args, inv_dtype):
             print(f"warning: '{args.cond_path}' not found in {args.h5path}; "
                   f"the condition-number column will be NaN.")
 
-        for idx in range(args.start, args.end + 1):
+        for idx in indices:
             key = f"E_{idx}"
             try:
                 if key not in f:
@@ -224,7 +210,7 @@ def write_csv(rows, csv_path):
         writer.writerows(rows)
 
 
-def write_txt(rows, txt_path, args, partition, part_desc, failed, n_requested):
+def write_txt(rows, txt_path, args, partition, part_desc, failed, indices):
     with open(txt_path, "w") as fh:
         fh.write(f"material   : {args.material}\n")
         fh.write(f"h5path     : {args.h5path}\n")
@@ -232,8 +218,8 @@ def write_txt(rows, txt_path, args, partition, part_desc, failed, n_requested):
         if isinstance(partition, (list, tuple)):
             fh.write(f"block sizes: {list(partition)}\n")
         fh.write(f"inv dtype  : {args.inv_dtype} (implementation 2)\n")
-        fh.write(f"requested  : idx {args.start}..{args.end} "
-                 f"({n_requested} indices)\n")
+        fh.write(f"requested  : idx {indices[0]}..{indices[-1]} "
+                 f"({len(indices)} indices)\n")
         fh.write(f"completed  : {len(rows)}\n")
         fh.write(f"failed     : {len(failed)}\n")
         if failed:
@@ -252,19 +238,27 @@ def write_txt(rows, txt_path, args, partition, part_desc, failed, n_requested):
 
 
 def main():
-    args = parse_args()
+    ap, args = parse_args()
     args.material = args.material or Path(args.h5path).stem
+
+    with h5py.File(args.h5path, "r") as f:
+        available = ([int(i) for i in f["metadata/indices"][:]]
+                     if "metadata/indices" in f
+                     else sorted(int(k[2:]) for k in f if k.startswith("E_")))
+    indices = cli.resolve_indices(ap, args, available)
+    if not indices:
+        raise SystemExit("no requested index is present in the file")
 
     outdir = Path(args.outdir or Path(__file__).resolve().parent / "plots")
     outdir.mkdir(parents=True, exist_ok=True)
 
     inv_dtype = getattr(np, args.inv_dtype)
-    rows, partition, failed = sweep(args, inv_dtype)
+    rows, partition, failed = sweep(args, indices, inv_dtype)
 
-    n_requested = args.end - args.start + 1
     part_desc = (f"{len(partition)} custom blocks"
-                 if isinstance(partition, (list, tuple)) else f"bs={partition}")
-    print(f"\nCompleted {len(rows)}/{n_requested} indices "
+                 if isinstance(partition, (list, tuple))
+                 else f"block size {partition}")
+    print(f"\nCompleted {len(rows)}/{len(indices)} indices "
           f"({args.material}, {part_desc}).")
     if failed:
         print(f"{len(failed)} indices failed or were skipped, e.g.:")
@@ -274,7 +268,7 @@ def main():
     csv_path = outdir / f"{args.material}_metrics.csv"
     txt_path = outdir / f"{args.material}_metrics.txt"
     write_csv(rows, csv_path)
-    write_txt(rows, txt_path, args, partition, part_desc, failed, n_requested)
+    write_txt(rows, txt_path, args, partition, part_desc, failed, indices)
 
     print(f"\nwrote {csv_path}\nwrote {txt_path}")
     print(f"Plot with: python ../plotting/plot_fp16_accuracy.py {csv_path}")
