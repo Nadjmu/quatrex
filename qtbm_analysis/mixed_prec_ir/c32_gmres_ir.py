@@ -1,101 +1,119 @@
 #!/usr/bin/env python3
 """
-test_fp16_gmres_ir.py -- isolate ONE question:
+Half-precision Block Thomas as a GMRES-IR preconditioner, over an energy sweep.
 
-    Can BlockThomasFP16 (half-precision block Thomas) serve as a usable
-    preconditioner for GMRES-IR, i.e. does GMRES-IR recover accuracy that
-    the raw fp16 solve cannot?
+Question
+--------
+A half-precision Block Thomas factorization has a unit roundoff of u = 2^-11,
+so a direct solve with it delivers a relative residual near 5e-4 and a forward
+error of kappa_2(M) times that. Classical iterative refinement cannot repair
+this on the QTBM systems, because its convergence requires roughly
+kappa_inf(M) u_f < 1, that is kappa below about 1e3.
 
-Nothing in mpir.py / solver_classes.py / half_blockthomas.py is modified.
-This script only IMPORTS from them and registers one extra builder into
-mpir.SOLVER_BUILDERS at runtime (an in-memory dict insertion, not an edit
-to the file on disk), so that mpir's own solve_gmres_ir / solve_mixed_ir /
-solve_direct / benchmark_solver can drive the fp16 solver unchanged.
+This script measures whether GMRES-IR does: whether GMRES at complex128,
+preconditioned by the half-precision factorization, recovers double-precision
+accuracy at the condition numbers these matrices exhibit. If it does,
+a half-precision factorization becomes a usable preconditioner rather than a
+usable solver, which is the practically relevant claim.
 
-Variants compared per energy index (all on the SAME matrix + RHS):
+Input
+-----
+    h5path              a material HDF5 file, read for E_<idx>/M and
+                        E_<idx>/rhs and for global/condition_full_svd
+    --idx / --start,--end   the energy indices to process
+    --bs                the Block Thomas block size
+    --tol, --max-iter   the outer refinement criterion
+    --gmres-*           the inner GMRES parameters
 
-    fp16 direct            BlockThomasFP16, no refinement          (lower bound)
-    fp16 + LU-IR           classic IR, inner = one fp16 solve      (does plain IR suffice?)
-    fp16 + GMRES-IR        inner = GMRES(complex128) preconditioned
-                           by the fp16 factorization               <-- THE TEST
-    c64  + GMRES-IR        same, but complex64 block Thomas        (reference point)
-    c128 direct            BlockThomas complex128, no refinement   (accuracy ceiling)
+Algorithm
+---------
+The refinement drivers themselves are not reimplemented. This script imports
+mpir and registers one additional builder into mpir.SOLVER_BUILDERS at run
+time, an in-memory dict insertion and not a modification of any file, so that
+mpir's solve_gmres_ir, solve_mixed_ir, solve_direct and benchmark_solver drive
+the half-precision solver unchanged. Any correction to the refinement logic
+therefore applies here automatically.
 
-x_true comes from SuperLU at complex128, so "true error" is measured against
-the same reference mpir uses.
+Five variants are compared per energy index, on the same matrix and the same
+right-hand side:
 
-Usage:
-    python test_fp16_gmres_ir.py /scratch/yimili/matrices/hdf5/carbon-nanotube.h5 \
+    fp16 direct       BlockThomasFP16 with no refinement; the lower bound
+    fp16 + LU-IR      classical refinement, inner solve one fp16 substitution;
+                      establishes whether plain refinement suffices
+    fp16 + GMRES-IR   inner solve GMRES at complex128 preconditioned by the
+                      fp16 factorization; the variant under test
+    c64 + GMRES-IR    the same with a complex64 factorization; a reference
+                      point at a precision where refinement is known to work
+    c128 direct       BlockThomas at complex128; the accuracy ceiling
+
+The reference solution x_true comes from SuperLU at complex128, the same
+convention mpir uses, so forward errors are comparable across both scripts.
+
+Note on the cast precision for the fp16 variants
+------------------------------------------------
+mpir casts each vector with v.astype(low_dtype) before handing it to the
+preconditioner. There is no complex32 in NumPy, and BlockThomasFP16 performs
+its own rounding to float16 and its own power-of-two rescaling internally on
+every solve. complex128 is therefore passed as the cast dtype: the cast is then
+lossless and all precision loss occurs inside the half-precision solver, where
+it belongs. Passing complex64 would silently insert an additional rounding step
+ahead of the half-precision one and would misattribute its effect.
+
+Output
+------
+    <outdir>/<material>_fp16_gmres_ir.csv
+
+in long format, one row per (index, variant), carrying the residual, the
+forward error, the outer iteration count, the convergence flag, the inner GMRES
+iteration counts, the wall time and the factor memory. The header lines record
+the run configuration.
+
+A verbose per-index log is written to stdout, including the refinement
+convergence history and the inner iteration counts. That history, rather than
+any single final number, is the evidence for whether half-precision
+preconditioning works.
+
+No figures are produced; see plotting/plot_mixed_prec_ir.py.
+
+Usage
+-----
+    python c32_gmres_ir.py /scratch/yimili/matrices/hdf5/carbon-nanotube.h5 \
         --idx 84 --bs 32
 
-    # sweep a range, write CSV for later analysis
-    python test_fp16_gmres_ir.py /scratch/yimili/matrices/hdf5/carbon-nanotube.h5 \
+    python c32_gmres_ir.py /scratch/yimili/matrices/hdf5/carbon-nanotube.h5 \
         --start 0 --end 401 --bs 32 --outdir plots
 
-Output: one CSV (long format, one row per (idx, variant)) plus a verbose
-per-index log on stdout showing the IR convergence history and inner GMRES
-iteration counts -- that history is the actual evidence for whether fp16
-preconditioning works, more than any single final number.
+    python ../plotting/plot_mixed_prec_ir.py \
+        plots/carbon-nanotube_fp16_gmres_ir.csv
 """
 
 import argparse
 import csv
-import os
 import sys
 import time
 import warnings
 from pathlib import Path
 
-import h5py
 import numpy as np
-import scipy.sparse as sp
+
+# mpir lives beside this file and appends ../solvers to sys.path itself when
+# imported, so solver_classes becomes importable along with it.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import mpir
+from solver_classes import extract_blocks_sparse, BlockThomasFP16
 
 
 # ---------------------------------------------------------------------------
-# import the existing modules (no edits to any of them)
+# Registration of the half-precision solver with mpir's builder registry
 # ---------------------------------------------------------------------------
-def _setup_paths(mpir_dir=None, half_dir=None, solvers_dir=None):
-    """Put mpir.py / half_blockthomas.py / solver_classes.py on sys.path.
-
-    Layout is guessed from a few plausible locations relative to this script;
-    override with --mpir-dir / --half-dir / --solvers-dir if the guess is wrong.
-    Note mpir.py itself appends ../solvers to sys.path when imported, so
-    solver_classes usually comes along for free once mpir is importable.
+def register_fp16_builder():
     """
-    here = Path(__file__).resolve().parent
-    candidates = [
-        here,
-        here / "mixed_prec_ir",
-        here / "solvers",
-        here.parent,
-        here.parent / "mixed_prec_ir",
-        here.parent / "solvers",
-    ]
-    for explicit in (mpir_dir, half_dir, solvers_dir):
-        if explicit:
-            candidates.insert(0, Path(explicit).resolve())
-    for c in candidates:
-        c = Path(c)
-        if c.is_dir() and str(c) not in sys.path:
-            sys.path.insert(0, str(c))
+    Add a block_thomas_fp16 entry to mpir.SOLVER_BUILDERS, in memory only.
 
-
-def _import_components():
-    import mpir
-    from solver_classes import extract_blocks_sparse, BlockThomas
-    from half_blockthomas import BlockThomasFP16
-    return mpir, extract_blocks_sparse, BlockThomas, BlockThomasFP16
-
-
-# ---------------------------------------------------------------------------
-# register BlockThomasFP16 with mpir's builder registry (in-memory only)
-# ---------------------------------------------------------------------------
-def register_fp16_builder(mpir, extract_blocks_sparse, BlockThomasFP16):
-    """Add a 'block_thomas_fp16' entry to mpir.SOLVER_BUILDERS.
-
-    mpir's builder contract is builder(A, dtype, bs, b) -> object with
-    .solve(b) and .factor_nbytes(); BlockThomasFP16 satisfies both, and
-    ignores the dtype argument (it is always fp16 internally).
+    mpir's builder contract is builder(A, dtype, bs, b) returning an object
+    exposing solve(b) and factor_nbytes(). BlockThomasFP16 satisfies both and
+    ignores the dtype argument, since its working precision is always float16.
     """
     def _build(A, dtype, bs, b):
         if bs is None:
@@ -107,10 +125,16 @@ def register_fp16_builder(mpir, extract_blocks_sparse, BlockThomasFP16):
 
 
 # ---------------------------------------------------------------------------
-# one energy index
+# One energy index
 # ---------------------------------------------------------------------------
-def run_index(mpir, h5path, idx, bs, args):
-    """Run every variant on E_<idx>. Returns list of per-variant result dicts."""
+def run_index(h5path, idx, bs, args):
+    """
+    Run every variant on one energy index.
+
+    Returns a list of per-variant result dicts matching the CSV schema. A
+    variant that raises is recorded with NaN metrics and the exception in its
+    note field, so a single failure does not remove the index from the sweep.
+    """
     HIGH = mpir.HIGH_DTYPE
 
     A, b = mpir.load_system(h5path, idx)
@@ -124,20 +148,16 @@ def run_index(mpir, h5path, idx, bs, args):
           f"kappa={'n/a' if kappa is None else f'{kappa:.3e}'}")
     print(f"{'='*78}")
 
-    # reference solution (same convention as mpir: superlu @ complex128)
+    # Reference solution, by the same convention mpir uses: SuperLU at
+    # complex128.
     ref = mpir.SOLVER_BUILDERS["superlu"](A, HIGH, bs, b)
     x_true = ref.solve(b_high).astype(HIGH)
     if hasattr(ref, "free"):
         ref.free()
 
-    # NOTE ON low_dtype FOR THE fp16 VARIANTS:
-    # mpir casts vectors with v.astype(low_dtype) before handing them to the
-    # preconditioner. There is no numpy complex32, and BlockThomasFP16 does
-    # its own fp16 rounding (and its own power-of-2 rescaling) internally on
-    # every solve. So we pass complex128 as the "cast" dtype -- the cast is
-    # then lossless and ALL precision loss happens inside the fp16 solver,
-    # where we want it. Passing complex64 instead would silently insert an
-    # extra c64 rounding step ahead of the fp16 one.
+    # Cast precision for the half-precision variants. complex128 makes the cast
+    # lossless, so that all precision loss occurs inside the half-precision
+    # solver. See the module docstring.
     FP16_CAST = np.complex128
 
     variants = []
@@ -245,7 +265,8 @@ def run_index(mpir, h5path, idx, bs, args):
 # ---------------------------------------------------------------------------
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Test BlockThomasFP16 as a GMRES-IR preconditioner.")
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("h5path", type=Path, help="material HDF5 file")
     p.add_argument("--idx", type=int, nargs="*", default=None,
                    help="one or more energy indices (alternative to --start/--end)")
@@ -269,29 +290,15 @@ def parse_args():
                    help="tag for output filename (default: h5 filename stem)")
     p.add_argument("--outdir", type=str, default=None,
                    help="output directory (default: <script_dir>/plots)")
-    p.add_argument("--mpir-dir", type=str, default=None, help="folder containing mpir.py")
-    p.add_argument("--half-dir", type=str, default=None,
-                   help="folder containing half_blockthomas.py")
-    p.add_argument("--solvers-dir", type=str, default=None,
-                   help="folder containing solver_classes.py")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
 
-    _setup_paths(args.mpir_dir, args.half_dir, args.solvers_dir)
-    try:
-        mpir, extract_blocks_sparse, BlockThomas, BlockThomasFP16 = _import_components()
-    except ImportError as e:
-        raise SystemExit(
-            f"import failed: {e}\n"
-            f"Point the script at the right folders explicitly, e.g.:\n"
-            f"  --mpir-dir ../mixed_prec_ir --solvers-dir ../solvers --half-dir .")
+    register_fp16_builder()
 
-    register_fp16_builder(mpir, extract_blocks_sparse, BlockThomasFP16)
-
-    # index selection
+    # Index selection: --idx and --start/--end are alternatives.
     if args.idx:
         indices = list(args.idx)
     elif args.start is not None and args.end is not None:
@@ -317,15 +324,15 @@ def main():
     skipped = []
     for idx in indices:
         try:
-            all_rows.extend(run_index(mpir, args.h5path, idx, args.bs, args))
-        except SystemExit as e:            # mpir.load_system raises this for bad idx
+            all_rows.extend(run_index(args.h5path, idx, args.bs, args))
+        except SystemExit as e:            # raised by mpir.load_system for a bad index
             skipped.append((idx, str(e)))
             print(f"\nE_{idx}: skipped ({e})")
         except Exception as e:             # noqa: BLE001
             skipped.append((idx, f"{type(e).__name__}: {e}"))
             print(f"\nE_{idx}: skipped ({type(e).__name__}: {e})")
 
-    # ------------------------------------------------------------------ CSV
+    # ---- CSV, with the run configuration in the header lines ----------------
     fields = ["idx", "kappa", "n", "nnz", "variant", "relres", "true_err",
               "outer_iters", "converged", "inner_gmres_total", "inner_gmres_mean",
               "wall_s", "factor_mb", "note"]
@@ -346,7 +353,7 @@ def main():
         for row in all_rows:
             w.writerow(row)
 
-    # ------------------------------------------------------------- summary
+    # ---- summary ------------------------------------------------------------
     print(f"\n{'='*78}")
     gm = [r for r in all_rows if r["variant"] == "fp16 + GMRES-IR"]
     if gm:

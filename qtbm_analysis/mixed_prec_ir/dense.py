@@ -1,34 +1,56 @@
 """
-Mixed-Precision Iterative Refinement — carbon nanotube system
-=============================================================
-Solvers compared
-----------------
-  fp32-IR   : LAPACK sgetrf (fp32 LU) + fp64 residual + sgetrs corrections
-  fp64      : LAPACK dgetrf / dgetrs  — pure fp64, no refinement (reference)
-  fp64-IR   : dgetrf (fp64 LU) + fp64 residual + dgetrs corrections
-              (verifies IR overhead when precision is not reduced)
+Mixed-precision iterative refinement on a dense system, using LAPACK directly.
 
-Why these three?
-  fp16 LU is not available in CPU LAPACK (requires cuSOLVER / MAGMA on GPU).
-  fp32-IR is the canonical "dsgesv" algorithm (Buttari et al. 2006); scipy
-  does not expose dsgesv directly but sgetrf + sgetrs give identical results.
+Input
+-----
+A dense matrix and right-hand side stored as .npy arrays, at MATRIX_PATH and
+RHS_PATH.
 
-LAPACK building blocks used
----------------------------
-  sgetrf(A32)          → lu32, piv  (fp32 LU factorisation, stored in fp32)
-  sgetrs(lu32, piv, r) → dx         (fp32 triangular solve)
-  dgetrf(A64)          → lu64, piv  (fp64 LU factorisation)
-  dgetrs(lu64, piv, r) → dx         (fp64 triangular solve)
+Variants compared
+-----------------
+    fp32-IR   sgetrf for the factorization, residuals in fp64, sgetrs for the
+              corrections. This is the canonical mixed-precision algorithm, the
+              one LAPACK exposes as dsgesv. SciPy does not wrap dsgesv, but
+              sgetrf followed by sgetrs is the same computation.
+    fp64      dgetrf and dgetrs, no refinement. The accuracy reference.
+    fp64-IR   dgetrf with refinement, so that the overhead of the refinement
+              loop is measured with the factorization precision held equal to
+              the working precision. Any difference against fp64 is the cost of
+              refinement alone.
 
-Residuals are always computed in fp64:
-  r = b - A @ x        (fp64 matrix-vector product)
+Half precision is absent because CPU LAPACK provides no fp16 factorization; it
+requires cuSOLVER or MAGMA on a device. The half-precision study is therefore
+carried out with the Block Thomas implementations in solvers/solver_classes.py,
+which simulate fp16 arithmetic in NumPy.
 
-Memory tracking
+Algorithm
+---------
+The refinement loop is the classical one:
+
+    factorize A in the low precision, once
+    x  = solve(b) in the low precision, promoted to fp64
+    repeat:
+        r  = b - A x           computed in fp64
+        dx = solve(r)          in the low precision, reusing the factorization
+        x  = x + dx
+    until ||r|| / ||b|| < tol or max_iter is reached
+
+Residuals are always formed in fp64; this is what allows the refined solution
+to attain an accuracy characteristic of fp64 despite an fp32 factorization.
+
+Instrumentation
 ---------------
-  tracemalloc : Python-heap peak (numpy/scipy allocations, exact)
-  psutil RSS  : peak resident set size polled every 5 ms in a background
-                thread (captures LAPACK workspace allocations; near-zero net
-                delta between runs means the OS reuses already-mapped pages)
+Memory is measured two ways, since neither is sufficient alone. tracemalloc
+records the Python heap exactly, covering the NumPy and SciPy allocations, but
+does not observe allocations made inside LAPACK. The RSS poller samples the
+resident set size from a background thread every 5 ms and does observe them, at
+the cost of missing peaks shorter than its sampling interval. A near-zero net
+RSS delta between runs indicates that the operating system is reusing pages
+already mapped, not that no memory was allocated.
+
+Output
+------
+A table of relative error, wall time and peak memory per variant, on stdout.
 """
 
 import gc

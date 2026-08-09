@@ -1,35 +1,44 @@
 #!/usr/bin/env python3
 """
-The GPU counterpart of arnoldi_shift_invert_cpu.py: same quantities, same
-methods, same CLI, cuDSS instead of MUMPS.
+GPU counterpart of arnoldi_shift_invert_cpu.py: the same quantities, methods
+and command-line interface, with cuDSS in place of MUMPS.
 
-Everything except the factorization is imported from the CPU script, so the
-two cannot drift apart -- a fix to the shift-invert transform, the residual
-check or the PROPACK fallback lands in both. What differs here is only:
+Everything except the choice of factorization backend is imported from the CPU
+script, so the two cannot diverge: a correction to the shift-invert transform,
+the residual check or the PROPACK fallback applies to both. Only two things
+differ:
 
-    --backend   cudss (default) | gmres_cupy      instead of mumps | ...
-    [gpu]       device report instead of [threads]
+    --backend   cudss (default) or gmres_cupy, instead of mumps and the other
+                CPU backends
+    [gpu]       a device report in place of the [threads] report
 
-WHERE THE GPU ACTUALLY HELPS. The factorization and the triangular solves run
-on the device; the outer Krylov method (ARPACK / PROPACK) stays on the host,
-because scipy owns the restart and orthogonalization logic and there is no
-cupy equivalent for non-Hermitian eigs or for PROPACK. Each application
-therefore costs a host->device copy of one vector, a cuDSS solve, and a copy
-back. At n ~ 1.7e5 that is ~2.7 MB per transfer against a solve that dominates
-it, so the split is not the bottleneck -- but it does mean --end largest,
-which needs no factorization at all, does no GPU work whatsoever and is
-better run from the CPU script.
+Division of work
+----------------
+The factorization and the triangular solves execute on the device; the outer
+Krylov method, ARPACK or PROPACK, remains on the host, because SciPy owns the
+restart and orthogonalization logic and CuPy provides no equivalent for
+non-Hermitian eigs or for PROPACK. Each application of the operator therefore
+costs a host-to-device copy of one vector, a cuDSS solve, and a copy back. At
+n of order 1.7e5 that is about 2.7 MB per transfer against a solve that
+dominates it, so the split is not the limiting factor.
 
-MEMORY IS THE BINDING CONSTRAINT, not time. --quantity singular --end
-smallest factorizes A and A^H, and both live on the device at once. If that
-does not fit, the CPU script with --backend mumps will.
+It does follow that --end largest, which requires no factorization, performs no
+device work at all and should be run from the CPU script.
 
-gmres_cupy is iterative: its solves are only as exact as its rtol, which the
-outer Krylov method assumes they are not. Useful for a timing comparison, not
-for a converged eigenvalue.
+Constraint
+----------
+Memory, not time, is the binding constraint. --quantity singular --end smallest
+factorizes both A and A^H and holds both on the device simultaneously. Where
+that does not fit, the CPU script with --backend mumps will.
 
-Usage is identical to the CPU script -- see its --help for the full matrix of
-quantities and ends:
+gmres_cupy is iterative, so its solves are accurate only to its rtol, whereas
+the outer Krylov method assumes an exact solve. It is suitable for a timing
+comparison, not for a converged eigenvalue.
+
+Usage
+-----
+Identical to the CPU script; see its --help for the full set of quantities and
+spectrum ends.
 
     python arnoldi_shift_invert_gpu.py MATRIX --quantity condition
     python arnoldi_shift_invert_gpu.py MATRIX --quantity singular \\

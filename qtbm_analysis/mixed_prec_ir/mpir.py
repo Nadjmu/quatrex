@@ -1,83 +1,139 @@
 #!/usr/bin/env python3
 """
-Mixed-Precision Iterative Refinement on real material data
-============================================================
-Generalizes the original random-data LU-IR benchmark in several ways:
+Mixed-precision iterative refinement on QTBM material data.
 
-  1. The matrix and RHS come from a real energy index in a material's HDF5
-     file (E_<idx>/M, E_<idx>/rhs) instead of a synthetic random system.
-  2. The low-precision factorization/solve step is any solver from
-     solver_classes.py, selected via --solver, instead of hardcoded SuperLU.
-  3. The inner correction solve can be either:
-       - "direct"  : a single low-precision triangular solve (classic LU-IR,
-                     Buttari et al. 2006)
-       - "gmres"   : GMRES run in HIGH precision on the full operator A,
-                     preconditioned by the low-precision factorization
-                     applied via solver.solve() (GMRES-IR, Carson & Higham
-                     2017-style). Selected with --inner gmres.
+Input
+-----
+    h5path, --idx      the system A = E_<idx>/M and b = E_<idx>/rhs from a
+                       material HDF5 file
+    --solver           which solver family provides the low-precision
+                       factorization: superlu, umfpack, mumps, block_thomas or
+                       cudss
+    --low-dtype        the factorization precision, u_f below
+    --inner            the inner correction solve, direct or gmres
+    --tol, --max-iter  the outer convergence criterion
 
-Compares three variants of the SAME chosen solver family (apples-to-apples,
-unlike comparing across different solver implementations):
+The file is opened read-only; nothing is written back.
 
-  1. <solver> at --low-dtype + fp64 iterative refinement   (this work;
-     "direct" -> LU-IR, "gmres" -> GMRES-IR, per --inner)
-  2. <solver> at complex128, direct (no refinement)         (baseline / reference)
-  3. <solver> at --low-dtype, direct (no refinement)         (lower bound)
+Background
+----------
+Iterative refinement solves A x = b by computing a solution in a low precision
+and correcting it using residuals computed in a higher one. Three precisions
+appear in the modern analysis (Carson and Higham, 2017 and 2018):
 
-LU-IR algorithm (Buttari et al. 2006, generalized to complex data and to any
-solver with a .solve(b) method and a factorization built once in __init__):
-  1. Build the solver at low precision -- this is the one-time factor cost
-  2. x0 = solver.solve(b)                     (low precision, cast to complex128)
-  3. r  = b - A @ x                            (complex128 residual)
-  4. dx = solver.solve(r)                      (low-precision correction solve,
-                                                 reusing the SAME factorization)
-  5. x += dx; repeat until ||r||/||b|| < tol or max_iter reached
+    u_f   the precision of the factorization, --low-dtype here
+    u     the working precision, in which x and the corrections are stored,
+          complex128 here
+    u_r   the precision in which the residual is computed, complex128 here
 
-GMRES-IR algorithm (same outer loop, different inner correction step):
-  1-3. same as above
-  4. dx = GMRES(A, r) in complex128, preconditioned by M^{-1}v = solver.solve(v)
-     (v cast to low precision, result cast back to complex128) -- GMRES itself
-     runs at full precision, only the preconditioner applications are cheap
-     low-precision triangular solves reusing the SAME factorization.
-  5. x += dx; repeat until ||r||/||b|| < tol or max_iter reached
+The classical result of Wilkinson and of Moler is that when the residual is
+computed more accurately than the factorization, refinement recovers a forward
+error governed by u rather than by u_f, provided the factorization is accurate
+enough for the correction equation to be solved usefully. This is the entire
+motivation for the scheme: a factorization is O(n^3) and a residual is O(nnz),
+so accuracy characteristic of a high-precision factorization is obtained at the
+cost of a low-precision one.
 
-  Note: GMRES-IR's preconditioner only needs the factorization's action as
-  an operator (solver.solve), not explicit access to L/U factors. This means
-  it works uniformly for superlu, block_thomas, mumps, AND cudss -- none of
-  which need to expose their factors for GMRES to use them as a preconditioner.
+The condition under which this holds is the practical question. For the
+classical variant, in which the correction equation is solved by a triangular
+substitution using the low-precision factors, convergence requires roughly
 
-Solvers usable via --solver (all need a persistent, reusable factorization):
-  superlu, umfpack, mumps, block_thomas   -- CPU, always available
-  cudss                                   -- GPU (needs nvmath-python + a
-                                              visible CUDA device); skipped
-                                              gracefully (like a missing
-                                              package) if no GPU is present.
+    kappa_inf(A) u_f  <  1,
 
-Note: UMFPACK has no single-precision build (solver_classes.UMFPACK raises
-TypeError for --low-dtype complex64) -- this is a real library limitation,
-not a bug here; pick a different --solver for a low-precision comparison.
+so at u_f = 2^-24, single precision, the method is limited to kappa about 1e7,
+and at u_f = 2^-11, half precision, to kappa about 1e3. QTBM matrices near a
+band edge exceed both. The GMRES-based variant replaces that inner solve with
+GMRES applied to the preconditioned system, which relaxes the requirement to
+approximately kappa u_f^{1/2} or better depending on the variant analysed, and
+is what makes refinement applicable at these condition numbers at all. This is
+why both inner solvers are implemented here and why the condition number is
+reported alongside every result.
 
-GPU timing note: the first cuDSS solve in a process pays a large one-time
-CUDA/cuDSS kernel-JIT + context cost that is independent of problem size.
-Left alone it lands entirely on whichever variant runs first (LU-IR), making
-it look ~1.2s slower than it really is. run_benchmarks() therefore does an
-untimed warm-up solve before any variant is benchmarked -- see _warm_up_gpu.
+Algorithms
+----------
+Both variants share the outer loop and differ only in step 4.
 
-Usage:
+    1. Build the solver at u_f. This is the one-time factorization cost, and
+       the only step whose cost scales as a factorization.
+    2. x = solver.solve(b), cast up to the working precision.
+    3. r = b - A x, computed in complex128.
+    4. Solve A dx = r for the correction:
+
+       direct, LU-IR (Buttari et al., 2006)
+           dx = solver.solve(r), a single low-precision triangular
+           substitution reusing the same factorization. One triangular solve
+           per outer iteration.
+
+       gmres, GMRES-IR (Carson and Higham, 2017)
+           dx is obtained by GMRES applied to A in complex128, left
+           preconditioned by M^-1 v = solver.solve(v), where v is cast down to
+           u_f and the result cast back up. GMRES itself runs at the working
+           precision; only the preconditioner applications are cheap
+           low-precision solves, and they reuse the same factorization.
+
+    5. x = x + dx. Repeat from 3 until ||r|| / ||b|| < tol or max_iter is
+       reached.
+
+The preconditioner in the GMRES variant requires only the action of the
+factorization as an operator, never explicit access to L and U. That is what
+allows the same code to drive superlu, block_thomas, mumps and cudss
+identically, including the two solvers that expose no factors at all.
+
+Comparison
+----------
+Three variants of the same solver family are measured, so that the comparison
+isolates the effect of precision and refinement rather than of the solver
+implementation:
+
+    1. <solver> at u_f with refinement           the method under test
+    2. <solver> at complex128, no refinement     the accuracy reference
+    3. <solver> at u_f, no refinement            the lower bound refinement
+                                                 must improve upon
+
+Limitations
+-----------
+UMFPACK has no single-precision build, so solver_classes.UMFPACK raises
+TypeError for --low-dtype complex64. This is a property of the library and not
+of this script; select a different solver for a low-precision comparison.
+
+The first cuDSS call in a process pays a fixed start-up cost for CUDA context
+creation and kernel compilation that is independent of problem size, measured
+at roughly 1.2 s. Left in place it would be charged in full to whichever
+variant runs first, which is the refinement variant. An untimed warm-up solve
+is therefore performed before any variant is measured; see _warm_up_gpu.
+
+Output
+------
+A table of relative residual, forward error against a reference solution, wall
+time and peak memory per variant, the outer convergence history, and, for the
+GMRES variant, the inner iteration counts. Nothing is written to disk; for
+sweeps and figures see c32_gmres_ir.py and plotting/plot_mixed_prec_ir.py.
+
+Usage
+-----
     python mpir.py /scratch/yimili/matrices/hdf5/carbon-nanotube.h5 \\
         --idx 5 --solver superlu --low-dtype complex64
 
     python mpir.py /scratch/yimili/matrices/hdf5/carbon-nanotube.h5 \\
         --idx 5 --solver block_thomas --bs 32 --low-dtype complex64
 
-    # GMRES-IR: GMRES in complex128, preconditioned by the low-precision LU
     python mpir.py /scratch/yimili/matrices/hdf5/si-bulk.h5 \\
         --idx 254 --solver mumps --low-dtype complex64 --inner gmres \\
         --gmres-tol 1e-8 --gmres-restart 30 --gmres-maxiter 50
 
-    # cuDSS on GPU
     python mpir.py /scratch/yimili/matrices/hdf5/si-bulk.h5 \\
         --idx 254 --solver cudss --low-dtype complex64
+
+References
+----------
+J. H. Wilkinson, Rounding Errors in Algebraic Processes, 1963.
+A. Buttari et al., Mixed precision iterative refinement techniques for the
+    solution of dense linear systems, IJHPCA 21(4), 2007.
+E. Carson and N. J. Higham, A new analysis of iterative refinement and its
+    application to accurate solution of ill-conditioned sparse linear systems,
+    SIAM J. Sci. Comput. 39(6), 2017.
+E. Carson and N. J. Higham, Accelerating the solution of linear systems by
+    iterative refinement in three precisions, SIAM J. Sci. Comput. 40(2), 2018.
 """
 
 import argparse
@@ -102,11 +158,13 @@ from solver_classes import (
 
 warnings.filterwarnings("ignore", category=sp.SparseEfficiencyWarning)
 
-HIGH_DTYPE = np.complex128   # "full precision" reference throughout
+# The working and residual precision, u and u_r in the analysis. Both are
+# complex128; only the factorization precision u_f is varied.
+HIGH_DTYPE = np.complex128
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Memory helpers (unchanged from the original random-data script)
+# Memory instrumentation
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _rss_mb():
@@ -114,8 +172,14 @@ def _rss_mb():
 
 
 class _PeakRSSTracker:
-    """Polls process RSS every `interval` seconds in a background thread.
-    Use as a context manager; read .peak_mb after exit."""
+    """
+    Peak resident set size over the lifetime of a context.
+
+    RSS is polled from a background thread every `interval` seconds. This
+    captures allocations made inside compiled extensions, which tracemalloc does
+    not observe, at the cost of a sampling granularity that may miss very
+    short-lived peaks. Read .peak_mb after the context exits.
+    """
     def __init__(self, interval=0.005):
         self.interval = interval
         self.peak_mb = 0.0
@@ -138,11 +202,13 @@ class _PeakRSSTracker:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Solver registry -- maps --solver name to a builder(A, dtype, bs, b) -> instance
+# Solver registry. Each entry maps a --solver name to a builder with the
+# signature builder(A, dtype, bs, b) returning an object exposing solve(b) and
+# factor_nbytes().
 #
-# `b` is only used by the cuDSS builder (which needs the RHS column count at
-# construction time -- see _CuDSSSolver); every other builder ignores it.
-# It's threaded through uniformly so the call sites don't special-case cuDSS.
+# The right-hand side b is required only by the cuDSS builder, which must know
+# the column count at construction time; every other builder ignores it. It is
+# passed uniformly so that no call site has to special-case cuDSS.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_block_thomas(A, dtype, bs, b):
@@ -153,7 +219,7 @@ def _build_block_thomas(A, dtype, bs, b):
 
 
 def _solve_columns(solve_one, b):
-    """Apply a single-RHS solve function column-by-column to a 1-D or 2-D b."""
+    """Apply a single-RHS solve function column by column to a 1-D or 2-D b."""
     b = np.asarray(b)
     if b.ndim == 1:
         return solve_one(b)
@@ -164,26 +230,29 @@ def _solve_columns(solve_one, b):
 
 class _CuDSSSolver:
     """
-    Wrapper around solver_classes.CuDSS for use inside this benchmark.
+    Adapter around solver_classes.CuDSS for repeated solves against a fixed
+    factorization, which is what refinement requires.
 
-    Two things it handles that plain CuDSS doesn't:
+    Right-hand-side binding
+    -----------------------
+    CuDSS binds the right-hand-side shape (n, nrhs) at construction, and
+    nvmath's reset_operands rejects any later array whose shape or strides
+    differ from that binding. One Fortran-ordered (n, nrhs) buffer is therefore
+    allocated once and each right-hand side copied into it, so that every solve
+    presents a byte-layout-identical array and the rebuild-and-refactorize
+    fallback inside CuDSS.solve is never triggered. Without this the
+    factorization would be recomputed at every refinement step, which would
+    defeat the method.
 
-    1. RHS SHAPE BINDING. CuDSS binds its RHS shape (n, nrhs) at construction,
-       and nvmath's reset_operands() rejects any later array whose shape or
-       strides differ from that original binding. This class allocates ONE
-       Fortran-ordered (n, nrhs) buffer up front and copies each RHS into it,
-       so every solve hands nvmath a byte-layout-identical array and the
-       expensive rebuild-and-refactorize fallback inside CuDSS.solve() never
-       triggers.
-
-    2. BLOCK VS COLUMN SOLVES. The whole (n, k) RHS is solved in ONE cuDSS
-       call whenever k matches the nrhs it was built with -- that is the
-       common case for LU-IR and the direct variants, where every solve uses
-       the same column count as the original b. Only GMRES-IR needs
-       single-vector solves (scipy's gmres applies the preconditioner one
-       vector at a time), so a second nrhs=1 solver is built LAZILY and only
-       then. Column-looping every solve unconditionally would multiply the
-       number of GPU round trips by k for no reason.
+    Block against column solves
+    ---------------------------
+    A whole (n, k) right-hand side is solved in a single cuDSS call whenever k
+    matches the nrhs the solver was built with, which is the case for LU-IR and
+    for both direct variants. GMRES-IR is the exception: SciPy's gmres applies
+    the preconditioner to one vector at a time, so a second solver with nrhs=1
+    is built lazily and only when that path is taken. Looping over columns
+    unconditionally would multiply the number of device round trips by k
+    without benefit.
     """
 
     def __init__(self, A, dtype, nrhs):
@@ -193,7 +262,7 @@ class _CuDSSSolver:
         self._A = A
         self._solver = CuDSS(A, dtype=self.dtype, nrhs=self.nrhs)
         self._buf = np.empty((self.n, self.nrhs), dtype=self.dtype, order="F")
-        self._one = None        # lazily built nrhs=1 solver (GMRES-IR only)
+        self._one = None        # built lazily, for GMRES-IR only
         self._one_buf = None
 
     def _solve_block(self, b2d):
@@ -233,12 +302,13 @@ SOLVER_BUILDERS = {
         A, dtype, b.shape[1] if np.asarray(b).ndim == 2 else 1),
 }
 
-# Solvers whose first call in a process pays a large fixed GPU start-up cost.
+# Solvers whose first call in a process pays a fixed device start-up cost that
+# must be excluded from the measurement. See _warm_up_gpu.
 _GPU_SOLVERS = ("cudss",)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Real-data loading (replaces make_problem)
+# Data loading
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_system(h5path, idx):
@@ -272,19 +342,31 @@ def load_condition_number(h5path, idx):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Solvers (generalized: any registered solver family, any low precision)
+# The refinement variants
 # ─────────────────────────────────────────────────────────────────────────────
 
 def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None):
     """
-    Classic LU-IR: the correction solve dx = solver.solve(r) is a single
-    low-precision triangular solve.
+    LU-IR: iterative refinement whose correction solve is a single
+    low-precision triangular substitution.
 
-    x_true: optional complex128 reference solution. If given, the relative
-    true error ||x - x_true|| / ||x_true|| is recorded at every iteration
-    (same point where the residual is already computed) purely for
-    reporting -- it does NOT feed into the convergence check or the loop's
-    control flow, so it can't distort the residual/timing/memory metrics.
+    The factorization is computed once at low_dtype and reused at every outer
+    iteration; the residual is formed in complex128. Convergence requires
+    approximately kappa_inf(A) * u_f < 1, so this variant is the one that fails
+    first as the matrix becomes ill-conditioned. See the module docstring.
+
+    Parameters
+    ----------
+    x_true : complex128 reference solution, optional. When supplied, the
+        relative forward error is recorded at each iteration, at the point
+        where the residual has already been computed. It is used for reporting
+        only: it enters neither the convergence test nor any other control
+        flow, so it cannot perturb the residual, timing or memory figures.
+
+    Returns
+    -------
+    (x, extra) with extra carrying the residual history, the forward-error
+    history and the factor footprint.
     """
     b_high = np.asarray(b, dtype=HIGH_DTYPE)
     A_high = A.tocsc().astype(HIGH_DTYPE)
@@ -317,8 +399,12 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None)
 
 
 def _gmres_solve(A_op, rhs, M_op, tol, restart, maxiter, callback):
-    """Thin wrapper around scipy.sparse.linalg.gmres that works across scipy
-    versions (the tol -> rtol rename happened in scipy 1.12)."""
+    """
+    Call scipy.sparse.linalg.gmres compatibly across SciPy versions.
+
+    The tol keyword was renamed to rtol in SciPy 1.12; the fallback covers
+    older installations.
+    """
     try:
         return spla.gmres(A_op, rhs, M=M_op, rtol=tol, atol=0.0, restart=restart,
                           maxiter=maxiter, callback=callback, callback_type="pr_norm")
@@ -330,19 +416,36 @@ def _gmres_solve(A_op, rhs, M_op, tol, restart, maxiter, callback):
 def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
                    gmres_tol=1e-8, gmres_restart=30, gmres_maxiter=50):
     """
-    GMRES-IR: the correction solve A @ dx = r is no longer a single
-    low-precision triangular solve -- it's GMRES running in HIGH precision
-    on the full operator A, left-preconditioned by M^{-1}v = solver.solve(v)
-    (v cast to low precision, result cast back to complex128 before being
-    handed to GMRES). GMRES only needs the factorization's action as an
-    operator, not explicit L/U factors, so this works for superlu,
-    block_thomas, mumps, AND cudss alike.
+    GMRES-IR: iterative refinement whose correction solve is preconditioned
+    GMRES at the working precision.
 
-    scipy's gmres only accepts a single RHS vector, so multi-column b is
-    handled by looping GMRES over columns; the initial low-precision direct
-    solve and the residual/error bookkeeping stay vectorized as before.
+    The correction equation A dx = r is solved by GMRES applied to A in
+    complex128, left preconditioned by M^-1 v = solver.solve(v), with v cast
+    down to low_dtype and the result cast back up before it is returned to
+    GMRES. Only the preconditioner applications are performed in low precision.
 
-    x_true: see solve_mixed_ir -- same reporting-only true-error tracking.
+    Because GMRES requires only the action of the factorization as an operator,
+    and never L and U themselves, this variant is available for every solver in
+    the registry, including MUMPS and cuDSS, which expose no factors.
+
+    Relative to LU-IR this relaxes the condition-number requirement
+    substantially, which is what makes refinement usable on the ill-conditioned
+    QTBM systems. The cost is the inner iteration count, recorded per outer
+    step in extra["gmres_iters_history"].
+
+    SciPy's gmres accepts a single right-hand-side vector only, so a
+    multi-column b is handled by looping over columns. The initial
+    low-precision solve and the residual and error bookkeeping remain
+    vectorized.
+
+    Parameters
+    ----------
+    x_true : as in solve_mixed_ir; recorded for reporting only.
+
+    Returns
+    -------
+    (x, extra) with extra carrying the residual history, the forward-error
+    history, the inner GMRES iteration counts and the factor footprint.
     """
     b_high = np.asarray(b, dtype=HIGH_DTYPE)
     orig_ndim = b_high.ndim
@@ -414,6 +517,13 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
 
 
 def solve_direct(solver_name, A, b, bs, dtype):
+    """
+    One factorization and one solve at `dtype`, with no refinement.
+
+    Used for both reference variants: at complex128 it provides the accuracy
+    ceiling, and at the low precision it provides the lower bound that
+    refinement must improve upon.
+    """
     solver = SOLVER_BUILDERS[solver_name](A, dtype, bs, b)
     x = solver.solve(np.asarray(b, dtype=dtype)).astype(HIGH_DTYPE)
     mem_bytes = solver.factor_nbytes()
@@ -423,26 +533,25 @@ def solve_direct(solver_name, A, b, bs, dtype):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Benchmark runner
+# Measurement
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _warm_up_gpu(solver_name, A, b, bs, low_dtype):
     """
-    Do one THROWAWAY factor+solve outside the timed region.
+    Perform one discarded factorization and solve outside the timed region.
 
-    Why this exists: the first cuDSS call in a process pays a large fixed
-    start-up cost (CUDA context creation, cuDSS kernel JIT/caching) that is
-    essentially INDEPENDENT of problem size -- empirically ~1.2s whether
-    n=768/nnz=71k or n=2080/nnz=847k. Without this warm-up that cost is
-    silently charged to whichever variant happens to run first (LU-IR),
-    which made LU-IR look ~1.2s slower than the direct variants even though
-    the direct variants were doing comparable GPU work right afterwards at
-    ~20-110ms. Burning it here makes all three variants start from the same
-    warmed-up state, so their reported wall times are actually comparable.
+    The first cuDSS call in a process pays a fixed start-up cost, for CUDA
+    context creation and kernel compilation, that is essentially independent of
+    problem size: measured at about 1.2 s for both n = 768 with 71k nonzeros
+    and n = 2080 with 847k nonzeros. Without this warm-up that cost is charged
+    in full to whichever variant runs first, which is the refinement variant,
+    against subsequent variants doing comparable device work in 20 to 110 ms.
+    Consuming it here leaves all three variants in the same warmed state, so
+    their wall times are comparable.
 
-    Failures are swallowed: a warm-up is an optimization, not a correctness
-    step. If the solver can't be built (no GPU, missing package), the real
-    benchmark loop below will report that properly via its own skip path.
+    A failure here is ignored. The warm-up affects measurement only, not
+    correctness; if the solver cannot be built, for want of a device or a
+    package, the measurement loop reports it through its own skip path.
     """
     if solver_name not in _GPU_SOLVERS:
         return
@@ -459,8 +568,12 @@ def _warm_up_gpu(solver_name, A, b, bs, low_dtype):
 
 
 def _per_column(diff, denom):
-    """Relative error per RHS column. diff, denom: (n,) or (n, k) arrays.
-    Returns a 1-D array of length k (k=1 for a single RHS)."""
+    """
+    Relative error per right-hand-side column.
+
+    diff and denom are (n,) or (n, k). Returns a 1-D array of length k, with
+    k = 1 for a single right-hand side.
+    """
     if diff.ndim == 1:
         return np.array([np.linalg.norm(diff) / np.linalg.norm(denom)])
     return np.linalg.norm(diff, axis=0) / np.linalg.norm(denom, axis=0)
@@ -468,21 +581,28 @@ def _per_column(diff, denom):
 
 def benchmark_solver(fn, A_high, b_high, repeats, x_true=None):
     """
-    Run fn() `repeats` times. Returns list of dicts with keys:
-    residual, true_err, wall_s, peak_py_mb, net_rss_mb, extra, x.
+    Run fn() `repeats` times and record accuracy, time and memory.
 
-    residual = ||A@x - b|| / ||b||                (Frobenius norm if b has
-               multiple RHS columns -- one aggregate number across all of them)
-    true_err = ||x - x_true|| / ||x_true||         (only if x_true is given --
-               see --reference-solver; None otherwise)
+    Returns a list of dicts with the keys residual, true_err, wall_s,
+    peak_py_mb, net_rss_mb, extra and x, where
 
-    extra["per_rhs_residual"] / extra["per_rhs_true_err"] hold the SAME
-    errors broken out per RHS column (length-1 array if b is a single
-    vector), for inspecting whether some right-hand sides solve much worse
-    than others -- the aggregate numbers above can hide that.
+        residual = ||A x - b|| / ||b||, in the Frobenius norm when b has
+                   several columns, so one aggregate number covers all of them
+        true_err = ||x - x_true|| / ||x_true||, present only when x_true was
+                   supplied through --reference-solver, otherwise None
 
-    x is the full solution array of the LAST repeat (kept around so callers
-    can inspect/compare individual entries, e.g. x[100], across variants).
+    extra["per_rhs_residual"] and extra["per_rhs_true_err"] carry the same
+    quantities broken out per right-hand-side column, so that a subset of
+    columns solving markedly worse than the rest is visible; the aggregate
+    figures conceal that.
+
+    x is the solution of the last repeat, retained so that individual entries
+    can be compared across variants.
+
+    Memory is measured two ways because neither alone is sufficient:
+    tracemalloc records the Python heap exactly but does not observe
+    allocations inside compiled extensions, while the RSS poller observes those
+    but has a sampling granularity of a few milliseconds.
     """
     norm_b = np.linalg.norm(b_high)
     norm_x_true = np.linalg.norm(x_true) if x_true is not None else None
@@ -568,8 +688,8 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     else:
         print(f"Runs    : {repeats} per variant (median reported)\n")
 
-    # Burn the one-time GPU start-up cost BEFORE any variant is timed, so it
-    # doesn't get charged to whichever variant happens to run first.
+    # Consume the fixed device start-up cost before any variant is timed, so it
+    # is not charged to whichever variant happens to run first.
     _warm_up_gpu(solver_name, A, b, bs, low_dtype)
 
     if inner == "gmres":

@@ -1,19 +1,38 @@
 """
-Pack a material's matrix dataset into a single HDF5 file.
+Consolidation of a material's exported matrices into one HDF5 file.
 
-Structure:
-    material.h5
-    ├── global/          H, S, singular values, condition numbers, spectrum_bare
+Purpose
+-------
+The export scripts write one file per operator per energy index, which is
+convenient to produce and inconvenient to analyse. This packs a whole material
+into a single HDF5 file, which becomes the sole input of every benchmark and
+analysis script in this project and, because the solver results are appended
+back into it, also their output.
+
+Input
+-----
+A directory of per-energy .npz and .npy files, as written by
+export_qtbm_systems.py or main3.py, plus the global arrays where they exist.
+
+Output
+------
+    <material>.h5
+    ├── global/          H, S, singular values, condition numbers,
+    │                    spectrum_bare
     ├── metadata/        indices, energies
-    └── E_{idx}/         one group per energy point
-        ├── M/           sparse (csc)
-        ├── Sigma/       sparse (csc)
-        ├── rhs          dense
+    └── E_<idx>/         one group per energy point
+        ├── M/           system matrix, CSC triplet
+        ├── Sigma/       contact self-energy, CSC triplet
+        ├── rhs          right-hand side, dense
         └── spectrum     dense
 
-Usage:
-    python build_hdf5.py /scratch/yimili/matrices2 --material carbon-nanotube
-    python build_hdf5.py /scratch/yimili/matrices2 --all
+Solver results are later appended by solvers/factor_io.py as siblings of M
+inside each E_<idx> group; see its module docstring for that layout.
+
+Usage
+-----
+    python make_hdf5.py /scratch/yimili/matrices2 --material carbon-nanotube
+    python make_hdf5.py /scratch/yimili/matrices2 --all
 """
 
 import argparse

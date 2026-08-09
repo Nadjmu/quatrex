@@ -1,199 +1,212 @@
-# `block-thomas/` — stability analysis
+# `block-thomas/` — stability and spectral analysis
 
-Post-hoc analysis scripts. They **read** factors that
-[`../run_bench/`](../run_bench/) already wrote into the material HDF5 files;
-none of them solves a system or mutates the h5.
+Post-hoc analysis. These scripts **read** factors that
+[`../run_bench/`](../run_bench/) has already written into the material HDF5
+files; none of them solves a system or modifies the file. They write CSV, never
+figures; the corresponding figures are produced by
+[`../plotting/`](../plotting/).
 
-| script | what it answers |
+| Script | Question addressed |
 |---|---|
-| `growth_factor.py` | is the factorization backward stable? how much did the factors grow? |
+| `growth_factor.py` | is the factorization backward stable, and by how much did the factors grow? |
 | `determine_custom_block_size.py` | what non-uniform block partition does this matrix have? |
-| `arnoldi_shift_invert_cpu.py` / `arnoldi_shift_invert_gpu.py` | extreme eigenvalues, singular values and the condition number |
+| `arnoldi_shift_invert_cpu.py` / `_gpu.py` | extreme eigenvalues, singular values, and the condition number |
 
 ---
 
-## `growth_factor.py`
+## 1. `growth_factor.py`
 
-*(was `blockthomas_growth_factor.py` / `blockthomas_stability.py` — it now
-covers SuperLU and UMFPACK too, so the name no longer says "blockthomas".)*
+### 1.1 The question
 
-### The question
-
-All of these solvers are LU-based, so per Higham none is unconditionally
-backward stable. The perturbation is bounded entrywise by
+All four solvers analysed are LU based, so by Higham none is unconditionally
+backward stable. The computed factors satisfy the entrywise bound
 
 ```
-|A − L U|  ≤  γₙ · |L| |U|
+    |A - L U|  <=  gamma_n |L| |U|,        gamma_n = n u / (1 - n u),
 ```
 
-which, in a monotone norm, gives `‖A − L U‖ ≤ γₙ · ‖ |L| |U| ‖`. A
-factorization is backward stable **in practice** iff factor growth relative to
-`A` stays modest.
+which in any monotone norm gives `||A - L U|| <= gamma_n || |L| |U| ||`. A
+factorization is therefore backward stable in practice precisely when the
+factors do not grow relative to `A`.
 
-That growth is a property of the **pivoting**, and is *independent of
-cond(A)*: an ill-conditioned `A` can factor with tiny growth, and a
-well-conditioned `A` can grow badly if a Schur-complement block becomes badly
-scaled. Conditioning governs the accuracy of `x`; growth governs the backward
-error. Confusing the two is the easiest mistake to make here.
+That growth is a property of the **pivoting**, and is **independent of
+`kappa(A)`**: an ill-conditioned `A` may factor with negligible growth, and a
+well-conditioned `A` may grow badly if a Schur complement becomes badly scaled.
+Conditioning bounds the forward error of `x`; growth bounds the backward error.
+The two must not be conflated.
 
-Block Thomas pivots only *within* diagonal blocks — weaker than the global
-partial pivoting with column ordering that SuperLU and UMFPACK do. Those two
-are therefore the reference points that say whether exploiting the block
-structure costs stability, which is why they are in this script.
+Block Thomas pivots only *within* each diagonal block, which is weaker than the
+global partial pivoting with column ordering performed by SuperLU and UMFPACK.
+Those two are therefore the reference points that quantify what, if anything,
+exploiting the block structure costs in stability.
 
-### What it reports
+### 1.2 What is reported
 
-Per `(index, solver, dtype, norm)`, for both the 1-norm and inf-norm:
+Per `(index, solver, dtype, norm)`, for both the 1-norm and the infinity norm:
 
-| metric | definition |
+| Metric | Definition |
 |---|---|
-| loose ratio | `‖L‖·‖U‖ / ‖A_eff‖` — classical, always an upper bound |
-| tight ratio | `‖ |L||U| ‖ / ‖A_eff‖` — the true Wilkinson quantity, sharper |
-| `rho` | `max|Uᵢⱼ| / max|A_effᵢⱼ|` — the pivot growth factor, norm-free |
-| `resid_rel` | `‖A_eff − L U‖ / ‖A_eff‖` — correctness guard on the assembly |
+| loose ratio | `||L|| ||U|| / ||A_eff||` — classical, always an upper bound |
+| tight ratio | `|| |L| |U| || / ||A_eff||` — the quantity that enters the bound |
+| `rho` | `max|U_ij| / max|A_eff_ij|` — the pivot growth factor, norm-free |
+| `resid_rel` | `||A_eff - L U|| / ||A_eff||` — reconstruction guard |
 
-### `A_eff` is not always `A`
+`resid_rel` is **not** a stability metric. It verifies that the assumed factor
+convention holds for the build that produced the file. If it is not near the
+unit roundoff of the stored precision, the other three columns are meaningless
+and must be discarded.
 
-Each solver's factors reconstruct a *different* matrix. Using `‖A‖` as the
-denominator regardless would silently misreport UMFPACK.
+### 1.3 `A_eff` is solver dependent
 
-| solver | what `L @ U` reproduces |
+Each solver's factors reconstruct a different matrix, and using `||A||` as the
+denominator throughout would misreport UMFPACK.
+
+| Solver | What `L U` reproduces |
 |---|---|
 | `blockthomas` | `A` |
 | `blockthomas_inv` | `A` |
-| `superlu` | `Pr @ A @ Pc` |
-| `umfpack` | `Pr @ diag(1/R) @ A @ Pc` |
+| `superlu` | `Pr A Pc` |
+| `umfpack` | `Pr diag(1/R) A Pc` |
 
-Permutations alone don't change the 1- or inf-norm (a row permutation reorders
-rows; a column permutation permutes entries *within* each row, leaving row
-sums intact), so SuperLU could reuse `‖A‖`. UMFPACK's **row scaling** does
-change it. `A_eff` is built explicitly in every case anyway — it also keeps
-`resid_rel` honest, which is the guard that the UMFPACK convention still holds
-for your build.
+A permutation alone leaves the 1-norm and the infinity norm unchanged: a row
+permutation reorders rows, and a column permutation permutes entries *within*
+each row, so every row sum is preserved. SuperLU could therefore reuse `||A||`.
+UMFPACK's **row scaling** does change them. `A_eff` is built explicitly in all
+cases rather than special-cased, which also keeps `resid_rel` meaningful.
 
-For the **fp16** groups `A_eff` is neither: those factors factored the
-block-by-block real embedding of `A`, scaled by `s`, at block size `2·bs`.
-Block-local embedding differs from embedding `A` globally by a permutation, so
-`effective_A()` rebuilds it exactly the way the solver did, from the recorded
-partition.
+For the **half-precision** groups `A_eff` is neither: those factors were
+computed from the real embedding of `A` applied **block by block**, scaled by a
+global power of two `s`, at block size `2m`. Embedding block by block differs
+from embedding `A` globally by a permutation, so `effective_A()` rebuilds the
+matrix exactly as the solver did, from the recorded partition.
 
-### Assembly
+### 1.4 Assembly
 
 Both Block Thomas implementations reconstruct the same genuine global
-block-bidiagonal factors, with `A == L_global @ U_global` exactly:
+block-bidiagonal factors, with `A == L_global U_global` exactly:
 
 ```
-L_global = block-bidiagonal(I;      E_k = L_off[k−1] @ D_mod[k−1]⁻¹)
-U_global = block-bidiagonal(D_mod;  U_off)
+    L_global = block-bidiagonal(I;      E_k = L_off[k-1] D_mod[k-1]^-1)
+    U_global = block-bidiagonal(D_mod;  U_off)
 ```
 
-Implementation 1 rebuilds `D_mod` from its packed LU and pivots. Implementation
-2 stores `D_mod` and its explicit inverse directly, which is *exactly* what the
-assembly needs — no triangular solve required. Both handle uniform and ragged
-partitions: `load_blocks()` returns a stacked array or a list, and they index
-identically.
+Implementation 1 rebuilds `D_mod` from its packed LU and pivots.
+Implementation 2 stores `D_mod` and its explicit inverse directly, which is
+precisely what the assembly requires, with no triangular solve. Both handle
+uniform and ragged partitions: `load_blocks()` returns a stacked array or a
+list, and both are indexed identically.
 
-### Usage
+### 1.5 Usage
 
 ```bash
 python growth_factor.py /scratch/yimili/matrices/hdf5/graphene.h5 --idx 25
 python growth_factor.py .../graphene.h5 --start 1 --end 400
 python growth_factor.py .../graphene.h5 --start 1 --end 400 \
     --solvers blockthomas superlu umfpack --dtype complex128
+
+python ../plotting/plot_growth_factor.py \
+    /scratch/yimili/block-thomas/graphene_growth_factor.csv
 ```
 
-Writes `<material>_growth_factor.{png,csv}` to `--plotdir` (default
-`/scratch/yimili/block-thomas`). The plot is one row per norm:
-ratios | `rho` | residual. `--no-plot` prints only; `--no-csv` skips the CSV.
+Writes `<material>_growth_factor.csv` to `--outdir`, default
+`/scratch/yimili/block-thomas`. `--no-csv` prints the per-index report only.
 
-Solvers and dtypes absent from the file are skipped with a note, so running
-with the default `--solvers` on a file that only has Block Thomas is fine.
+Solvers and precisions absent from the file are reported and skipped, so
+running with the default `--solvers` on a file that contains only Block Thomas
+results is correct.
 
 ---
 
-## `determine_custom_block_size.py`
+## 2. `determine_custom_block_size.py`
 
 Derives a non-uniform block partition from the sparsity pattern by growing a
-reach frontier row by row: a boundary is declared once the frontier stops
+reach frontier row by row, declaring a boundary wherever the frontier stops
 advancing.
 
-**The algorithm itself now lives in `solver_classes`**
-(`find_block_slices` / `block_sizes_from_matrix`) so the detector and the
-solvers that consume its output cannot drift apart. This file is the CLI and
-the verification wrapper.
+**The detection algorithm resides in `solver_classes`**
+(`find_block_slices` / `block_sizes_from_matrix`), so that the detector and the
+solvers consuming its output cannot diverge. This file is the command-line
+front end and the verification wrapper.
 
 ```bash
 python determine_custom_block_size.py .../graphene.h5
 python determine_custom_block_size.py .../graphene.h5 --idx 25
-python determine_custom_block_size.py .../M_E_0.npz              # bare CSR triplet
+python determine_custom_block_size.py .../M_E_0.npz          # bare CSR triplet
 python determine_custom_block_size.py .../graphene.h5 --compare-bs 416
 python determine_custom_block_size.py .../graphene.h5 --emit-python
 ```
 
-Reports block count, size range, `sum(bs²)` (the dense block-storage cost that
-decides whether a custom partition is worth it), and **`offband_nnz`** — exit
-code 1 if that is nonzero. `--compare-bs` prints the same figures for the
-current uniform block size and their storage ratio. `--emit-python` prints one
-line to paste into `run_benchmarks.MATERIAL_BLOCKS`.
+Reports the block count, the size range, `sum(bs^2)` — the dense block-storage
+cost that determines whether a custom partition is worthwhile — and
+**`offband_nnz`**, exiting with status 1 if that is nonzero. `--compare-bs`
+reports the same figures for a uniform partition and their storage ratio.
+`--emit-python` prints a line to paste into `run_benchmarks.MATERIAL_BLOCKS`.
 
-> Two caveats, both benign for QTBM matrices but worth knowing. The detector
-> only looks **forward**, so its partition is guaranteed block-tridiagonal only
-> when the matrix is structurally symmetric — hence the mandatory `offband_nnz`
-> check. And it merges its first two slices by construction, so the leading
-> block is coarser than the true structure; a coarser partition is still
-> correct, just slightly more arithmetic in block 0.
+Two properties of the detector, both benign for QTBM matrices, must be kept in
+mind. It looks **forward only**, so its partition is guaranteed block
+tridiagonal only for structurally symmetric matrices, which is why the
+`offband_nnz` check is mandatory. And it merges its first two slices by
+construction, so the leading block is coarser than the true structure; a
+coarser partition remains correct, at the cost of slightly more arithmetic in
+block 0.
 
 ---
 
-## Arnoldi / shift-invert
+## 3. Arnoldi and shift-invert
 
-`arnoldi_shift_invert_cpu.py` (MUMPS / Block Thomas / SuperLU) and
-`arnoldi_shift_invert_gpu.py` (cuDSS). Same CLI — the GPU script imports
-everything but the backend list from the CPU one.
+`arnoldi_shift_invert_cpu.py` (MUMPS, Block Thomas, SuperLU) and
+`arnoldi_shift_invert_gpu.py` (cuDSS). The interface is identical; the GPU
+script imports everything except the backend list from the CPU one, so the two
+cannot diverge.
 
 ```bash
-python arnoldi_shift_invert_cpu.py MATRIX [options]     # MATRIX: CSR .npz triplet
+python arnoldi_shift_invert_cpu.py MATRIX [options]    # MATRIX: CSR .npz triplet
 ```
 
-Two flags decide everything else:
+Two flags determine everything else, including whether a factorization is
+required at all:
 
 | | `--end largest` | `--end smallest` (default) |
 |---|---|---|
-| `--quantity eigenvalue` | `eigs(A, which=LM)` | `eigs(A, sigma=0, OPinv=A⁻¹)` |
-| `--quantity singular` | `svds(A, which=LM)` | `svds(A⁻¹, which=LM)` → `1/σ` |
-| factorizations | **0**, `--backend` unused | 1 eig / 2 svd (`A` and `Aᴴ`) |
+| `--quantity eigenvalue` | `eigs(A, which=LM)` | `eigs(A, sigma=0, OPinv=A^-1)` |
+| `--quantity singular` | `svds(A, which=LM)` | `svds(A^-1, which=LM)`, then `1/sigma` |
+| factorizations | **0**; `--backend` unused | 1 for eigenvalues, 2 for singular values (`A` and `A^H`) |
 
-`--quantity condition` = singular at both ends + `σ_max/σ_min`, and reports
-`cond·u` per precision for the mixed-precision IR question.
+`--quantity condition` computes singular values at both ends and their ratio,
+and reports `kappa u` per precision, which is the quantity that decides whether
+a mixed-precision refinement scheme can converge; see
+[`../mixed_prec_ir/`](../mixed_prec_ir/).
 
-| flag | default | |
+| Flag | Default | Meaning |
 |---|---|---|
-| `--method` | `arpack` | eig: `arpack`\|`power` · svd: `arpack`\|`propack` |
-| `--backend` | `mumps`\|`cudss` | `blockthomas`, `blockthomas_inv`, `superlu`, `gmres_cupy` |
+| `--method` | `arpack` | eigenvalues: `arpack` or `power`; singular values: `arpack` or `propack` |
+| `--backend` | `mumps` / `cudss` | also `blockthomas`, `blockthomas_inv`, `superlu`, `gmres_cupy` |
 | `-k` | 1 | how many values |
-| `--factor-dtype` | `c128` | `c64` factorizes in single precision; Krylov stays c128 |
+| `--factor-dtype` | `c128` | `c64` factorizes in single precision; the Krylov method stays at c128 |
 | `--tol` | 1e-8 | on the *transformed* problem |
-| `--ncv` | `max(2k+1,20)` | arpack basis size; raise if it stalls |
-| `--maxiter` | — | arpack restarts / power iterations |
+| `--ncv` | `max(2k+1, 20)` | ARPACK basis size; raise if convergence stalls |
+| `--maxiter` | — | ARPACK restarts or power iterations |
 | `--no-shift-invert` | off | attack the small end of `A` directly; slow, for comparison |
-| `--no-fallback` | off | don't retry propack failures with arpack |
+| `--no-fallback` | off | do not retry a PROPACK failure with ARPACK |
 
 ```bash
 python arnoldi_shift_invert_cpu.py MATRIX --quantity condition
 python arnoldi_shift_invert_cpu.py MATRIX --quantity singular --method propack -k 5
-python arnoldi_shift_invert_cpu.py MATRIX --method power --maxiter 200  # stalls
+python arnoldi_shift_invert_cpu.py MATRIX --method power --maxiter 200
 python arnoldi_shift_invert_gpu.py MATRIX --quantity singular --backend cudss
 ```
 
-Three things worth knowing:
+Three properties of the implementation to be aware of:
 
-- **Residuals are against the original `A`**, not the transformed operator.
-  `--tol` refers to the latter, so only the residual column says whether a
-  value is trustworthy.
-- **PROPACK is handicapped by scipy, not by PROPACK.** `svds` hardcodes
-  `maxiter=None` in its propack branch, so it falls back to `kmax = 10*k` —
-  a basis of 10 at `k=1`, against arpack's 20. Raising `-k` is the only lever.
-  A failure under `--end smallest` retries with arpack on the factorizations
-  already paid for.
+- **Residuals are measured against the original `A`**, not against the
+  transformed operator. `--tol` refers to the latter, so only the residual
+  column establishes whether a value is converged.
+- **PROPACK is constrained by the SciPy interface, not by PROPACK.** `svds`
+  passes `maxiter=None` in its PROPACK branch, so PROPACK falls back to its own
+  default `kmax = 10k`: a basis of 10 at `k = 1`, against ARPACK's default
+  `ncv` of 20. Raising `-k` is the only control the public interface offers. A
+  failure under `--end smallest` retries with ARPACK on the factorizations
+  already computed.
 - **`--end smallest` for singular values costs two factorizations.** `svds`
-  needs `rmatvec` and neither MUMPS nor Block Thomas exposes a transpose solve.
+  requires `rmatvec`, and neither the MUMPS nor the Block Thomas Python
+  interface exposes a transpose solve.

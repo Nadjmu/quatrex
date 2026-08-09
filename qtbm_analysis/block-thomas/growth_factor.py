@@ -1,69 +1,99 @@
 #!/usr/bin/env python3
 """
-#5. Growth factor / backward-stability analysis of the LU-based solvers
+Factor growth and backward stability of the stored LU factorizations.
 
-growth_factor.py -- reads a material's HDF5 file and, for every solver whose
-explicit factors are stored there, reports how much the factorization grew
-relative to the matrix it factored.
+Input
+-----
+A material HDF5 file whose solver groups were written by
+``solvers/factor_io.py``. For every energy index requested and every solver
+that stores explicit factors, the following are read:
 
-(Was blockthomas_growth_factor.py, which only handled Block Thomas. SuperLU
-and UMFPACK expose explicit L, U too, so they are analysed by the same code
-path here -- the only thing that differs per solver is which matrix the
-factors actually reconstruct.)
+    E_<idx>/M                             the system matrix A
+    E_<idx>/blockthomas/<dtype>/          L, U, Dmod_lu, Dmod_piv, block_sizes
+    E_<idx>/blockthomas_inv/<dtype>/      L, U, Dmod, Dmod_inv, inv_scale_t
+    E_<idx>/superlu/<dtype>/              L, U, perm_r, perm_c
+    E_<idx>/umfpack/<dtype>/              L, U, perm_r, perm_c, R
 
-WHY. All of these are LU-based, so (per Higham) none is unconditionally
-backward stable: the perturbation introduced is bounded entrywise by
+The file is opened read-only. Solvers or precisions absent from the file are
+reported and skipped.
 
-        |A - L U|  <=  gamma_n * |L| |U|
+Motivation
+----------
+All four solvers are LU based, so by Higham none is unconditionally backward
+stable. The computed factors satisfy the entrywise bound
 
-which, in a monotone norm (1- or inf-norm), gives
+    |A - L U|  <=  gamma_n |L| |U|,        gamma_n = n u / (1 - n u),
 
-        ||A - L U||  <=  gamma_n * || |L| |U| ||.
+which in any monotone norm gives ||A - L U|| <= gamma_n || |L| |U| ||. A
+factorization is therefore backward stable in practice precisely when the
+factors do not grow relative to A.
 
-A factorization is backward stable in practice iff the growth of the factors
-relative to A stays modest. That growth is a property of the PIVOTING, and is
-INDEPENDENT of cond(A): an ill-conditioned A can factor with tiny growth, and
-a well-conditioned A can grow badly if a Schur-complement block becomes badly
-scaled. Conditioning governs the accuracy of x; growth governs the backward
-error. This is exactly the comparison of interest for Block Thomas, whose
-block pivoting is weaker than the global partial pivoting with column
-ordering that SuperLU and UMFPACK do -- those two are the reference points
-that say whether exploiting the block structure costs stability.
+That growth is a property of the pivoting and is independent of kappa(A): an
+ill-conditioned A may factor with negligible growth, and a well-conditioned A
+may grow badly if a Schur complement becomes badly scaled. Conditioning bounds
+the forward error of x; growth bounds the backward error. The two must not be
+conflated.
 
-WHAT IS REPORTED, per (index, solver, dtype, norm):
+Block Thomas pivots only within each diagonal block, which is weaker than the
+global partial pivoting with column ordering performed by SuperLU and UMFPACK.
+Those two are included as reference points that quantify what, if anything,
+exploiting the block structure costs in stability.
 
-    loose ratio  =  ||L|| * ||U|| / ||A_eff||     (classical, always an upper bound)
-    tight ratio  =  || |L| |U| || / ||A_eff||     (true Wilkinson quantity, sharper)
-    rho          =  max|U_ij| / max|A_eff_ij|     (pivot growth factor, norm-free)
-    resid_rel    =  ||A_eff - L U|| / ||A_eff||   (correctness guard)
+Algorithm
+---------
+Per (index, solver, dtype):
 
-A_eff IS NOT ALWAYS A. Each solver's factors reconstruct a different matrix,
-and using ||A|| as the denominator regardless would silently misreport the
-ratios for UMFPACK. The per-solver conventions:
+1. Assemble the global factors L and U from what that solver stored, and form
+   A_eff, the matrix those factors reconstruct (see below).
+2. Report, for both the 1-norm and the infinity norm,
 
-    blockthomas      A            == L @ U     (no permutation, no scaling)
-    blockthomas_inv  A            == L @ U     (same, assembled from D_mod)
-    superlu          Pr @ A @ Pc  == L @ U
-    umfpack          Pr @ diag(1/R) @ A @ Pc == L @ U
+       loose ratio  ||L|| ||U|| / ||A_eff||        classical, an upper bound
+       tight ratio  || |L| |U| || / ||A_eff||      the quantity in the bound
+       rho          max|U_ij| / max|A_eff_ij|      pivot growth factor
+       resid_rel    ||A_eff - L U|| / ||A_eff||    reconstruction guard
 
-Permutations alone do not change the 1- or inf-norm (a row permutation
-reorders rows; a column permutation permutes entries within each row, leaving
-every row sum intact), so SuperLU could reuse ||A||. UMFPACK's ROW SCALING
-does change it, so A_eff is formed explicitly in all cases rather than
-special-cased -- that also keeps the residual guard honest.
+resid_rel is not a stability metric. It verifies that the assumed factor
+convention holds for the build that produced the file; if it is not near the
+unit roundoff of the stored precision, the other three columns are meaningless.
 
-Over a sweep (--start/--end) the per-index metrics are accumulated and, unless
---no-plot is given, written to PLOTDIR as:
-    <material>_growth_factor.png     ratios + rho + residual vs index
-    <material>_growth_factor.csv     the raw per-(index,solver,dtype,norm) numbers
+A_eff is solver dependent
+-------------------------
+Each solver's factors reconstruct a different matrix, and using ||A|| as the
+denominator throughout would misreport UMFPACK:
 
-Usage:
+    blockthomas      A                          == L U
+    blockthomas_inv  A                          == L U
+    superlu          Pr A Pc                    == L U
+    umfpack          Pr diag(1/R) A Pc          == L U
+
+A permutation alone leaves the 1-norm and the infinity norm unchanged: a row
+permutation reorders rows, and a column permutation permutes entries within
+each row, so every row sum is preserved. UMFPACK's row scaling does change
+them. A_eff is therefore built explicitly in all cases rather than
+special-cased, which also keeps resid_rel meaningful.
+
+For the half-precision groups A_eff is neither A nor a permutation of it: those
+factors were computed from the real embedding of A applied block by block and
+scaled by a global power of two s. Block-local embedding differs from embedding
+A globally by a permutation, so effective_A() rebuilds the matrix exactly as
+the solver did, from the recorded partition.
+
+Output
+------
+    <plotdir>/<material>_growth_factor.csv
+
+one row per (index, solver, dtype, norm), plus a per-index report on stdout.
+No figures are produced; see plotting/plot_growth_factor.py, which consumes the
+CSV.
+
+Usage
+-----
     python growth_factor.py /scratch/yimili/matrices/hdf5/graphene.h5 --idx 25
-    python growth_factor.py /scratch/.../graphene.h5 --start 1 --end 400
-    python growth_factor.py /scratch/.../graphene.h5 --start 1 --end 400 \
+    python growth_factor.py .../graphene.h5 --start 1 --end 400
+    python growth_factor.py .../graphene.h5 --start 1 --end 400 \
         --solvers blockthomas superlu umfpack --dtype complex128
-
-The HDF5 layout assumed is the one factor_io.py writes; see its docstring.
+    python ../plotting/plot_growth_factor.py \
+        /scratch/yimili/block-thomas/graphene_growth_factor.csv
 """
 
 import argparse
@@ -82,14 +112,16 @@ from scipy.sparse.linalg import norm as spnorm
 from factor_io import load_sparse_factor, load_blocks
 from solver_classes import extract_blocks_sparse, embed_block
 
+# "complex32" is not a NumPy dtype; it is the storage label used for the
+# half-precision embedded-real factorizations.
 DTYPES = ("complex128", "complex64", "complex32")
 SOLVERS = ("blockthomas", "blockthomas_inv", "superlu", "umfpack")
 NORMS = ("1-norm", "inf-norm")
-DEFAULT_PLOTDIR = Path("/scratch/yimili/block-thomas")
+DEFAULT_OUTDIR = Path("/scratch/yimili/block-thomas")
 
 
 # ---------------------------------------------------------------------------
-# original matrix M  (stored as a CSC triplet, same as everywhere else)
+# the original matrix, stored as a CSC triplet
 # ---------------------------------------------------------------------------
 def load_M(f, idx):
     g = f[f"E_{idx}/M"]
@@ -99,16 +131,17 @@ def load_M(f, idx):
 
 
 def _permutation_matrix(perm):
-    """perm[i] = j means row/col i maps to position j."""
+    """Permutation matrix P with perm[i] = j meaning row or column i maps to j."""
     n = len(perm)
     return sp.csr_matrix((np.ones(n), (np.arange(n), perm)), shape=(n, n))
 
 
 # ---------------------------------------------------------------------------
-# Block Thomas: assemble the genuine global block-bidiagonal L, U with
-# A == L_global @ U_global exactly (verified to machine precision).
+# Block Thomas: assembly of the global block-bidiagonal factors satisfying
+# A == L_global @ U_global exactly.
 # ---------------------------------------------------------------------------
 def _piv_to_perm(piv, m):
+    """LAPACK sequential row-interchange vector to an explicit permutation."""
     perm = list(range(m))
     for i, p in enumerate(piv):
         perm[i], perm[p] = perm[p], perm[i]
@@ -116,6 +149,7 @@ def _piv_to_perm(piv, m):
 
 
 def _reconstruct_dmod(lu_k, piv_k):
+    """Modified diagonal block D_mod[k] = P^T L U from its packed LU factors."""
     bs = lu_k.shape[0]
     Lk = np.tril(lu_k, -1) + np.eye(bs, dtype=lu_k.dtype)
     Uk = np.triu(lu_k)
@@ -124,14 +158,24 @@ def _reconstruct_dmod(lu_k, piv_k):
 
 
 def _sparse_ok(a):
-    """scipy.sparse has no float16, so fp16 factors are promoted to float32.
-    The promotion is exact and every quantity reported here is a ratio, so it
-    changes nothing -- it only makes the blocks storable as sparse."""
+    """
+    Promote float16 blocks to float32, which scipy.sparse supports.
+
+    The promotion is exact, and every quantity reported by this module is a
+    ratio, so it does not affect any result. It only makes the blocks storable
+    in a sparse container.
+    """
     a = np.asarray(a)
     return a.astype(np.float32) if a.dtype == np.float16 else a
 
 
 def _bmat_bidiag(diag_blocks, offdiag_blocks, position):
+    """
+    Block-bidiagonal sparse matrix from a diagonal and one off-diagonal.
+
+    position is "sub" for the first subdiagonal and "super" for the first
+    superdiagonal.
+    """
     N = len(diag_blocks)
     grid = [[None] * N for _ in range(N)]
     for k in range(N):
@@ -146,14 +190,14 @@ def _bmat_bidiag(diag_blocks, offdiag_blocks, position):
 
 def effective_A(group, A):
     """
-    The matrix a stored Block Thomas factorization actually factored.
+    The matrix that a stored Block Thomas factorization was computed from.
 
-    For the complex variants that is A itself. The fp16 variants never see A:
-    they factor the exact real embedding  z = a+bi -> [[a,-b],[b,a]]  applied
-    BLOCK BY BLOCK, scaled by a global power of two s. Block-local embedding
-    is not the same matrix as embedding A globally -- the two differ by a
-    permutation -- so A_eff is rebuilt here the same way the solver built it,
-    from the recorded block partition, rather than derived from A wholesale.
+    For the complex variants this is A itself. The half-precision variants
+    never see A: they factor the exact real embedding z = a + bi -> [[a, -b],
+    [b, a]] applied block by block and scaled by a global power of two s.
+    Embedding block by block and embedding A globally differ by a permutation,
+    so A_eff is rebuilt here exactly as the solver built it, from the recorded
+    partition, rather than derived from A wholesale.
     """
     if not group.attrs.get("embedded_real", False):
         return A
@@ -171,14 +215,19 @@ def effective_A(group, A):
 
 def assemble_blockthomas_lu(group, A):
     """
-    Implementation 1: rebuild each modified diagonal block from its packed LU
-    and pivots, then form the global factors.
+    Global factors of an implementation 1 factorization.
 
-        L_global = block-bidiagonal(I;  E_k = L_off[k-1] @ D_mod[k-1]^-1)
+    Each modified diagonal block is rebuilt from its packed LU and pivots, then
+    the global block-bidiagonal factors are formed as
+
+        L_global = block-bidiagonal(I;      E_k = L_off[k-1] D_mod[k-1]^-1)
         U_global = block-bidiagonal(D_mod;  U_off)
 
-    Works for uniform and ragged partitions alike -- load_blocks() hands back
-    a stacked array or a list of per-block arrays, and both index the same way.
+    Uniform and ragged partitions are handled identically: load_blocks returns
+    a stacked array in the first case and a list of per-block arrays in the
+    second, and both are indexed the same way.
+
+    Returns (A_eff, L_global, U_global).
     """
     L_off = load_blocks(group, "L")
     U_off = load_blocks(group, "U")
@@ -207,10 +256,14 @@ def assemble_blockthomas_lu(group, A):
 
 def assemble_blockthomas_inv_lu(group, A):
     """
-    Implementation 2: the same global L, U exist mathematically, but this
-    variant never forms LU factors -- it stores D_mod and its explicit
-    inverse, which is exactly what the assembly needs, and more directly than
-    Implementation 1 (no triangular solve against packed factors required).
+    Global factors of an implementation 2 factorization.
+
+    The same global L and U exist mathematically, but this variant never forms
+    LU factors. It stores D_mod and its explicit inverse, which is precisely
+    what the assembly requires, and more directly than implementation 1: no
+    triangular solve against packed factors is needed.
+
+    Returns (A_eff, L_global, U_global).
     """
     L_off = load_blocks(group, "L")
     U_off = load_blocks(group, "U")
@@ -219,11 +272,11 @@ def assemble_blockthomas_inv_lu(group, A):
     N = len(D_mod)
     dtype = np.dtype(np.asarray(D_mod[0]).dtype)
 
-    # fp16 factors are stored scaled: G[k] / t[k] is the inverse of the
-    # s-scaled embedded block. The per-block scales t are exact powers of two
-    # and cancel out of every ratio reported here, but the assembly still
-    # needs them to reproduce A_eff. Undo them in fp32 -- 1/t is routinely
-    # subnormal in fp16.
+    # Half-precision inverses are stored scaled: G[k] / t[k] is the inverse of
+    # the s-scaled embedded block. The per-block scales t are exact powers of
+    # two and cancel out of every ratio reported here, but the assembly needs
+    # them to reproduce A_eff. They are undone in fp32 because 1/t is
+    # frequently subnormal in fp16.
     t = group["inv_scale_t"][:] if "inv_scale_t" in group else np.ones(N)
     if dtype == np.dtype(np.float16):
         dtype = np.dtype(np.float32)
@@ -244,7 +297,11 @@ def assemble_blockthomas_inv_lu(group, A):
 # the matrix they reconstruct differs.
 # ---------------------------------------------------------------------------
 def assemble_superlu(group, A):
-    """Pr @ A @ Pc == L @ U, with Pr built from argsort(perm_r)."""
+    """
+    Pr A Pc == L U, with Pr built from argsort(perm_r).
+
+    Returns (A_eff, L, U).
+    """
     L = load_sparse_factor(group["L"])
     U = load_sparse_factor(group["U"])
     Pr = _permutation_matrix(np.argsort(group["perm_r"][:]))
@@ -254,10 +311,14 @@ def assemble_superlu(group, A):
 
 def assemble_umfpack(group, A):
     """
-    Pr @ diag(1/R) @ A @ Pc == L @ U -- UMFPACK additionally row-scales, and
-    that scaling DOES change the norms, so it belongs in A_eff. (The
-    convention was pinned down empirically; the resid_rel column is the guard
-    that it still holds for your UMFPACK build.)
+    Pr diag(1/R) A Pc == L U, with Pr built from argsort(perm_r).
+
+    UMFPACK additionally scales the rows, and that scaling does change the
+    norms, so it belongs in A_eff. The convention was determined empirically;
+    the resid_rel column is the guard that it still holds for the UMFPACK build
+    that produced the file.
+
+    Returns (A_eff, L, U).
     """
     L = load_sparse_factor(group["L"])
     U = load_sparse_factor(group["U"])
@@ -276,22 +337,28 @@ ASSEMBLERS = {
 
 
 # ---------------------------------------------------------------------------
-# the actual stability metrics
+# stability metrics
 # ---------------------------------------------------------------------------
 def _absmax(M):
+    """Largest absolute stored entry of a sparse matrix, 0 if it has none."""
     M = M.tocoo()
     return float(np.abs(M.data).max()) if M.nnz else 0.0
 
 
 def analyse(A, L, U):
     """
-    For both the 1-norm and inf-norm: ||A||, ||L||, ||U||, ||L||*||U||,
-    || |L||U| ||, the loose and tight ratios, and the assembly residual.
-    The pivot growth factor rho = max|U| / max|A| is norm-free, so it is
-    computed once and repeated in each row for convenient plotting.
+    Growth and residual metrics of one factorization.
+
+    Computed for both the 1-norm and the infinity norm: ||A||, ||L||, ||U||,
+    the product ||L|| ||U||, the norm of |L| |U|, the loose and tight ratios,
+    and the reconstruction residual. The pivot growth factor
+    rho = max|U| / max|A| is norm-free; it is computed once and repeated in
+    both entries so that the caller can emit uniform rows.
+
+    Returns dict keyed by norm label.
     """
-    absLU = (abs(L) @ abs(U))          # |L||U|, stays sparse
-    R = (A - (L @ U)).tocsr()          # correctness guard
+    absLU = (abs(L) @ abs(U))          # |L| |U|, stays sparse
+    R = (A - (L @ U)).tocsr()          # reconstruction guard
     R.eliminate_zeros()
 
     a_absmax = _absmax(A)
@@ -317,6 +384,7 @@ def analyse(A, L, U):
 
 
 def _fmt_block(solver, dtype_name, res):
+    """Human-readable report of one analyse() result."""
     lines = [f"    {solver} / {dtype_name}"]
     for label in NORMS:
         r = res[label]
@@ -344,7 +412,14 @@ def _fmt_block(solver, dtype_name, res):
 
 
 def process_index(f, idx, solvers, dtypes, records):
-    """Analyse one index across solvers/dtypes; print a report, append rows."""
+    """
+    Analyse one energy index across the requested solvers and precisions.
+
+    Prints a per-combination report and appends one record per (solver, dtype,
+    norm) to `records` in place. Combinations absent from the file are skipped;
+    a failure to assemble or analyse one combination is reported and does not
+    abort the sweep.
+    """
     print(f"idx = {idx}")
     A = None
     per_key = {}
@@ -352,7 +427,7 @@ def process_index(f, idx, solvers, dtypes, records):
     for solver in solvers:
         root = f.get(f"E_{idx}/{solver}")
         if root is None:
-            print(f"    {solver}: no group at this index -- skipping")
+            print(f"    {solver}: no group at this index, skipping")
             continue
         for dt in dtypes:
             g = root.get(dt)
@@ -361,8 +436,9 @@ def process_index(f, idx, solvers, dtypes, records):
             if A is None:
                 A = load_M(f, idx)
             try:
-                # measure in the precision the factors were computed at;
-                # fp16 factors are embedded-real, so keep A at full precision
+                # Measure in the precision the factors were computed at. The
+                # half-precision factors are embedded-real, so A is kept at
+                # full precision and effective_A performs the embedding.
                 A_dt = A if dt == "complex32" else A.astype(np.dtype(dt))
                 A_eff, L, U = ASSEMBLERS[solver](g, A_dt)
                 res = analyse(A_eff, L, U)
@@ -380,7 +456,9 @@ def process_index(f, idx, solvers, dtypes, records):
                                     rho=r["rho"], loose=r["loose"],
                                     tight=r["tight"], resid_rel=r["resid_rel"]))
 
-    # precision comparison within each solver, as before
+    # Ratio of the tight growth ratio at single against double precision. The
+    # ratio is precision-independent in exact arithmetic, so a value far from
+    # unity indicates that rounding, not the pivoting strategy, dominates.
     for solver in solvers:
         a = per_key.get((solver, "complex128"))
         b = per_key.get((solver, "complex64"))
@@ -394,9 +472,10 @@ def process_index(f, idx, solvers, dtypes, records):
 
 
 # ---------------------------------------------------------------------------
-# output: CSV + plots
+# output
 # ---------------------------------------------------------------------------
 def write_csv(records, csv_path):
+    """Write the accumulated records; the schema consumed by plot_growth_factor."""
     fields = ["idx", "solver", "dtype", "norm", "nA", "nL", "nU", "prod",
               "LU_abs", "rho", "loose", "tight", "resid_rel"]
     with open(csv_path, "w", newline="") as fh:
@@ -407,92 +486,24 @@ def write_csv(records, csv_path):
     print(f"wrote {csv_path}  ({len(records)} rows)")
 
 
-SOLVER_COLOR = {
-    "blockthomas":     "#2E86AB",
-    "blockthomas_inv": "#8E44AD",
-    "superlu":         "#555555",
-    "umfpack":         "#E67E22",
-}
-DTYPE_LS = {"complex128": "-", "complex64": "--", "complex32": ":"}
-
-
-def make_plot(records, material, png_path):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    if not records:
-        print("no records to plot")
-        return
-
-    combos = sorted({(r["solver"], r["dtype"]) for r in records})
-
-    # one row per norm: tight/loose ratio | growth factor rho | residual
-    fig, axes = plt.subplots(len(NORMS), 3, figsize=(18, 4.2 * len(NORMS)),
-                             squeeze=False)
-
-    for row_i, label in enumerate(NORMS):
-        ax_ratio, ax_rho, ax_resid = axes[row_i]
-
-        for solver, dt in combos:
-            rows = sorted((r for r in records if r["norm"] == label
-                           and r["solver"] == solver and r["dtype"] == dt),
-                          key=lambda r: r["idx"])
-            if not rows:
-                continue
-            idxs = [r["idx"] for r in rows]
-            c = SOLVER_COLOR.get(solver, None)
-            ls = DTYPE_LS.get(dt, "-")
-            tag = f"{solver} ({dt})"
-
-            ax_ratio.semilogy(idxs, [r["tight"] for r in rows], ls, marker=".",
-                              ms=3, lw=1.1, color=c, label=f"tight  {tag}")
-            ax_ratio.semilogy(idxs, [r["loose"] for r in rows], ls, lw=0.9,
-                              color=c, alpha=0.45, label=f"loose  {tag}")
-            ax_rho.semilogy(idxs, [r["rho"] for r in rows], ls, marker=".",
-                            ms=3, lw=1.1, color=c, label=tag)
-            ax_resid.semilogy(idxs, [r["resid_rel"] for r in rows], ls,
-                              marker=".", ms=3, lw=1.1, color=c, label=tag)
-
-        ax_ratio.set_title(f"factor-growth ratios vs A  [{label}]")
-        ax_ratio.set_ylabel("ratio to ||A||")
-        ax_rho.set_title(r"pivot growth factor  $\rho = \max|U| / \max|A|$")
-        ax_rho.set_ylabel(r"$\rho$")
-        ax_resid.set_title(f"assembly residual ||A-LU||/||A||  [{label}]")
-        ax_resid.set_ylabel("relative residual")
-
-        for ax in (ax_ratio, ax_rho, ax_resid):
-            ax.set_xlabel("energy index")
-            ax.grid(True, which="both", ls=":", alpha=0.4)
-            ax.legend(fontsize=7, ncol=2)
-
-    fig.suptitle(f"LU backward-stability / growth factor -- {material}",
-                 fontsize=14, y=1.005)
-    fig.tight_layout()
-    fig.savefig(png_path, dpi=140, bbox_inches="tight")
-    plt.close(fig)
-    print(f"wrote {png_path}")
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("h5path", type=Path, help="raw material HDF5 file")
+    ap.add_argument("h5path", type=Path, help="material HDF5 file")
     grp = ap.add_mutually_exclusive_group(required=True)
     grp.add_argument("--idx", type=int, help="a single energy index")
-    grp.add_argument("--start", type=int, help="first index (inclusive, with --end)")
-    ap.add_argument("--end", type=int, help="last index (inclusive, with --start)")
+    grp.add_argument("--start", type=int, help="first index, inclusive, with --end")
+    ap.add_argument("--end", type=int, help="last index, inclusive, with --start")
     ap.add_argument("--solvers", nargs="+", choices=list(SOLVERS),
                     default=list(SOLVERS),
-                    help="which solvers' stored factors to analyse "
+                    help="solvers whose stored factors to analyse "
                          "(default: all that are present)")
     ap.add_argument("--dtype", choices=list(DTYPES), default=None,
                     help="restrict to one precision (default: all present)")
-    ap.add_argument("--plotdir", type=Path, default=DEFAULT_PLOTDIR,
-                    help=f"where to write the plot + csv (default: {DEFAULT_PLOTDIR})")
-    ap.add_argument("--no-plot", action="store_true",
-                    help="skip plot/CSV output (print only)")
-    ap.add_argument("--no-csv", action="store_true", help="skip the CSV")
+    ap.add_argument("--outdir", type=Path, default=DEFAULT_OUTDIR,
+                    help=f"where to write the CSV (default: {DEFAULT_OUTDIR})")
+    ap.add_argument("--no-csv", action="store_true",
+                    help="print the per-index report only, write no CSV")
     args = ap.parse_args()
 
     if args.start is not None and args.end is None:
@@ -500,24 +511,23 @@ def main():
     indices = [args.idx] if args.idx is not None else range(args.start, args.end + 1)
     dtypes = (args.dtype,) if args.dtype else DTYPES
 
-    material = args.h5path.stem            # e.g. "graphene"
+    material = args.h5path.stem
     records = []
 
     with h5py.File(args.h5path, "r") as f:
         for idx in indices:
             process_index(f, idx, args.solvers, dtypes, records)
 
-    if args.no_plot:
+    if args.no_csv:
         return
     if not records:
-        print("no metrics collected -- nothing to plot or save")
+        print("no metrics collected; nothing to write")
         return
 
-    args.plotdir.mkdir(parents=True, exist_ok=True)
-    stem = f"{material}_growth_factor"
-    if not args.no_csv:
-        write_csv(records, args.plotdir / f"{stem}.csv")
-    make_plot(records, material, args.plotdir / f"{stem}.png")
+    args.outdir.mkdir(parents=True, exist_ok=True)
+    csv_path = args.outdir / f"{material}_growth_factor.csv"
+    write_csv(records, csv_path)
+    print(f"Plot with: python ../plotting/plot_growth_factor.py {csv_path}")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,28 @@
-#Compares the forward accuracy of different solvers for a given energy in a HDF5 file.
+"""
+Forward-error comparison of stored solutions at one energy index.
+
+Input
+-----
+A material HDF5 file already populated by run_bench/run_benchmarks.py. For each
+(solver, dtype) listed in SOLVERS, the stored solution E_<idx>/<solver>/<dtype>/x
+is read; no system is solved here.
+
+Algorithm
+---------
+One (solver, dtype) is designated the reference, BASE, and the relative
+difference ||x - x_base|| / ||x_base|| is reported per right-hand-side column.
+Reporting per column rather than in aggregate is deliberate: a single column
+solving far worse than the rest is invisible in a Frobenius-norm figure.
+
+This measures agreement between solvers, not accuracy in the absolute sense,
+since the reference is itself a computed solution. It is the appropriate
+quantity when the exact solution is unknown and the question is whether two
+solvers, or two precisions, disagree beyond what their unit roundoff explains.
+
+Output
+------
+A per-solver, per-column table on stdout. Nothing is written to disk.
+"""
 
 import h5py
 import numpy as np

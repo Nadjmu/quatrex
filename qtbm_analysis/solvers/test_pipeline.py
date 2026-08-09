@@ -1,18 +1,34 @@
 #!/usr/bin/env python3
 """
-test_pipeline.py -- self-tests for the solver + factor-I/O pipeline, on
-synthetic complex block-tridiagonal systems. No cluster data required.
+Self-tests for the solver and factor-persistence pipeline.
 
-Covers, for uniform AND custom (non-uniform) partitions:
-    - agreement of every Block Thomas variant with a dense reference solve
+Input
+-----
+Synthetic complex block-tridiagonal systems generated in memory. No cluster
+data is required, so these tests run anywhere.
+
+Coverage
+--------
+For uniform and for custom non-uniform partitions:
+
+    - every Block Thomas variant against a dense reference solve
     - the block-structure detector and its off-band guard
-    - multi-RHS handling
-    - factor layout (stacked when uniform, ragged when not)
-    - a full HDF5 round trip: bench() -> factor_io -> the growth-factor
-      assemblers, checking that the reloaded factors still reproduce
-      A == L @ U to machine precision
+    - handling of multiple right-hand sides
+    - the factor layout, stacked for a uniform partition and ragged otherwise
+    - a full HDF5 round trip, bench() to factor_io to the growth-factor
+      assemblers, verifying that the reloaded factors still reproduce
+      A == L U to machine precision
 
-Run:  python test_pipeline.py
+The HDF5 section requires h5py and is skipped when it is absent. UMFPACK is the
+one solver with no coverage here, since it has no pure-Python fallback.
+
+Output
+------
+A PASS or FAIL line per check, and a non-zero exit status if any failed.
+
+Usage
+-----
+    python test_pipeline.py
 """
 
 import shutil
@@ -40,7 +56,13 @@ def check(name, ok, detail=""):
 
 
 def build_system(block_sizes, seed=0, diag_boost=3.0):
-    """Random complex block-tridiagonal system with the given partition."""
+    """
+    Random complex block-tridiagonal system under the given partition.
+
+    diag_boost is added to the diagonal to keep the modified diagonal blocks
+    well conditioned, so that a failure indicates an error in the
+    implementation rather than an ill-conditioned test case.
+    """
     rng = np.random.default_rng(seed)
     sizes = list(block_sizes)
     N = len(sizes)

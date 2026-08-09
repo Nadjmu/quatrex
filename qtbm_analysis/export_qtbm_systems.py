@@ -1,10 +1,29 @@
 #!/usr/bin/env python3
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
-"""Export QTBM linear systems for one energy and one k-point.
+"""
+Export of the QTBM linear system at one energy and one k-point.
 
-This utility reproduces the matrix assembly used in QTBM.run and writes
-assembled matrices to disk for inspection/debugging.
+Purpose
+-------
+Reproduces the matrix assembly performed inside QTBM.run and writes the
+assembled operators to disk, so that the linear systems the solver actually
+encounters can be studied independently of the transport calculation that
+produces them. Everything downstream in qtbm_analysis consumes these files.
+
+Modes
+-----
+    overlap                 S
+    hamiltonian             H
+    hamiltonian-overlap     both, without contact contributions
+    system-with-contacts    H and S with the contact blocks assembled
+    full                    M(E) = E S - H - Sigma(E), and the right-hand side
+
+Output
+------
+Sparse operators as CSR .npz triplets and dense arrays as .npy, together with
+a JSON record of the configuration used, so that an exported system can be
+traced back to the calculation that produced it.
 """
 
 from __future__ import annotations

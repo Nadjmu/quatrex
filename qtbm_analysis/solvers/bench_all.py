@@ -1,56 +1,67 @@
 """
-bench_all.py -- extended benchmark driver.  This is the ONLY bench()
-implementation -- both the notebook and run_benchmarks.py import it from
-here, so there is exactly one place to fix bugs or add solvers.
+Uniform benchmarking of every solver on one linear system.
 
-Import and use:
+Purpose
+-------
+This module holds the single bench() implementation used by every driver in
+the project, so that a solver added or a measurement corrected here propagates
+to all of them and no two drivers can measure the same quantity differently.
 
-    from bench_all import bench, DEFAULT_SOLVERS
+Input
+-----
+    As      : the system matrix, sparse.
+    B       : the right-hand side, (n,) or (n, nrhs).
+    idx     : energy index, used for reporting and for the HDF5 group path.
+    bs      : the Block Thomas partition, an int for a uniform partition or a
+              sequence of per-block sizes for a custom one.
+    dtypes  : working precisions to run, in order. The first defines the
+              baseline.
+    solvers : which solvers to run.
+    exclude : (solver, dtype) combinations to skip deliberately.
+    h5file  : an open HDF5 file in mode "a" or "r+"; results are appended to it
+              when save is true.
 
-    metrics = []
-    with h5py.File(lu_path, "a") as f:
-        for idx in sweep:
-            if rhs[idx].shape[-1] == 0:
-                continue
-            m = bench(M_arr_sp[idx], rhs[idx], idx, bs,
-                      dtypes=(np.complex128, np.complex64),
-                      h5file=f, save=True)
-            metrics.append(m)
+Algorithm
+---------
+Each solver is constructed once per precision, which performs the entire
+factorization and is what the reported factorization time measures, and is then
+applied to B, which is what the solve time measures. For each combination the
+following are recorded:
 
-Every solver in `solvers` is run once per dtype in `dtypes`.  The FIRST dtype
-defines the baseline: SuperLU at dtypes[0] is what every other (solver, dtype)
-combination's factor/solve speedup and "vs base" solution error refer to.
+    factor    factorization wall time, seconds
+    solve     solve wall time, seconds
+    res       ||As x - B|| / ||B||, the relative residual
+    mem       solver-reported factor footprint, bytes
+    vs_base   ||x - x_base|| / ||x_base||, where x_base is the SuperLU
+              solution at the first requested precision
 
-Result keys are "<solver>_<suffix>", e.g.:
-    superlu_c128, superlu_c64, umfpack_c128, mumps_c64, block_thomas_c64,
-    block_thomas_inv_c128, ...
+Result keys are "<solver>_<suffix>", for example superlu_c128, umfpack_c128,
+block_thomas_inv_c64.
 
-The two fp16 Block Thomas variants are the exception: they are
-precision-fixed, run once per index outside the dtype loop, and use the
-unsuffixed keys "block_thomas_fp16" / "block_thomas_inv_fp16". They are not
-in DEFAULT_SOLVERS -- the fp16 kernels are pure python and far slower than
-LAPACK, so ask for them explicitly (bench_all.FP16_SOLVERS) when you want the
-accuracy data rather than timings.
+The two half-precision Block Thomas variants are the exception. They are
+precision-fixed, so running them inside the precision loop would repeat
+identical work; they run once per index outside it, under the unsuffixed keys
+block_thomas_fp16 and block_thomas_inv_fp16 and the storage label "complex32".
+They are absent from DEFAULT_SOLVERS because their kernels are written in
+NumPy and are orders of magnitude slower than LAPACK: request them explicitly,
+through FP16_SOLVERS, when accuracy rather than timing is being measured.
 
-The 4th argument `bs` accepts either an int (uniform partition) or a sequence
-of per-block sizes (custom partition, e.g. from
-solver_classes.block_sizes_from_matrix). The partition is validated against
-the matrix before any Block Thomas variant runs.
+Skips are per (solver, dtype) and are reported rather than raised: UMFPACK has
+no single-precision build, the GPU solvers require a visible CUDA device, and
+any solver whose package is absent is skipped. This keeps a batch run over
+heterogeneous machines comparable.
 
-Skips are graceful and per-(solver, dtype): UMFPACK has no single-precision
-build so umfpack_c64 prints a skip line; GPU solvers (gmres_cupy, cudss) are
-dropped on CPU-only machines; a missing package skips that solver entirely.
+Block partitions are validated before any Block Thomas variant runs, unless
+check_blocks is false. A partition that cuts a real coupling produces a
+plausible but wrong solution without raising, so the check is on by default;
+it costs one pass over the nonzeros.
 
-`exclude` lets you drop specific (solver, dtype) combinations on purpose,
-e.g. to skip GMRES at single precision across a whole batch run:
+Output
+------
+A dict of the metrics above, and, when save is true, the corresponding groups
+written into h5file by factor_io.
 
-    bench(..., exclude={"gmres": {"complex64"}, "gmres_cupy": {"complex64"}})
-
-Each solver's factor_nbytes() is passed straight through to factor_io's
-savers as `mem`, which store it as a "factor_nbytes" HDF5 attribute -- no
-monkeypatching of factor_io required.
-
-Backwards compatibility: bench(..., dtype=np.complex128) still works and is
+Backwards compatibility: bench(..., dtype=np.complex128) is accepted and
 treated as dtypes=(np.complex128,).
 """
 
@@ -68,31 +79,37 @@ import factor_io as fio
 DEFAULT_SOLVERS = ("superlu", "umfpack", "mumps", "gmres",
                    "gmres_cupy", "cudss", "block_thomas", "block_thomas_inv")
 
-# fp16 Block Thomas is precision-fixed: it ignores the dtype loop and runs
-# exactly once per index, stored under the label "complex32". Not in
-# DEFAULT_SOLVERS -- the pure-python fp16 kernels are orders of magnitude
-# slower than LAPACK, so opt in explicitly when you want the accuracy data.
+# The half-precision variants are precision-fixed: they ignore the precision
+# loop and run exactly once per index, stored under the label "complex32".
+# They are excluded from DEFAULT_SOLVERS because their NumPy kernels are orders
+# of magnitude slower than LAPACK; request them explicitly.
 FP16_SOLVERS = ("block_thomas_fp16", "block_thomas_inv_fp16")
 
 DEFAULT_DTYPES = (np.complex128, np.complex64)
 
 _SUFFIX = {"complex128": "c128", "complex64": "c64",
            "float64": "f64", "float32": "f32"}
-FP16_LABEL = "complex32"       # not a numpy dtype -- a storage label only
+
+# Storage label for the half-precision results. Not a NumPy dtype:
+# np.dtype("complex32") does not exist.
+FP16_LABEL = "complex32"
 
 
 def _sfx(dt):
+    """Short suffix for a precision, used in the result keys."""
     name = np.dtype(dt).name
     return _SUFFIX.get(name, name)
 
 
 def _timed(fn, *args, **kwargs):
+    """Call fn and return (result, elapsed wall time in seconds)."""
     t0 = time.perf_counter()
     out = fn(*args, **kwargs)
     return out, time.perf_counter() - t0
 
 
 def _line(label, t_f, t_s, res, mem, extra=""):
+    """One line of the per-index report."""
     print(f"  {label:20s}: factor {t_f*1e3:8.2f} ms  solve {t_s*1e3:8.3f} ms"
           f"  res {res:.1e}  mem {mem/1e6:7.1f} MB{extra}")
 
@@ -101,28 +118,32 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
           solvers=DEFAULT_SOLVERS, dtype=None, exclude=None,
           check_blocks=True, fp16_inv_dtype=np.float32):
     """
-    bs      : the block partition for the Block Thomas solvers -- an int for a
-              uniform partition (historical behaviour) or a sequence of
-              per-block sizes summing to n for a custom one, e.g. the output
-              of solver_classes.block_sizes_from_matrix(As). Everything else
-              in the signature is unchanged.
+    Run every requested solver on one system and record the metrics.
 
-    exclude : optional dict[str, set[str]] mapping a base solver name
-              ("gmres", "gmres_cupy", "umfpack", ...) to a set of dtype
-              *names* ("complex64", "complex128") to skip for that solver.
-              e.g. {"gmres": {"complex64"}} skips GMRES only at single
-              precision; other solvers and other dtypes are unaffected.
+    Parameters
+    ----------
+    bs : int or sequence
+        Block partition for the Block Thomas solvers: an int for a uniform
+        partition, or a sequence of per-block sizes summing to n for a custom
+        one, such as the output of block_sizes_from_matrix(As).
+    exclude : dict[str, set[str]], optional
+        Maps a solver name to a set of dtype names to skip for that solver, for
+        example {"gmres": {"complex64"}}. Other solvers and other precisions
+        are unaffected.
+    check_blocks : bool
+        Verify that bs is a block-tridiagonal partition of As before any Block
+        Thomas variant runs. A partition that cuts a real coupling does not
+        raise; it discards the coupling and returns a plausible but wrong
+        solution. The check costs one pass over the nonzeros.
+    fp16_inv_dtype : dtype
+        Precision in which BlockThomasExplicitInvFP16 forms its explicit
+        inverses before rounding them to float16.
 
-    check_blocks : verify that `bs` really is a block-tridiagonal partition of
-              As before running any Block Thomas variant. A partition that
-              cuts through real couplings does not raise -- it silently drops
-              them and returns a plausible but wrong x -- so this is on by
-              default and costs one pass over the nonzeros.
-
-    fp16_inv_dtype : precision in which BlockThomasExplicitInvFP16 forms its
-              explicit inverses before rounding them to fp16 (default fp32).
+    Returns
+    -------
+    dict with one entry per (solver, dtype) that ran, plus "idx" and "dtypes".
     """
-    if dtype is not None:                      # old single-dtype signature
+    if dtype is not None:                      # single-precision legacy call
         dtypes = (dtype,)
     if not isinstance(dtypes, (list, tuple)):
         dtypes = (dtypes,)
@@ -135,12 +156,14 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
     nb = np.linalg.norm(B)
     results = {"idx": idx, "dtypes": [np.dtype(d).name for d in dtypes]}
     x_base = None                              # SuperLU solution at dtypes[0]
+                                               # against which vs_base is taken
 
     print(f"idx={idx}  n={n}  B.shape={B.shape}  "
           f"nnz={As.nnz / (n * n):6.2%} of dense  "
           f"baseline=superlu_{_sfx(dtypes[0])}")
 
     def _finish(key, label, solver, x, t_f, t_s, extra="", saver=None):
+        """Record one (solver, dtype) result, report it, and persist it."""
         res = np.linalg.norm(As @ x - B) / nb
         mem = solver.factor_nbytes()
         entry = {"factor": t_f, "solve": t_s, "res": res, "mem": mem}
@@ -153,7 +176,8 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
             saver(x, t_f, t_s, mem)
         return entry
 
-    # blocks depend only on As, not on dtype -> extract once, reuse per dtype
+    # The blocks depend on As alone, not on the precision, so they are
+    # extracted once and reused for every requested precision.
     bt_solvers = [s for s in solvers
                   if s in ("block_thomas", "block_thomas_inv") + FP16_SOLVERS]
     if bt_solvers:
@@ -171,7 +195,7 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
     for dt in dtypes:
         sfx = _sfx(dt)
 
-        # ---- SuperLU (baseline at dtypes[0], regular entry otherwise) ----
+        # ---- SuperLU: the baseline at dtypes[0], an ordinary entry after ----
         if "superlu" in solvers and not _excluded("superlu", dt):
             slu, t_f = _timed(SparseLU, As, dt)
             xs,  t_s = _timed(slu.solve, B)
@@ -181,7 +205,7 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
                     saver=lambda x, tf, ts, mem: fio.save_superlu(
                         h5file, dt, idx, slu, x, tf, ts, mem=mem))
 
-        # ---- UMFPACK (double precision only) -----------------------------
+        # ---- UMFPACK: double precision only ------------------------------
         if "umfpack" in solvers and not _excluded("umfpack", dt):
             try:
                 umf, t_f = _timed(UMFPACK, As, dt)
@@ -194,7 +218,7 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
         elif "umfpack" in solvers:
             print(f"  umfpack {sfx:12s}: skipped (excluded)")
 
-        # ---- MUMPS (no explicit factors -- x + timings saved) ------------
+        # ---- MUMPS: no explicit factors, so only x and timings are saved --
         if "mumps" in solvers and not _excluded("mumps", dt):
             try:
                 mmp, t_f = _timed(MUMPS, As, dt)
@@ -208,7 +232,7 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
         elif "mumps" in solvers:
             print(f"  mumps {sfx:14s}: skipped (excluded)")
 
-        # ---- GMRES (SciPy, CPU) -------------------------------------------
+        # ---- GMRES on the CPU, through SciPy ------------------------------
         if "gmres" in solvers and not _excluded("gmres", dt):
             gm, t_f = _timed(GMRES, As, dt)
             xg, t_s = _timed(gm.solve, B)
@@ -221,13 +245,14 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
         elif "gmres" in solvers:
             print(f"  gmres (scipy) {sfx:7s}: skipped (excluded)")
 
-        # ---- GMRES (CuPy, GPU only) ----------------------------------------
+        # ---- GMRES on the GPU, through CuPy -------------------------------
         if "gmres_cupy" in solvers and not _excluded("gmres_cupy", dt):
             if not gpu_available():
                 print(f"  gmres (cupy) {sfx:7s}: skipped (no GPU / CuPy not installed)")
             else:
                 try:
-                    gmc, t_f = _timed(GMRESCuPy, As, dt)  # factor == H->D transfer
+                    # The construction step is the host-to-device transfer.
+                    gmc, t_f = _timed(GMRESCuPy, As, dt)
                     xgc, t_s = _timed(gmc.solve, B)
                     _finish(f"gmres_cupy_{sfx}", f"gmres (cupy) {sfx}", gmc,
                             xgc, t_f, t_s, extra=f"  (it~{gmc.last_iters})",
@@ -241,7 +266,7 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
         elif "gmres_cupy" in solvers:
             print(f"  gmres (cupy) {sfx:7s}: skipped (excluded)")
 
-        # ---- cuDSS (GPU only, no explicit factor values) -------------------
+        # ---- cuDSS: GPU direct solver, no explicit factor values ----------
         if "cudss" in solvers and not _excluded("cudss", dt):
             if not gpu_available():
                 print(f"  cudss {sfx:14s}: skipped (no GPU)")
@@ -261,7 +286,7 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
         elif "cudss" in solvers:
             print(f"  cudss {sfx:14s}: skipped (excluded)")
 
-        # ---- Block Thomas, Implementation 1 (LU + substitution) -------------
+        # ---- Block Thomas, implementation 1: LU with substitution ---------
         if "block_thomas" in solvers and not _excluded("block_thomas", dt):
             bt,  t_f = _timed(BlockThomas, D, Lb, Ub, dt)
             xbt, t_s = _timed(bt.solve, B)
@@ -272,7 +297,7 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
         elif "block_thomas" in solvers:
             print(f"  block Thomas {sfx:7s}: skipped (excluded)")
 
-        # ---- Block Thomas, Implementation 2 (explicit inverses) -------------
+        # ---- Block Thomas, implementation 2: explicit inverses ------------
         if "block_thomas_inv" in solvers and not _excluded("block_thomas_inv", dt):
             bti,  t_f = _timed(BlockThomasExplicitInv, D, Lb, Ub, dt)
             xbti, t_s = _timed(bti.solve, B)
@@ -283,10 +308,11 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
         elif "block_thomas_inv" in solvers:
             print(f"  block Thomas inv {sfx:3s}: skipped (excluded)")
 
-    # ---- fp16 Block Thomas ---------------------------------------------------
-    # Outside the dtype loop on purpose: both fp16 variants are precision-fixed
-    # and ignore `dtypes` entirely, so running them once per dtype would just
-    # repeat identical work. Results are stored under the label "complex32".
+    # ---- Block Thomas in half precision --------------------------------------
+    # Deliberately outside the precision loop: both variants are
+    # precision-fixed and ignore `dtypes`, so running them once per precision
+    # would repeat identical work. Results are stored under the label
+    # "complex32", which is not a NumPy dtype.
     if "block_thomas_fp16" in solvers:
         try:
             bt16,  t_f = _timed(BlockThomasFP16, D, Lb, Ub)

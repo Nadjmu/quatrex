@@ -1,41 +1,72 @@
 #!/usr/bin/env python3
 """
-sweep_fp16.py -- run the half-precision Block Thomas variants over a range of
-energy indices in a material's HDF5 file and record/plot accuracy metrics.
+Accuracy sweep of the two half-precision Block Thomas implementations.
 
-(Was solvers/half-test.py. It is a driver, not a solver, so it lives in
-run_bench/ with the other drivers; the solver itself moved into
-solver_classes.py alongside the other three Block Thomas variants.)
+Input
+-----
+A material HDF5 file that ``run_benchmarks.py`` has already processed, since
+the reference solutions are read from it:
 
-Both implementations are swept:
-    Implementation 1  BlockThomasFP16             LU + triangular substitution
-    Implementation 2  BlockThomasExplicitInvFP16  explicit inverses, matmul-only
+    E_<idx>/M                            system matrix, CSC triplet
+    E_<idx>/rhs                          right-hand side
+    E_<idx>/blockthomas/complex128/x     reference solution x_128
+    E_<idx>/blockthomas/complex64/x      single-precision solution x_64
+    global/condition_full_svd            kappa_2(M) per index, optional
 
-For Implementation 2 the precision in which the explicit inverse is FORMED is
-a free parameter (--inv-dtype), independent of the fp16 storage/apply. That is
-the interesting knob: explicit inversion is the least stable step in the
-algorithm, so forming it in fp32 and rounding down to fp16 usually costs
-nothing in memory and buys real accuracy. Pass --inv-dtype float16 to measure
-what a genuinely all-fp16 factorization gives up.
+The file is opened read-only. Unlike the other drivers, this one writes nothing
+back into the HDF5 file, so a sweep may be repeated freely.
 
-Usage:
-    python sweep_fp16.py --h5path /scratch/yimili/matrices/hdf5/carbon-nanotube.h5 \
-        --start 0 --end 401 --bs 32
+Algorithm
+---------
+For every energy index in [--start, --end]:
+
+1. Extract the block-tridiagonal blocks of M under the requested partition,
+   either the uniform --bs or, with --auto-blocks, the partition detected from
+   the sparsity pattern once on the first matrix.
+2. Solve M x = b with both half-precision variants,
+       implementation 1  BlockThomasFP16             LU with substitution,
+       implementation 2  BlockThomasExplicitInvFP16  explicit block inverses.
+3. Record, against the stored complex128 solution x_128,
+       relative residual  ||M x - b|| / ||b||          for both variants,
+       forward error      ||x - x_128|| / ||x_128||    for both variants and
+                                                       for the stored x_64.
+
+The residual measures backward error and is expected near the half-precision
+unit roundoff u = 2^-11; the forward error additionally carries kappa_2(M), so
+the two must be reported together for the numbers to be interpretable.
+
+For implementation 2, --inv-dtype sets the precision in which the explicit
+inverse is formed before being rounded to fp16 for storage and application. It
+defaults to float32. Passing float16 makes the factorization genuinely
+all-half-precision and measures what the higher-precision inversion buys; see
+the Block Thomas section of the top-level README.
+
+Failures at a single index (a missing group, a singular modified diagonal
+block, an fp16 overflow) are recorded and the sweep continues.
+
+Output
+------
+Written to --outdir, default <script_dir>/plots:
+
+    <material>_metrics.csv   idx, relres_fp16, relres_fp16_inv,
+                             fwd_err_fp16_vs_c128, fwd_err_fp16_inv_vs_c128,
+                             fwd_err_c64_vs_c128, cond_full_svd
+    <material>_metrics.txt   the same table plus run metadata and the list of
+                             failed indices
+
+No figures are produced; see plotting/plot_fp16_accuracy.py, which consumes the
+CSV.
+
+Usage
+-----
+    python sweep_fp16.py --h5path .../carbon-nanotube.h5 --start 0 --end 401 --bs 32
     python sweep_fp16.py --h5path .../graphene.h5 --start 0 --end 401 --auto-blocks
     python sweep_fp16.py --h5path .../graphene.h5 --start 0 --end 50 --inv-dtype float16
-
-Outputs (all under <script_dir>/plots/, filenames tagged with material name):
-    plots/<material>_relres_fwderr.png
-    plots/<material>_forward_accuracy.png
-    plots/<material>_metrics.csv        <- feed this back for analysis
-
-Columns: idx, relres_fp16, relres_fp16_inv, fwd_err_fp16_vs_c128,
-         fwd_err_fp16_inv_vs_c128, fwd_err_c64_vs_c128, cond_full_svd
+    python ../plotting/plot_fp16_accuracy.py plots/carbon-nanotube_metrics.csv
 """
 
 import argparse
 import csv
-import os
 import sys
 from pathlib import Path
 
@@ -44,223 +75,209 @@ sys.path.append(str((Path(__file__).parent / ".." / "solvers").resolve()))
 import h5py
 import numpy as np
 import scipy.sparse as sp
-import matplotlib
-matplotlib.use("Agg")          # headless-safe; remove if running with a display
-import matplotlib.pyplot as plt
 
 from solver_classes import (
     extract_blocks_sparse, block_sizes_from_matrix, offband_nnz,
     BlockThomasFP16, BlockThomasExplicitInvFP16,
 )
 
+CSV_COLUMNS = ["idx", "relres_fp16", "relres_fp16_inv",
+               "fwd_err_fp16_vs_c128", "fwd_err_fp16_inv_vs_c128",
+               "fwd_err_c64_vs_c128", "cond_full_svd"]
+
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Sweep BlockThomasFP16 accuracy over energy indices.")
+    p = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--h5path", type=str,
-                    default="/scratch/yimili/matrices/hdf5/carbon-nanotube.h5",
-                    help="Path to the materials HDF5 file.")
+                   default="/scratch/yimili/matrices/hdf5/carbon-nanotube.h5",
+                   help="material HDF5 file")
     p.add_argument("--material", type=str, default=None,
-                    help="Material tag for output filenames. Defaults to the h5 filename stem.")
-    p.add_argument("--bs", type=int, default=32, help="Uniform block size.")
+                   help="tag for output filenames (default: the h5 stem)")
+    p.add_argument("--bs", type=int, default=32,
+                   help="uniform block size, ignored under --auto-blocks")
     p.add_argument("--auto-blocks", action="store_true",
-                    help="Derive a custom non-uniform partition from the sparsity "
-                         "pattern (solver_classes.block_sizes_from_matrix) instead "
-                         "of using --bs. The pattern is the same at every energy "
-                         "index, so it is detected once on the first matrix.")
+                   help="derive a non-uniform partition from the sparsity "
+                        "pattern instead of using --bs. The pattern is the "
+                        "same at every energy index, so it is detected once "
+                        "on the first matrix processed.")
     p.add_argument("--inv-dtype", choices=["float32", "float16", "float64"],
-                    default="float32",
-                    help="Precision in which Implementation 2 forms its explicit "
-                         "inverses before rounding them to fp16 (default float32).")
-    p.add_argument("--start", type=int, default=0, help="First energy index (inclusive).")
-    p.add_argument("--end", type=int, default=401, help="Last energy index (inclusive).")
+                   default="float32",
+                   help="precision in which implementation 2 forms its "
+                        "explicit inverses before rounding them to fp16")
+    p.add_argument("--start", type=int, default=0,
+                   help="first energy index, inclusive")
+    p.add_argument("--end", type=int, default=401,
+                   help="last energy index, inclusive")
     p.add_argument("--cond-path", type=str, default="global/condition_full_svd",
-                    help="Dataset path (within the h5 file) for the per-index condition number.")
+                   help="dataset holding one condition number per index")
     p.add_argument("--outdir", type=str, default=None,
-                    help="Output directory. Defaults to <script_dir>/plots.")
+                   help="output directory (default: <script_dir>/plots)")
     return p.parse_args()
 
 
-def main():
-    args = parse_args()
+def load_matrix(g):
+    """CSC matrix from an HDF5 group holding data/indices/indptr and a shape."""
+    shape = tuple(g.attrs["shape"]) if "shape" in g.attrs else None
+    return sp.csc_matrix((g["data"][:], g["indices"][:], g["indptr"][:]),
+                         shape=shape)
 
-    material = args.material or os.path.splitext(os.path.basename(args.h5path))[0]
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    outdir = args.outdir or os.path.join(script_dir, "plots")
-    os.makedirs(outdir, exist_ok=True)
 
-    def outpath(suffix):
-        return os.path.join(outdir, f"{material}_{suffix}")
+def resolve_partition(M, partition, auto_blocks):
+    """
+    Partition to use for this matrix.
 
-    idx_range = range(args.start, args.end + 1)
+    Returns `partition` unchanged unless --auto-blocks was given and no
+    partition has been detected yet, in which case it is derived from the
+    sparsity pattern and validated. Detection happens once because the pattern
+    does not depend on the energy index.
 
-    inv_dtype = getattr(np, args.inv_dtype)
+    Raises ValueError if the detected partition is not block tridiagonal:
+    extract_blocks_sparse would then silently discard the out-of-band entries
+    and both variants would return a plausible but wrong solution.
+    """
+    if not auto_blocks or isinstance(partition, (list, tuple)):
+        return partition
+    partition = block_sizes_from_matrix(M)
+    bad = offband_nnz(M, partition)
+    print(f"auto-detected partition: {len(partition)} blocks, "
+          f"sizes {min(partition)}..{max(partition)}, off-band nnz = {bad}")
+    if bad:
+        raise ValueError(f"detected partition leaves {bad} nonzeros outside "
+                         f"the block-tridiagonal band; refusing to solve")
+    return partition
 
-    idx_ok = []
-    relres32 = []
-    relres32_inv = []
-    fwd_err32 = []
-    fwd_err32_inv = []
-    fwd_err64 = []
-    cond_vals = []
-    failed = []
 
-    # The partition is a property of the sparsity pattern, which is identical
-    # at every energy index, so detect it once rather than per index.
+def sweep(args, inv_dtype):
+    """
+    Run both half-precision variants over the requested index range.
+
+    Returns (rows, partition, failed) where rows is a list of dicts keyed by
+    CSV_COLUMNS, partition is the block partition used, and failed is
+    a list of (index, exception repr).
+    """
+    rows, failed = [], []
     partition = args.bs
 
     with h5py.File(args.h5path, "r") as f:
-        cond_arr = None
-        if args.cond_path in f:
-            cond_arr = f[args.cond_path][:]
-        else:
-            print(f"warning: cond dataset '{args.cond_path}' not found in {args.h5path}; "
-                  "condition number column will be NaN.")
+        cond_arr = f[args.cond_path][:] if args.cond_path in f else None
+        if cond_arr is None:
+            print(f"warning: '{args.cond_path}' not found in {args.h5path}; "
+                  f"the condition-number column will be NaN.")
 
-        for idx in idx_range:
+        for idx in range(args.start, args.end + 1):
             key = f"E_{idx}"
             try:
                 if key not in f:
                     raise KeyError(f"{key} not in file")
-                g = f[f"{key}/M"]
-                shape = tuple(g.attrs["shape"]) if "shape" in g.attrs else None
-                M = sp.csc_matrix((g["data"][:], g["indices"][:], g["indptr"][:]), shape=shape)
+                M = load_matrix(f[f"{key}/M"])
                 b = f[f"{key}/rhs"][:]
                 x128 = f[f"{key}/blockthomas/complex128/x"][:]
                 x64 = f[f"{key}/blockthomas/complex64/x"][:]
 
-                if args.auto_blocks and not isinstance(partition, (list, tuple)):
-                    partition = block_sizes_from_matrix(M)
-                    bad = offband_nnz(M, partition)
-                    print(f"auto-detected partition: {len(partition)} blocks, "
-                          f"sizes {min(partition)}..{max(partition)}, "
-                          f"off-band nnz = {bad}")
-                    if bad:
-                        raise ValueError(
-                            f"detected partition leaves {bad} nonzeros outside the "
-                            f"block-tridiagonal band -- refusing to solve with it")
-
+                partition = resolve_partition(M, partition, args.auto_blocks)
                 D, L, U = extract_blocks_sparse(M, partition)
-                x32 = BlockThomasFP16(D, L, U).solve(b)
-                x32i = BlockThomasExplicitInvFP16(
+
+                x16 = BlockThomasFP16(D, L, U).solve(b)
+                x16i = BlockThomasExplicitInvFP16(
                     D, L, U, inv_dtype=inv_dtype).solve(b)
 
-                nb = np.linalg.norm(b)
-                n128 = np.linalg.norm(x128)
-
-                r32 = np.linalg.norm(M @ x32 - b) / nb
-                r32i = np.linalg.norm(M @ x32i - b) / nb
-                e32 = np.linalg.norm(x32 - x128) / n128
-                e32i = np.linalg.norm(x32i - x128) / n128
-                e64 = np.linalg.norm(x64 - x128) / n128
-                cond = float(cond_arr[idx]) if cond_arr is not None and idx < len(cond_arr) else float("nan")
-
+                norm_b = np.linalg.norm(b)
+                norm_x128 = np.linalg.norm(x128)
+                row = {
+                    "idx": idx,
+                    "relres_fp16": np.linalg.norm(M @ x16 - b) / norm_b,
+                    "relres_fp16_inv": np.linalg.norm(M @ x16i - b) / norm_b,
+                    "fwd_err_fp16_vs_c128":
+                        np.linalg.norm(x16 - x128) / norm_x128,
+                    "fwd_err_fp16_inv_vs_c128":
+                        np.linalg.norm(x16i - x128) / norm_x128,
+                    "fwd_err_c64_vs_c128":
+                        np.linalg.norm(x64 - x128) / norm_x128,
+                    "cond_full_svd":
+                        float(cond_arr[idx])
+                        if cond_arr is not None and idx < len(cond_arr)
+                        else float("nan"),
+                }
             except Exception as exc:                      # noqa: BLE001
                 failed.append((idx, repr(exc)))
                 continue
 
-            idx_ok.append(idx)
-            relres32.append(r32)
-            relres32_inv.append(r32i)
-            fwd_err32.append(e32)
-            fwd_err32_inv.append(e32i)
-            fwd_err64.append(e64)
-            cond_vals.append(cond)
-
+            rows.append(row)
             if idx % 25 == 0:
-                print(f"idx={idx:4d}  relres32={r32:.3e}  relres32_inv={r32i:.3e}  "
-                      f"fwd_err32={e32:.3e}  fwd_err32_inv={e32i:.3e}  "
-                      f"fwd_err64={e64:.3e}  cond={cond:.3e}")
+                print(f"idx={idx:4d}  "
+                      f"relres16={row['relres_fp16']:.3e}  "
+                      f"relres16_inv={row['relres_fp16_inv']:.3e}  "
+                      f"fwd16={row['fwd_err_fp16_vs_c128']:.3e}  "
+                      f"fwd16_inv={row['fwd_err_fp16_inv_vs_c128']:.3e}  "
+                      f"fwd64={row['fwd_err_c64_vs_c128']:.3e}  "
+                      f"cond={row['cond_full_svd']:.3e}")
 
-    idx_ok = np.array(idx_ok)
-    relres32 = np.array(relres32)
-    relres32_inv = np.array(relres32_inv)
-    fwd_err32 = np.array(fwd_err32)
-    fwd_err32_inv = np.array(fwd_err32_inv)
-    fwd_err64 = np.array(fwd_err64)
-    cond_vals = np.array(cond_vals)
+    return rows, partition, failed
+
+
+def write_csv(rows, csv_path):
+    with open(csv_path, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_txt(rows, txt_path, args, partition, part_desc, failed, n_requested):
+    with open(txt_path, "w") as fh:
+        fh.write(f"material   : {args.material}\n")
+        fh.write(f"h5path     : {args.h5path}\n")
+        fh.write(f"partition  : {part_desc}\n")
+        if isinstance(partition, (list, tuple)):
+            fh.write(f"block sizes: {list(partition)}\n")
+        fh.write(f"inv dtype  : {args.inv_dtype} (implementation 2)\n")
+        fh.write(f"requested  : idx {args.start}..{args.end} "
+                 f"({n_requested} indices)\n")
+        fh.write(f"completed  : {len(rows)}\n")
+        fh.write(f"failed     : {len(failed)}\n")
+        if failed:
+            fh.write("failed indices:\n")
+            for idx, message in failed:
+                fh.write(f"  idx={idx}: {message}\n")
+        fh.write("\nidx  relres_fp16   relres_fp16_inv  fwd_err_fp16  "
+                 "fwd_err_fp16_inv  fwd_err_c64   cond_full_svd\n")
+        for row in rows:
+            fh.write(f"{row['idx']:4d}  {row['relres_fp16']:.6e}  "
+                     f"{row['relres_fp16_inv']:.6e}  "
+                     f"{row['fwd_err_fp16_vs_c128']:.6e}  "
+                     f"{row['fwd_err_fp16_inv_vs_c128']:.6e}  "
+                     f"{row['fwd_err_c64_vs_c128']:.6e}  "
+                     f"{row['cond_full_svd']:.6e}\n")
+
+
+def main():
+    args = parse_args()
+    args.material = args.material or Path(args.h5path).stem
+
+    outdir = Path(args.outdir or Path(__file__).resolve().parent / "plots")
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    inv_dtype = getattr(np, args.inv_dtype)
+    rows, partition, failed = sweep(args, inv_dtype)
 
     n_requested = args.end - args.start + 1
     part_desc = (f"{len(partition)} custom blocks"
                  if isinstance(partition, (list, tuple)) else f"bs={partition}")
-    print(f"\nCompleted {len(idx_ok)}/{n_requested} indices ({material}, {part_desc}).")
+    print(f"\nCompleted {len(rows)}/{n_requested} indices "
+          f"({args.material}, {part_desc}).")
     if failed:
-        print(f"{len(failed)} indices failed/skipped, e.g.:")
-        for idx, msg in failed[:10]:
-            print(f"  idx={idx}: {msg}")
+        print(f"{len(failed)} indices failed or were skipped, e.g.:")
+        for idx, message in failed[:10]:
+            print(f"  idx={idx}: {message}")
 
-    # ------------------------------------------------------------- CSV -----
-    csv_path = outpath("metrics.csv")
-    with open(csv_path, "w", newline="") as fcsv:
-        writer = csv.writer(fcsv)
-        writer.writerow(["idx", "relres_fp16", "relres_fp16_inv",
-                          "fwd_err_fp16_vs_c128", "fwd_err_fp16_inv_vs_c128",
-                          "fwd_err_c64_vs_c128", "cond_full_svd"])
-        for i in range(len(idx_ok)):
-            writer.writerow([idx_ok[i], relres32[i], relres32_inv[i],
-                             fwd_err32[i], fwd_err32_inv[i], fwd_err64[i],
-                             cond_vals[i]])
+    csv_path = outdir / f"{args.material}_metrics.csv"
+    txt_path = outdir / f"{args.material}_metrics.txt"
+    write_csv(rows, csv_path)
+    write_txt(rows, txt_path, args, partition, part_desc, failed, n_requested)
 
-    # ------------------------------------------------------------- TXT -----
-    txt_path = outpath("metrics.txt")
-    with open(txt_path, "w") as ftxt:
-        ftxt.write(f"material   : {material}\n")
-        ftxt.write(f"h5path     : {args.h5path}\n")
-        ftxt.write(f"partition  : {part_desc}\n")
-        if isinstance(partition, (list, tuple)):
-            ftxt.write(f"block sizes: {list(partition)}\n")
-        ftxt.write(f"inv dtype  : {args.inv_dtype} (Implementation 2)\n")
-        ftxt.write(f"requested  : idx {args.start}..{args.end} ({n_requested} indices)\n")
-        ftxt.write(f"completed  : {len(idx_ok)}\n")
-        ftxt.write(f"failed     : {len(failed)}\n")
-        if failed:
-            ftxt.write("failed indices:\n")
-            for idx, msg in failed:
-                ftxt.write(f"  idx={idx}: {msg}\n")
-        ftxt.write("\nidx  relres_fp16   relres_fp16_inv  fwd_err_fp16  "
-                   "fwd_err_fp16_inv  fwd_err_c64   cond_full_svd\n")
-        for i in range(len(idx_ok)):
-            ftxt.write(f"{idx_ok[i]:4d}  {relres32[i]:.6e}  {relres32_inv[i]:.6e}  "
-                        f"{fwd_err32[i]:.6e}  {fwd_err32_inv[i]:.6e}  "
-                        f"{fwd_err64[i]:.6e}  {cond_vals[i]:.6e}\n")
-
-    # ------------------------------------------------------------ plot 1 ---
-    fig1, ax1 = plt.subplots(figsize=(9, 5))
-    ax1.semilogy(idx_ok, relres32, marker=".", ms=3, lw=0.8,
-                 label=r"relres impl 1  $\|Mx_{16}-b\|/\|b\|$")
-    ax1.semilogy(idx_ok, relres32_inv, marker=".", ms=3, lw=0.8,
-                 label=r"relres impl 2 (explicit inv)")
-    ax1.semilogy(idx_ok, fwd_err32, marker=".", ms=3, lw=0.8,
-                 label=r"fwd err impl 1 vs $x_{128}$")
-    ax1.semilogy(idx_ok, fwd_err32_inv, marker=".", ms=3, lw=0.8,
-                 label=r"fwd err impl 2 vs $x_{128}$")
-    ax1.axhline(4.9e-4, color="gray", ls="--", lw=0.8, label="fp16 unit roundoff (4.9e-4)")
-    ax1.set_xlabel("energy index")
-    ax1.set_ylabel("relative error")
-    ax1.set_title(f"fp16 Block Thomas: residual vs forward error -- {material}\n"
-                  f"(impl 2 inverse formed in {args.inv_dtype})")
-    ax1.legend(fontsize=8)
-    ax1.grid(True, which="both", alpha=0.3)
-    fig1.tight_layout()
-    fig1.savefig(outpath("relres_fwderr.png"), dpi=150)
-
-    # ------------------------------------------------------------ plot 2 ---
-    fig2, ax2 = plt.subplots(figsize=(9, 5))
-    ax2.semilogy(idx_ok, fwd_err32, marker=".", ms=3, lw=0.8,
-                 label=r"fp16 impl 1  $\|x_{16}-x_{128}\|/\|x_{128}\|$")
-    ax2.semilogy(idx_ok, fwd_err32_inv, marker=".", ms=3, lw=0.8,
-                 label=r"fp16 impl 2  $\|x_{16}^{inv}-x_{128}\|/\|x_{128}\|$")
-    ax2.semilogy(idx_ok, fwd_err64, marker=".", ms=3, lw=0.8,
-                 label=r"c64  $\|x_{64}-x_{128}\|/\|x_{128}\|$")
-    ax2.set_xlabel("energy index")
-    ax2.set_ylabel("relative forward error vs $x_{128}$")
-    ax2.set_title(f"Forward accuracy: fp16 (both impls) and c64 vs c128 -- {material}")
-    ax2.legend(fontsize=8)
-    ax2.grid(True, which="both", alpha=0.3)
-    fig2.tight_layout()
-    fig2.savefig(outpath("forward_accuracy.png"), dpi=150)
-
-    print(f"\nSaved:\n  {outpath('relres_fwderr.png')}\n  {outpath('forward_accuracy.png')}\n"
-          f"  {csv_path}\n  {txt_path}")
+    print(f"\nwrote {csv_path}\nwrote {txt_path}")
+    print(f"Plot with: python ../plotting/plot_fp16_accuracy.py {csv_path}")
 
 
 if __name__ == "__main__":

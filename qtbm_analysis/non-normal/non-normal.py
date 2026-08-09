@@ -1,26 +1,61 @@
 #!/usr/bin/env python3
+"""
+Non-normality of the QTBM system matrices, by full SVD and full eigenvalue
+decomposition of every M(E) in an energy sweep.
 
-# ============================================================
-# Full-accuracy non-normality SVD pipeline
-#
-# Usage example:
-#   python run_non_normal_svd.py \
-#       --h5path /scratch/yimili/matrices/hdf5/carbon-chain.h5 \
-#       --indices 0:401
-#
-# Output:
-#   /scratch/yimili/non-normal/carbon-chain/
-#       ratio_matrix.npy
-#       log_cumulative_ratio_matrix.npy
-#       singular_value_matrix.npy
-#       eigenvalue_magnitude_matrix.npy
-#       ratio_matrix_indices.npy
-#       nnz_by_index.npy
-#       valid_rows.npy
-#       frames/
-#       non_normal_shift.gif
-#
-# ============================================================
+Input
+-----
+A material HDF5 file providing E_<idx>/M as a CSC triplet. --indices selects
+the subset of energy indices to process.
+
+Algorithm
+---------
+For each selected index the matrix is densified and both its singular values
+and its eigenvalues are computed exactly, with no truncation or iterative
+approximation. Both sequences are then sorted in descending order and paired
+by rank:
+
+    sigma_1 >= ... >= sigma_n        singular values
+    |lambda_1| >= ... >= |lambda_n|  eigenvalue magnitudes
+
+Two derived quantities are recorded per rank:
+
+    ratio_i     = sigma_i / |lambda_i|
+    logcum_k    = log( prod_{i<=k} sigma_i / prod_{i<=k} |lambda_i| )
+
+For a normal matrix the two sequences coincide, so ratio_i = 1 for every i and
+logcum_k = 0 for every k. Weyl's majorant theorem makes logcum non-negative and
+non-decreasing in k, with logcum_n = 0 exactly, because both products equal
+|det M|. Its interior maximum is therefore a scalar measure of non-normality.
+
+Results are written into memory-mapped arrays as they are produced, so a run
+may be interrupted and continued with --resume; rows already marked valid are
+not recomputed. A dense SVD is O(n^3) in time and O(n^2) in memory, so the
+estimated requirement is checked against --max-estimated-svd-gb before each
+factorization unless --no-memory-check is given.
+
+Output
+------
+Written to <out-root>/<material>/:
+
+    ratio_matrix.npy                 (num_indices, n)  ratio_i per index
+    log_cumulative_ratio_matrix.npy  (num_indices, n)  logcum_k per index
+    singular_value_matrix.npy        (num_indices, n)  sigma_i
+    eigenvalue_magnitude_matrix.npy  (num_indices, n)  |lambda_i|
+    ratio_matrix_indices.npy         (num_indices,)    energy index per row
+    nnz_by_index.npy                 (num_indices,)    nnz of M, -1 if unknown
+    valid_rows.npy                   (num_indices,)    bool, row fully computed
+    singular_eigenvalue_ratios.csv   long-format table, only with --save-csv
+
+No figures are produced; see plotting/plot_non_normal.py, which reads these
+arrays and renders the per-index frames and the animation.
+
+Usage
+-----
+    python non-normal.py --h5path /scratch/yimili/matrices/hdf5/carbon-chain.h5 \
+        --indices 0:401
+    python plot_non_normal.py /scratch/yimili/non-normal/carbon-chain
+"""
 
 import argparse
 import gc
@@ -62,14 +97,6 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.linalg import svd
 
-import matplotlib
-
-# Use non-interactive backend for tmux / servers.
-matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt
-from PIL import Image
-
 
 # ============================================================
 # CLI
@@ -78,8 +105,9 @@ from PIL import Image
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Compute full singular values for E_<index> matrices in an HDF5 file, "
-            "save singular/eigenvalue ratios, frames, and one GIF."
+            "Compute the full SVD and eigendecomposition of every E_<index> "
+            "matrix in an HDF5 file and record the singular-value to "
+            "eigenvalue-magnitude ratios."
         )
     )
 
@@ -125,47 +153,6 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--ratio-y-scale",
-        type=str,
-        default="linear",
-        choices=["linear", "log"],
-        help="Y-axis scale for pointwise ratio plot.",
-    )
-
-    parser.add_argument(
-        "--diff",
-        type=float,
-        default=0.01,
-        help="Threshold around 1.0 for counting ratios.",
-    )
-
-    parser.add_argument(
-        "--gif-fps",
-        type=int,
-        default=4,
-        help="GIF frames per second.",
-    )
-
-    parser.add_argument(
-        "--dpi",
-        type=int,
-        default=100,
-        help="PNG frame DPI. Lower DPI reduces frame/GIF memory.",
-    )
-
-    parser.add_argument(
-        "--skip-frames",
-        action="store_true",
-        help="Only compute arrays; do not create frames or GIF.",
-    )
-
-    parser.add_argument(
-        "--skip-gif",
-        action="store_true",
-        help="Create PNG frames but skip GIF creation.",
-    )
-
-    parser.add_argument(
         "--save-csv",
         action="store_true",
         help="Also save a CSV. This can be large and slow.",
@@ -184,12 +171,6 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--clean-frames",
-        action="store_true",
-        help="Delete old frames before creating new frames.",
-    )
-
-    parser.add_argument(
         "--max-estimated-svd-gb",
         type=float,
         default=20.0,
@@ -203,12 +184,6 @@ def parse_args():
         "--no-memory-check",
         action="store_true",
         help="Disable estimated memory safety check.",
-    )
-
-    parser.add_argument(
-        "--ping-pong",
-        action="store_true",
-        help="Make GIF go forward then backward.",
     )
 
     return parser.parse_args()
@@ -379,252 +354,6 @@ def finite_row(arr, row):
     return bool(np.all(np.isfinite(arr[row, :])))
 
 
-def make_plot_limits(ratio_matrix, logcum_matrix, valid_rows, diff, ratio_y_scale):
-    global_ratio_min = np.inf
-    global_ratio_max = -np.inf
-    global_logcum_min = np.inf
-    global_logcum_max = -np.inf
-
-    for row in valid_rows:
-        ratio = np.asarray(ratio_matrix[row, :])
-        logcum = np.asarray(logcum_matrix[row, :])
-
-        global_ratio_min = min(global_ratio_min, float(np.min(ratio)))
-        global_ratio_max = max(global_ratio_max, float(np.max(ratio)))
-
-        global_logcum_min = min(global_logcum_min, float(np.min(logcum)))
-        global_logcum_max = max(global_logcum_max, float(np.max(logcum)))
-
-    ratio_low = min(global_ratio_min, 1.0 - diff, 1.0)
-    ratio_high = max(global_ratio_max, 1.0 + diff, 1.0)
-
-    if ratio_y_scale == "log":
-        if ratio_low <= 0:
-            raise ValueError("A logarithmic ratio axis requires positive ratios.")
-
-        log_low = np.log10(ratio_low)
-        log_high = np.log10(ratio_high)
-
-        log_span = log_high - log_low
-        log_padding = max(0.05 * log_span, 0.02)
-
-        ratio_ylim = (
-            10.0 ** max(log_low - log_padding, -300.0),
-            10.0 ** min(log_high + log_padding, 300.0),
-        )
-
-    else:
-        ratio_span = ratio_high - ratio_low
-        ratio_padding = max(0.05 * ratio_span, 0.02)
-
-        ratio_ylim = (
-            max(0.0, ratio_low - ratio_padding),
-            ratio_high + ratio_padding,
-        )
-
-    cumulative_low = min(global_logcum_min, 0.0)
-    cumulative_high = max(global_logcum_max, 0.0)
-
-    cumulative_span = cumulative_high - cumulative_low
-    cumulative_padding = max(0.05 * cumulative_span, 0.05)
-
-    cumulative_ylim = (
-        cumulative_low - cumulative_padding,
-        cumulative_high + cumulative_padding,
-    )
-
-    return ratio_ylim, cumulative_ylim
-
-
-def create_frames(
-    frame_dir,
-    indices,
-    ratio_matrix,
-    logcum_matrix,
-    nnz_array,
-    valid_rows,
-    diff,
-    ratio_y_scale,
-    dpi,
-):
-    frame_dir.mkdir(parents=True, exist_ok=True)
-
-    n = ratio_matrix.shape[1]
-    x_right = max(n, 2)
-    k = np.arange(1, n + 1)
-
-    ratio_ylim, cumulative_ylim = make_plot_limits(
-        ratio_matrix=ratio_matrix,
-        logcum_matrix=logcum_matrix,
-        valid_rows=valid_rows,
-        diff=diff,
-        ratio_y_scale=ratio_y_scale,
-    )
-
-    frame_paths = []
-
-    for frame_number, row in enumerate(valid_rows, start=1):
-        index = int(indices[row])
-
-        ratio = np.asarray(ratio_matrix[row, :])
-        logcum = np.asarray(logcum_matrix[row, :])
-
-        fig, (ax1, ax2) = plt.subplots(
-            1,
-            2,
-            figsize=(13, 5),
-            constrained_layout=True,
-        )
-
-        ax1.plot(
-            k,
-            ratio,
-            marker="o",
-            markersize=1.2,
-            linewidth=0.7,
-        )
-
-        ax1.axhline(
-            1.0,
-            color="gray",
-            linestyle="--",
-            linewidth=1.0,
-            label="ratio = 1",
-        )
-
-        ax1.axhline(
-            1.0 + diff,
-            color="gray",
-            linestyle=":",
-            linewidth=0.9,
-        )
-
-        ax1.axhline(
-            1.0 - diff,
-            color="gray",
-            linestyle=":",
-            linewidth=0.9,
-        )
-
-        ax1.set_yscale(ratio_y_scale)
-        ax1.set_xlim(1, x_right)
-        ax1.set_ylim(*ratio_ylim)
-        ax1.set_xlabel("rank i, descending order")
-        ax1.set_ylabel(r"$\sigma_i / |\lambda_i|$")
-        ax1.set_title("Pointwise singular-value/eigenvalue ratio")
-        ax1.grid(alpha=0.3, which="both")
-        ax1.legend(loc="best")
-
-        ax2.plot(
-            k,
-            logcum,
-            linewidth=0.9,
-        )
-
-        ax2.axhline(
-            0.0,
-            color="gray",
-            linestyle="--",
-            linewidth=1.0,
-        )
-
-        ax2.set_xlim(1, x_right)
-        ax2.set_ylim(*cumulative_ylim)
-        ax2.set_xlabel("k")
-        ax2.set_ylabel(
-            r"$\log\left("
-            r"\prod_{i\leq k}\sigma_i"
-            r"\,/\,"
-            r"\prod_{i\leq k}|\lambda_i|"
-            r"\right)$"
-        )
-        ax2.set_title("Cumulative product ratio, logarithmic form")
-        ax2.grid(alpha=0.3)
-
-        number_above = int(np.count_nonzero(ratio > 1.0 + diff))
-        number_below = int(np.count_nonzero(ratio < 1.0 - diff))
-
-        nnz_text = ""
-        if nnz_array is not None and row < len(nnz_array) and nnz_array[row] >= 0:
-            nnz_text = f"nnz={int(nnz_array[row])}   "
-
-        fig.suptitle(
-            f"E_{index}   "
-            f"frame {frame_number}/{len(valid_rows)}   "
-            f"n={n}   "
-            f"{nnz_text}"
-            f"> {1.0 + diff:.2f}: {number_above}   "
-            f"< {1.0 - diff:.2f}: {number_below}   "
-            f"endpoint={logcum[-1]:+.2e}",
-            fontsize=12,
-        )
-
-        frame_path = frame_dir / f"E_{index:06d}.png"
-
-        fig.savefig(
-            frame_path,
-            dpi=dpi,
-            facecolor="white",
-        )
-
-        plt.close(fig)
-
-        frame_paths.append(frame_path)
-
-        del ratio
-        del logcum
-        gc.collect()
-
-        if frame_number % 25 == 0:
-            print(f"[frames] created {frame_number}/{len(valid_rows)}")
-
-    return frame_paths
-
-
-def create_gif(frame_paths, gif_path, gif_fps, ping_pong):
-    if not frame_paths:
-        raise RuntimeError("No frames available for GIF creation.")
-
-    gif_sequence = list(frame_paths)
-
-    if ping_pong and len(frame_paths) > 2:
-        gif_sequence += frame_paths[-2:0:-1]
-
-    duration_ms = int(1000 / gif_fps)
-
-    first_frame = Image.open(gif_sequence[0]).convert(
-        "P",
-        palette=Image.ADAPTIVE,
-    )
-
-    append_frames = []
-
-    try:
-        for i, frame_path in enumerate(gif_sequence[1:], start=2):
-            frame = Image.open(frame_path).convert(
-                "P",
-                palette=Image.ADAPTIVE,
-            )
-            append_frames.append(frame)
-
-            if i % 50 == 0:
-                print(f"[gif] loaded {i}/{len(gif_sequence)} frames")
-
-        first_frame.save(
-            gif_path,
-            save_all=True,
-            append_images=append_frames,
-            duration=duration_ms,
-            loop=0,
-        )
-
-    finally:
-        first_frame.close()
-
-        for frame in append_frames:
-            frame.close()
-
-
 def save_csv(
     csv_path,
     indices,
@@ -690,9 +419,6 @@ def main():
 
     out_root = Path(args.out_root)
     out_dir = out_root / material_name
-    frame_dir = out_dir / "frames"
-
-    gif_path = out_dir / "non_normal_shift.gif"
 
     ratio_path = out_dir / "ratio_matrix.npy"
     logcum_path = out_dir / "log_cumulative_ratio_matrix.npy"
@@ -704,11 +430,6 @@ def main():
     csv_path = out_dir / "singular_eigenvalue_ratios.csv"
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    frame_dir.mkdir(parents=True, exist_ok=True)
-
-    if args.clean_frames:
-        for old_frame in frame_dir.glob("E_*.png"):
-            old_frame.unlink()
 
     if args.overwrite:
         for path in [
@@ -720,7 +441,6 @@ def main():
             nnz_path,
             valid_path,
             csv_path,
-            gif_path,
         ]:
             if path.exists():
                 path.unlink()
@@ -1032,40 +752,6 @@ def main():
         raise RuntimeError("No valid rows were computed.")
 
     # --------------------------------------------------------
-    # Frames and GIF
-    # --------------------------------------------------------
-
-    if not args.skip_frames:
-        if args.clean_frames:
-            for old_frame in frame_dir.glob("E_*.png"):
-                old_frame.unlink()
-
-        print("[frames] creating frames")
-        frame_paths = create_frames(
-            frame_dir=frame_dir,
-            indices=indices_array,
-            ratio_matrix=ratio_matrix,
-            logcum_matrix=logcum_matrix,
-            nnz_array=nnz_array,
-            valid_rows=valid_rows,
-            diff=args.diff,
-            ratio_y_scale=args.ratio_y_scale,
-            dpi=args.dpi,
-        )
-
-        print(f"[frames] created {len(frame_paths)} frames")
-
-        if not args.skip_gif:
-            print("[gif] creating GIF")
-            create_gif(
-                frame_paths=frame_paths,
-                gif_path=gif_path,
-                gif_fps=args.gif_fps,
-                ping_pong=args.ping_pong,
-            )
-            print(f"[gif] saved: {gif_path}")
-
-    # --------------------------------------------------------
     # Optional CSV
     # --------------------------------------------------------
 
@@ -1099,15 +785,9 @@ def main():
     print(nnz_path)
     print(valid_path)
 
-    if not args.skip_frames:
-        print()
-        print("Saved frames:")
-        print(frame_dir)
-
-    if not args.skip_frames and not args.skip_gif:
-        print()
-        print("Saved GIF:")
-        print(gif_path)
+    print()
+    print("Render the frames and the animation with:")
+    print(f"  python ../plotting/plot_non_normal.py {out_dir}")
 
     if args.save_csv:
         print()

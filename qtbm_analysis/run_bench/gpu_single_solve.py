@@ -1,10 +1,27 @@
 #!/usr/bin/env python3
 """
-Single-solve timing + memory check: cuDSS only, on one fixed matrix/RHS
-pair. Prints progress at every stage so you can see it's alive.
+Timing and memory of a single cuDSS solve on the GPU, with per-stage progress.
 
-Usage:
-    python single_solve_gpu.py
+Input
+-----
+One fixed matrix and right-hand-side pair, at M_PATH and RHS_PATH: a CSR .npz
+triplet and a .npy array.
+
+Purpose
+-------
+The GPU counterpart of single_solve.py, restricted to cuDSS. Progress is
+reported at every stage, which matters more here than on the CPU: device work
+is enqueued asynchronously, so a stage that appears instantaneous may not have
+executed yet.
+
+Output
+------
+Timings, the relative residual and the memory figures on stdout. Nothing is
+written to disk.
+
+Usage
+-----
+    python gpu_single_solve.py
 """
 
 import sys
@@ -27,6 +44,7 @@ DTYPE = np.complex128
 
 
 def load_matrix(path):
+    """Load a CSR matrix from an .npz triplet of data, indices, indptr, shape."""
     print(f"[load] reading {path} ...", flush=True)
     d = np.load(path)
     A = sp.csr_matrix((d["data"], d["indices"], d["indptr"]), shape=tuple(d["shape"]))

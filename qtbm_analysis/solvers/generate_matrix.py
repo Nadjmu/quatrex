@@ -1,18 +1,32 @@
 """
-Generates a complex sparse test matrix (+ RHS + true solution) and saves it
-to disk, so every solver script loads the *same* matrix instead of each
-generating its own random instance. This makes timing/accuracy comparisons
-across solvers fair.
+Generation of the shared synthetic test system.
 
-Produces, for each precision:
-    matrix_data/A_double.npz     (complex128 sparse matrix, CSC)
-    matrix_data/b_double.npy     (complex128 right-hand side)
-    matrix_data/x_true_double.npy
-    matrix_data/A_single.npz     (complex64 sparse matrix, CSC)
-    matrix_data/b_single.npy     (complex64 right-hand side)
-    matrix_data/x_true_single.npy
+Purpose
+-------
+Writes one random complex sparse matrix, right-hand side and exact solution to
+disk, so that every solver script loads the same system rather than generating
+its own instance. Without this, timing and accuracy figures from different
+scripts would refer to different matrices and could not be compared.
 
-Usage:
+Algorithm
+---------
+A sparse matrix with the requested density is filled with standard complex
+normal entries, then made strictly diagonally dominant by adding to each
+diagonal entry the absolute row sum plus one. Diagonal dominance guarantees
+that LU without pivoting is stable, so the system tests factorization
+throughput rather than the pivoting strategy. The right-hand side is formed as
+b = A x_true from a known x_true, which makes the forward error directly
+measurable.
+
+Output
+------
+For each precision, in OUTPUT_DIR:
+
+    A_double.npz, b_double.npy, x_true_double.npy       complex128
+    A_single.npz, b_single.npy, x_true_single.npy       complex64
+
+Usage
+-----
     python generate_matrix.py
 """
 
@@ -24,7 +38,12 @@ OUTPUT_DIR = "/scratch/yimili/random"
 
 
 def build_test_system(n=2000, density=0.002, seed=0, dtype=np.complex128):
-    """Random sparse complex matrix, diagonally dominant for numerical safety."""
+    """
+    Random sparse complex system, made diagonally dominant.
+
+    Returns (A, b, x_true) with b = A x_true, so the forward error of any
+    solver applied to this system is directly measurable.
+    """
     rng = np.random.default_rng(seed)
 
     nnz = int(n * n * density)
@@ -33,7 +52,8 @@ def build_test_system(n=2000, density=0.002, seed=0, dtype=np.complex128):
     vals = (rng.standard_normal(nnz) + 1j * rng.standard_normal(nnz)).astype(dtype)
     A = sp.csr_matrix((vals, (rows, cols)), shape=(n, n), dtype=dtype)
 
-    # Diagonal dominance keeps this a clean factorization-performance test
+    # Strict diagonal dominance makes LU stable without pivoting, so the
+    # system measures factorization throughput and not the pivoting strategy.
     row_abs_sum = np.abs(A).sum(axis=1).A.flatten()
     A = A + sp.diags(row_abs_sum + 1.0)
 

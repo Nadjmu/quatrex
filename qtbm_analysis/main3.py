@@ -1,407 +1,269 @@
 """
-Condition Number Analysis for QTBM Systems
-==========================================
-For each example system this script:
-  1. Loads Hamiltonian H and Overlap S matrices.
-  2. Solves the generalised eigenvalue problem H v = λ S v, plots the
-     spectrum in the complex plane (full + zoom near the band edge), and
-     reports the eigenvalue closest to the band edge.
-  3. Sweeps energy across [band_edge ± offset] and plots κ(H − E·S).
-  4. Builds the full system matrix M(E), plots its eigenvalues at the
-     band edge, and plots κ(M(E)) over the same energy sweep.
+Export of QTBM system matrices and conditioning analysis over an energy sweep.
 
-Commented-out blocks are ablation variants — kept for reference.
+Input
+-----
+One or more QTBM example directories, listed in EXAMPLES. Each is read through
+``export_qtbm_systems.export_system``, which returns the Hamiltonian H, the
+overlap S, the assembled system matrix M(E) and the right-hand side for a given
+energy.
+
+Definitions
+-----------
+The QTBM system matrix at energy E is
+
+    M(E) = E S - H - Sigma(E),
+
+where Sigma(E) collects the contact self-energies of the open boundary
+conditions. The bare pencil (H, S) has no self-energy contribution, so the
+difference between the conditioning of H - E S and that of M(E) isolates the
+effect of the open boundaries.
+
+Algorithm
+---------
+Per example, controlled by the RUN_* switches below:
+
+1. Load H and S. Both are negated, matching the sign convention of the QTBM
+   assembly in export_qtbm_systems.
+2. Determine the conduction band edge from the configuration, falling back to
+   the left Fermi level when it is not set, and build the energy grid
+   [E_edge - offset, E_edge + offset].
+3. Solve the generalized eigenvalue problem H v = lambda S v densely and record
+   the spectrum. The eigenvalue nearest the band edge governs the conditioning
+   of the pencil there.
+4. Sweep the grid and record kappa_2(H - E S).
+5. Sweep the grid and record kappa_2(M(E)) together with sigma_max and
+   sigma_min from the full SVD. The two extreme singular values are stored
+   separately because kappa_2 alone does not distinguish a peak caused by
+   sigma_min approaching zero from one caused by sigma_max growing.
+6. Assemble M(E) and Sigma(E) at the inspection indices and write them to disk
+   as sparse triplets, along with the right-hand side.
+
+Steps 3 to 5 are dense and scale as O(n^3); they are disabled by default and
+are only feasible for the small examples. Step 6 stays sparse throughout and is
+the path used for the large systems.
+
+Output
+------
+Written to FOLDER/matrices/<example>/:
+
+    energies.npy                 the energy grid, eV
+    band_edge.npy                the conduction band edge, eV
+    spectrum_bare.npy            eigenvalues of the pencil (H, S)
+    condition_bare.npy           kappa_2(H - E S) along the grid
+    condition_full_svd.npy       kappa_2(M(E)) along the grid
+    max_singular_values.npy      sigma_max(M(E))
+    min_singular_values.npy      sigma_min(M(E))
+    M_E_<idx>.npz                M(E) at an inspection index, CSR triplet
+    Sigma_E_<idx>.npz            Sigma(E) at the same index, CSR triplet
+    rhs_E_<idx>.npy              the right-hand side at the same index
+
+No figures are produced; see plotting/plot_qtbm_spectra.py, which reads these
+arrays.
+
+Usage
+-----
+    python main3.py
+    python plotting/plot_qtbm_spectra.py /scratch/yimili/matrices/dev_12_sorted_BENCH
 """
 
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 from scipy.linalg import eigh
 
-from export_qtbm_systems import export_system
-
-import scipy
-import cupy as cp
-import cupyx
-from qttools.kernels.linalg import eigvalsh as qt_eigvalsh
-from cupyx.scipy.sparse.linalg import gmres
-from scipy.sparse.linalg import eigsh
-
-from export_qtbm_systems import _host_array
-
-from export_qtbm_systems import _save_csr_npz
+from export_qtbm_systems import export_system, _host_array, _save_csr_npz
 
 FOLDER = Path("/scratch/yimili")
 
-# ---------------------------------------------------------------------------
-# Plot functions
-# ---------------------------------------------------------------------------
+EXAMPLES = [
+    Path("/scratch/yimili/examples/dev_12_sorted_BENCH/qtbm"),
+    Path("/scratch/yimili/examples/WS2-hBN-25_benchmark-QUATREX-DZ/qtbm"),
+]
 
-def plot_eigenvalues_complex(w, conduction_band_edge, inspection_energy, name, suffix="", xlim=None, ylim=None):
-    plt.figure()
-    plt.scatter(w.real, w.imag)
-    plt.axvline(conduction_band_edge, color="red", linestyle="--", label="Conduction band edge")
-    plt.axvline(inspection_energy, color="blue", linestyle="-.", label="Inspection energy")
-    if xlim:
-        plt.xlim(*xlim)
-    if ylim:
-        plt.ylim(*ylim)
-    plt.title(f"{suffix} - {name}")
-    plt.xlabel("Real part (eV)")
-    plt.ylabel("Imaginary part (eV)")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-    fname = FOLDER / "plots" / name / f"{suffix}.png"
-    plt.savefig(fname, dpi=300, bbox_inches="tight")
-    plt.close()
+# Energy grid: [band_edge - OFFSET - OFFSET_LOW, band_edge + OFFSET], with
+# POINTS + 1 samples. OFFSET_LOW shifts the lower endpoint slightly below the
+# symmetric window so that the grid does not sample the band edge exactly.
+OFFSET = 1.0
+OFFSET_LOW = 0.005
+POINTS = 401
 
+# Energy indices at which M(E) and Sigma(E) are exported.
+INSPECTION_INDICES = [0] + list(range(10, 400, 20))
 
-def plot_condition_numbers(energies, condition_numbers, conduction_band_edge, name, suffix=""):
-    plt.figure()
-    plt.plot(energies, condition_numbers, "o-")
-    plt.axvline(conduction_band_edge, color="red", linestyle="--", label="Conduction band edge")
-    plt.title(f"{suffix} - {name}")
-    plt.xlabel("Energy (eV)")
-    plt.ylabel("Condition number")
-    plt.yscale("log")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-    fname = FOLDER / "plots" / name / f"{suffix}.png"
-    plt.savefig(fname, dpi=300, bbox_inches="tight")
-    plt.close()
+# Dense analyses, O(n^3) each. Feasible only for the small examples.
+RUN_SPECTRUM = False
+RUN_CONDITION_BARE = False
+RUN_CONDITION_FULL_SVD = False
 
-
-def plot_sparsity(hamiltonian, overlap, name):
-    plt.figure(figsize=(12, 6))
-    plt.subplot(1, 2, 1)
-    plt.spy(hamiltonian, markersize=1)
-    plt.title(f"H sparsity - {name}")
-    plt.subplot(1, 2, 2)
-    plt.spy(overlap, markersize=1)
-    plt.title(f"S sparsity - {name}")
-    plt.tight_layout()
-    plt.savefig(FOLDER / "plots" / name / f"sparsity_{name}.png", dpi=300, bbox_inches="tight")
-    plt.close()
-
-
-def plot_matrix_diff(A_singularity, eigenvalue, H_s, S_s, name):
-    diff = A_singularity.toarray() - eigenvalue * S_s.toarray() + H_s.toarray()
-    plt.matshow(np.log(np.abs(diff.get())), aspect="auto", cmap="viridis")
-    plt.colorbar()
-    plt.savefig(FOLDER / "plots" / name / f"A_singularity_{name}.png", dpi=300, bbox_inches="tight")
-    plt.close()
-
-
-def plot_gmres_iterations(energies, iterations, name):
-    plt.figure()
-    plt.plot(energies, iterations, "o-")
-    plt.title(f"GMRES iterations - {name}")
-    plt.xlabel("Energy (eV)")
-    plt.ylabel("Iterations")
-    plt.grid()
-    plt.tight_layout()
-    plt.savefig(FOLDER / "plots" / name / f"gmres_iterations_{name}.png", dpi=300, bbox_inches="tight")
-    plt.close()
+# Sparse export of M(E), Sigma(E) and the right-hand side.
+RUN_EXPORT_MATRICES = True
 
 
 # ---------------------------------------------------------------------------
-# Section functions
+# Loading
 # ---------------------------------------------------------------------------
 
 def load_matrices(example):
-    hamiltonian, config, __ = export_system(
+    """
+    Hamiltonian, overlap and configuration of one example.
+
+    Both matrices are negated to match the sign convention used by the QTBM
+    assembly, so that M(E) = E S - H - Sigma(E) holds with these H and S.
+    """
+    hamiltonian, config, _ = export_system(
         example=example, mode="hamiltonian",
-        energy_index=None, energy=0,
-        k_index=None, k_point=(0, 0, 0),
-    )
-    overlap, _, __ = export_system(
+        energy_index=None, energy=0, k_index=None, k_point=(0, 0, 0))
+    overlap, _, _ = export_system(
         example=example, mode="overlap",
-        energy_index=None, energy=0,
-        k_index=None, k_point=(0, 0, 0),
-    )
-    hamiltonian = -hamiltonian
-    overlap = -overlap
-    return hamiltonian, overlap, config
+        energy_index=None, energy=0, k_index=None, k_point=(0, 0, 0))
+    return -hamiltonian, -overlap, config
 
 
-def solve_and_plot_spectrum(hamiltonian, overlap, conduction_band_edge, name, offset):
-    # Active: dense solver
-    w, v = eigh(hamiltonian.toarray(), overlap.toarray())
+def band_edge_of(config):
+    """
+    Conduction band edge in eV.
 
-    # Ablation: GPU-accelerated eigvalsh
-    # w = qt_eigvalsh(hamiltonian.toarray(), oveeigenvaluesrlap.toarray()).get()
-
-    # Ablation: sparse shift-invert
-    # n = hamiltonian.shape[0]
-    # k = min(20, n - 1)
-    # if k <= 0:
-    #     raise ValueError(f"Cannot solve eigenproblem for matrix size n={n}")
-    # w, _ = eigsh(hamiltonian, k=k, M=overlap, sigma=conduction_band_edge, which="LM")
-    # order = abs(w - conduction_band_edge).argsort()
-    # w = w[order]
-
-    plot_eigenvalues_complex(w, conduction_band_edge, conduction_band_edge, name, suffix="spectrum_bare")
-    plot_eigenvalues_complex(w, conduction_band_edge, conduction_band_edge, name,
-                             suffix="spectrum_bare_zoom_E_band",
-                             xlim=(conduction_band_edge - offset, conduction_band_edge + offset),
-                             ylim=(-0.1, 0.1))
-
-    closest_index = np.argmin(abs(w - conduction_band_edge))
-    closest_eigenvalue = w[closest_index]
-    print(f"Eigenvalue closest to conduction band edge: {closest_eigenvalue}  (index {closest_index})")
-    return w, closest_eigenvalue
+    Falls back to the left Fermi level when the configuration does not set a
+    band edge; for an equilibrium calculation the two coincide.
+    """
+    edge = config.electron.conduction_band_edge
+    return config.electron.left_fermi_level if edge is None else edge
 
 
-def sweep_condition_numbers_bare(hamiltonian, overlap, energies, conduction_band_edge, name):
-    condition_numbers = []
-    for energy in energies:
-        print(f"  Computing condition number for energy = {energy:.4f} eV")
-        A = np.array(hamiltonian.toarray() - energy * overlap.toarray())
-        condition_numbers.append(np.linalg.cond(A))
-    plot_condition_numbers(energies, condition_numbers, conduction_band_edge, name, suffix="condition_bare")
-    return condition_numbers
-
-
-def plot_full_system_eigenvalues(example, inspection_energy, inspection_index, conduction_band_edge, name, offset):
-    A_singularity, config, rhs = export_system(
-        example=example, mode="full",
-        energy_index=None, energy=np.array(inspection_energy),
-        k_index=None, k_point=(0, 0, 0),
-    )
-    #w = np.linalg.eig(A_singularity.toarray())[0]
-
-    #plot_eigenvalues_complex(w, conduction_band_edge, inspection_energy, name,
-                            # suffix=f"spectrum_full_E_{inspection_index}")
-    #plot_eigenvalues_complex(w, conduction_band_edge, inspection_energy, name,
-                            # suffix=f"spectrum_full_zoom_E_{inspection_index}",
-                            # xlim=(conduction_band_edge - offset, conduction_band_edge + offset),
-                            # ylim=(-0.1, 0.1))
-
-    # Ablation: report M's eigenvalue closest to band edge
-    # closest_index = np.argmin(abs(w - conduction_band_edge))
-    # closest_eigenvalue = w[closest_index].real
-    # print(f"M eigenvalue closest to band edge: {closest_eigenvalue}  (index {closest_index})")
-
-    return A_singularity, config, rhs
-
-
-def sweep_condition_numbers_full(example, energies, conduction_band_edge, name):
-    condition_numbers = []
-    for energy in energies:
-        print(f"  Computing condition number for energy = {energy:.4f} eV")
-        A, config, __ = export_system(
-            example=example, mode="full",
-            energy_index=None, energy=np.array(energy),
-            k_index=None, k_point=(0, 0, 0),
-        )
-        condition_numbers.append(np.linalg.cond(np.array(A.toarray())))
-    plot_condition_numbers(energies, condition_numbers, conduction_band_edge, name, suffix="condition_full")
-    return condition_numbers
-
-
-def sweep_condition_numbers_full_svd(example, energies, conduction_band_edge, name):
-    condition_numbers = []
-    max_singular_values = []
-    min_singular_values = []
-
-    for energy in energies:
-        print(f"  Computing condition number for energy = {energy:.4f} eV ")
-        A, config, __ = export_system(
-            example=example, mode="full",
-            energy_index=None, energy=np.array(energy),
-            k_index=None, k_point=(0, 0, 0),
-        )
-
-        singular_values = np.linalg.svd(np.array(A.toarray()), compute_uv=False)
-        # singular_values is sorted descending, so max is first, min is last
-        max_sv = singular_values[0]
-        min_sv = singular_values[-1]
-
-        condition_numbers.append(max_sv / min_sv)
-        max_singular_values.append(max_sv)
-        min_singular_values.append(min_sv)
-
-    plot_condition_numbers(energies, condition_numbers, conduction_band_edge, name, suffix="condition_full_svd")
-
-    return (
-        np.array(condition_numbers),
-        np.array(max_singular_values),
-        np.array(min_singular_values),
-    )
-
-
-def ablation_fine_sweep(example, closest_eigenvalue, name):
-    points = 1000
-    offset = 0.01
-    energies = np.linspace(closest_eigenvalue - offset, closest_eigenvalue + offset, points)
-    condition_numbers = []
-    for energy in energies:
-        A, config, __ = export_system(
-            example=example, mode="full",
-            energy_index=None, energy=np.array(energy),
-            k_index=None, k_point=(0, 0, 0),
-        )
-        condition_numbers.append(np.linalg.cond(np.array(A.toarray())))
-    plot_condition_numbers(energies, condition_numbers, closest_eigenvalue, name, suffix="condition_full_fine_sweep")
-
-
-def ablation_gmres(example, energies, name):
-    iterations = []
-    for energy in energies:
-        A, config, rhs = export_system(
-            example=example, mode="full",
-            energy_index=None, energy=np.array(energy),
-            k_index=None, k_point=(0, 0, 0),
-        )
-        counter = 0
-        def counter_callback(args):
-            nonlocal counter
-            counter += 1
-        print(rhs.shape)
-        if rhs.shape[1] > 0:
-            __, info = gmres(A, rhs[:, 0], callback=counter_callback)
-            iterations.append(counter)
-        else:
-            iterations.append(-100)
-        print("Counter:", counter)
-    plot_gmres_iterations(energies, iterations, name)
-
-
-def ablation_matrix_diff(example, eigenvalue, name):
-    H_s, config = export_system(example=example, mode="hamiltonian",
-        energy_index=None, energy=1, k_index=None, k_point=(0, 0, 0))
-    H_s = -H_s
-    S_s, config = export_system(example=example, mode="overlap",
-        energy_index=None, energy=1, k_index=None, k_point=(0, 0, 0))
-    S_s = -S_s
-    A_singularity, config, __ = export_system(
-        example=example, mode="full",
-        energy_index=None, energy=np.array(eigenvalue),
-        k_index=None, k_point=(0, 0, 0),
-    )
-    plot_matrix_diff(A_singularity, eigenvalue, H_s, S_s, name)
+def energy_grid(band_edge):
+    """Energy sweep around the band edge, POINTS + 1 samples."""
+    return np.linspace(band_edge - OFFSET - OFFSET_LOW, band_edge + OFFSET,
+                       POINTS + 1)
 
 
 # ---------------------------------------------------------------------------
-# Examples
+# Analyses
 # ---------------------------------------------------------------------------
 
-examples = [
-    #Path("/scratch/yimili/examples/cp2k/carbon-chain/qtbm"),
-    #Path("/scratch/yimili/examples/w90/carbon-nanotube/qtbm"),
-    #Path("/scratch/yimili/examples/w90/si-bulk/qtbm"),
-    #Path("/scratch/yimili/examples/graphene/qtbm"),
-    Path("/scratch/yimili/examples/dev_12_sorted_BENCH/qtbm"),
-    Path("/scratch/yimili/examples/WS2-hBN-25_benchmark-QUATREX-DZ/qtbm"),
+def bare_spectrum(hamiltonian, overlap, band_edge):
+    """
+    Eigenvalues of the generalized problem H v = lambda S v, solved densely.
 
-]
+    Returns (eigenvalues, eigenvalue nearest the band edge). The nearest
+    eigenvalue is the one that drives kappa_2(H - E S) as E approaches it.
+    """
+    eigenvalues, _ = eigh(hamiltonian.toarray(), overlap.toarray())
+    nearest = eigenvalues[np.argmin(np.abs(eigenvalues - band_edge))]
+    print(f"  eigenvalue nearest the band edge: {nearest}")
+    return eigenvalues, nearest
+
+
+def sweep_condition_bare(hamiltonian, overlap, energies):
+    """kappa_2(H - E S) along the grid, from a dense SVD at each energy."""
+    H = hamiltonian.toarray()
+    S = overlap.toarray()
+    condition_numbers = []
+    for energy in energies:
+        print(f"  kappa_2(H - E S) at E = {energy:.4f} eV")
+        condition_numbers.append(np.linalg.cond(np.asarray(H - energy * S)))
+    return np.array(condition_numbers)
+
+
+def sweep_condition_full_svd(example, energies):
+    """
+    kappa_2(M(E)), sigma_max(M(E)) and sigma_min(M(E)) along the grid.
+
+    The full SVD is used rather than np.linalg.cond so that the two extreme
+    singular values are available separately: a peak in kappa_2 may originate
+    either from sigma_min approaching zero, which is the near-singular case of
+    interest, or from sigma_max growing, and the ratio does not distinguish
+    them.
+    """
+    condition_numbers, sigma_max, sigma_min = [], [], []
+    for energy in energies:
+        print(f"  kappa_2(M(E)) at E = {energy:.4f} eV")
+        A, _, _ = export_system(
+            example=example, mode="full",
+            energy_index=None, energy=np.array(energy),
+            k_index=None, k_point=(0, 0, 0))
+        singular_values = np.linalg.svd(np.asarray(A.toarray()),
+                                        compute_uv=False)
+        sigma_max.append(singular_values[0])       # sorted descending
+        sigma_min.append(singular_values[-1])
+        condition_numbers.append(singular_values[0] / singular_values[-1])
+    return (np.array(condition_numbers), np.array(sigma_max),
+            np.array(sigma_min))
+
+
+def export_matrices(example, hamiltonian, overlap, energies, out_dir):
+    """
+    Write M(E), Sigma(E) and the right-hand side at every inspection index.
+
+    Sigma(E) is recovered as Sigma = (E S - H) - M(E), i.e. from the definition
+    of M, rather than exported separately. All arithmetic stays sparse, so this
+    path is usable at sizes where a dense representation is not.
+    """
+    for index in INSPECTION_INDICES:
+        energy = energies[index]
+        print(f"  inspection index {index}: E = {energy} eV")
+
+        M, _, rhs = export_system(
+            example=example, mode="full",
+            energy_index=None, energy=np.array(energy),
+            k_index=None, k_point=(0, 0, 0))
+
+        M = M.tocsr()
+        Sigma = ((energy * overlap - hamiltonian).tocsr() - M).tocsr()
+
+        _save_csr_npz(out_dir / f"M_E_{index}.npz", M)
+        _save_csr_npz(out_dir / f"Sigma_E_{index}.npz", Sigma)
+        np.save(out_dir / f"rhs_E_{index}.npy", _host_array(rhs))
+        print(f"    wrote M_E_{index}.npz, Sigma_E_{index}.npz, "
+              f"rhs_E_{index}.npy")
 
 
 # ---------------------------------------------------------------------------
-# Main loop
+# Driver
 # ---------------------------------------------------------------------------
 
-for example in examples:
+def process_example(example):
     name = example.parent.name
-    print("Example:", name)
+    print(f"Example: {name}")
 
-    (FOLDER / "matrices").mkdir(parents=True, exist_ok=True)
-    (FOLDER / "matrices" / name).mkdir(parents=True, exist_ok=True)
-    (FOLDER / "plots").mkdir(parents=True, exist_ok=True)
-    (FOLDER / "plots" / name).mkdir(parents=True, exist_ok=True)
+    out_dir = FOLDER / "matrices" / name
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Load matrices
     hamiltonian, overlap, config = load_matrices(example)
-    #np.save(FOLDER / "matrices" / name / "H.npy", hamiltonian.toarray())
-    #np.save(FOLDER / "matrices" / name / "S.npy", overlap.toarray())
-    #_save_csr_npz(FOLDER / "matrices" / name / "H.npz", hamiltonian)
-    #_save_csr_npz(FOLDER / "matrices" / name / "S.npz", overlap)
+    band_edge = band_edge_of(config)
+    energies = energy_grid(band_edge)
+    print(f"  band edge = {band_edge} eV, "
+          f"grid resolution = {2 * OFFSET / POINTS:.3e} eV")
 
-    #print("H shape:", hamiltonian.shape)
-    #print("S shape:", overlap.shape)
+    np.save(out_dir / "energies.npy", energies)
+    np.save(out_dir / "band_edge.npy", np.array(band_edge))
 
-    conduction_band_edge = config.electron.conduction_band_edge
-    if conduction_band_edge is None:
-        conduction_band_edge = config.electron.left_fermi_level
-    
-    offset = 1
-    points = 401
-    offset2 = 0.005
-    energies = np.linspace(conduction_band_edge - offset - offset2, conduction_band_edge + offset, points+1)
-    #print("Resolution:", 2 * offset / points, "eV")
-    #print(f"Conduction band edge: {conduction_band_edge} eV")
+    if RUN_SPECTRUM:
+        eigenvalues, _ = bare_spectrum(hamiltonian, overlap, band_edge)
+        np.save(out_dir / "spectrum_bare.npy", eigenvalues)
 
-    # 2. Eigenvalues of H v = λ S v
-    #w_HS, closest_eigenvalue = solve_and_plot_spectrum(
-     #   hamiltonian, overlap, conduction_band_edge, name, offset)
-    #np.save(FOLDER / "matrices" / name / "spectrum_bare.npy", w_HS)
+    if RUN_CONDITION_BARE:
+        condition = sweep_condition_bare(hamiltonian, overlap, energies)
+        np.save(out_dir / "condition_bare.npy", condition)
 
-    # 3. Condition number of (H - E*S)
-    #condition_numbers_bare = sweep_condition_numbers_bare(hamiltonian, overlap, energies, conduction_band_edge, name)
-    #np.save(FOLDER / "matrices" / name / "condition_bare.npy", condition_numbers_bare)
+    if RUN_CONDITION_FULL_SVD:
+        condition, sigma_max, sigma_min = sweep_condition_full_svd(
+            example, energies)
+        np.save(out_dir / "condition_full_svd.npy", condition)
+        np.save(out_dir / "max_singular_values.npy", sigma_max)
+        np.save(out_dir / "min_singular_values.npy", sigma_min)
 
-    # 4. Full system matrix M(E) at each inspection energy
-    """
-    inspection_indices = list(range(0, 10)) #[0,402]
-    for inspection_index in inspection_indices:
-        inspection_energy = energies[inspection_index]
-        print(f"Inspection energy [{inspection_index}]: {inspection_energy} eV")
-        M_E_inspected, config, rhs = plot_full_system_eigenvalues(
-            example, inspection_energy, inspection_index, conduction_band_edge, name, offset)
-        M_E = M_E_inspected.toarray()
-        ES_H = inspection_energy * overlap.toarray() - hamiltonian.toarray()
-        Sigma = ES_H - M_E
-        w_M = np.linalg.eig(M_E)[0]
-        np.save(FOLDER / "matrices" / name / f"M_E_{inspection_index}.npy", M_E)
-        np.save(FOLDER / "matrices" / name / f"Sigma_E_{inspection_index}.npy", Sigma)
-        np.save(FOLDER / "matrices" / name / f"spectrum_M_E_{inspection_index}.npy", w_M)
-        np.save(FOLDER / "matrices" / name / f"rhs_E_{inspection_index}.npy", _host_array(rhs))
-    """
+    if RUN_EXPORT_MATRICES:
+        export_matrices(example, hamiltonian, overlap, energies, out_dir)
 
-    # 4b huge matrices. Full system matrix M(E) at each inspection energy
-    inspection_indices = [0, 10, 30, 50, 70, 90, 110, 130, 150, 170, 190, 210, 230, 250, 270, 290, 310, 330, 350, 370, 390]#list(range(0, 10))  # [0,402]
+    print(f"  output directory: {out_dir}")
+    print(f"  plot with: python plotting/plot_qtbm_spectra.py {out_dir}\n")
 
-    for inspection_index in inspection_indices:
-        inspection_energy = energies[inspection_index]
-        print(f"Inspection energy [{inspection_index}]: {inspection_energy} eV")
 
-        M_E_inspected, config, rhs = plot_full_system_eigenvalues(
-            example, inspection_energy, inspection_index, conduction_band_edge, name, offset)
+def main():
+    for example in EXAMPLES:
+        process_example(example)
 
-        print("done with loading M_E_inspected and rhs")
 
-        M_E = M_E_inspected.tocsr()                       # stay sparse
-        ES_H = (inspection_energy * overlap - hamiltonian).tocsr()  # sparse arithmetic
-        Sigma = (ES_H - M_E).tocsr()
-
-        print("starting saving sparse matrices to disk")
-
-        # Dense full eig is infeasible at 90000x90000 — get a few extreme eigenvalues instead
-        #w_M, _ = sp.sparse.linalg.eigs(M_E, k=6, which="LM")
-
-        _save_csr_npz(FOLDER / "matrices" / name / f"M_E_{inspection_index}.npz", M_E)
-        print("saved M_E")
-        _save_csr_npz(FOLDER / "matrices" / name / f"Sigma_E_{inspection_index}.npz", Sigma)
-        print("saved Sigma_E")
-        #np.save(FOLDER / "matrices" / name / f"spectrum_M_E_{inspection_index}.npy", w_M)
-        np.save(FOLDER / "matrices" / name / f"rhs_E_{inspection_index}.npy", _host_array(rhs))
-        print("saved rhs")
-
-    # 5. Condition number of M(E)
-    #condition_numbers_full = sweep_condition_numbers_full(example, energies, conduction_band_edge, name)
-    #condition_numbers_full, max_singular_values, min_singular_values = sweep_condition_numbers_full_svd(example, energies, conduction_band_edge, name)
-    #np.save(FOLDER / "matrices" / name / "condition_full_svd.npy", condition_numbers_full)
-    #np.save(FOLDER / "matrices" / name / "max_singular_values.npy", max_singular_values)
-    #np.save(FOLDER / "matrices" / name / "min_singular_values.npy", min_singular_values)
-
-    # Ablation: fine sweep around closest M eigenvalue
-    # ablation_fine_sweep(example, closest_eigenvalue, name)
-    # Ablation: GMRES iteration count
-    # ablation_gmres(example, energies, name)
-    # Ablation: sparsity pattern
-    # plot_sparsity(hamiltonian, overlap, name)
-    # Ablation: matrix difference check
-    # ablation_matrix_diff(example, conduction_band_edge, name)
+if __name__ == "__main__":
+    main()

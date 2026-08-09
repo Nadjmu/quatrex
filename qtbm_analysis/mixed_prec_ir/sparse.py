@@ -1,29 +1,50 @@
 """
-Mixed-Precision Iterative Refinement for Sparse Linear Systems
-==============================================================
-Benchmarks error, wall-clock time, and peak memory for three solvers:
-  1. fp32 LU + fp64 iterative refinement  (this work)
-  2. Pure fp64 spsolve                    (baseline)
-  3. Pure fp32 solve, no refinement       (lower bound)
+Mixed-precision iterative refinement on a sparse system, using SuperLU.
 
-Memory is tracked two ways:
-  - tracemalloc  : Python-heap peak (captures numpy/scipy allocations precisely)
-  - psutil RSS   : peak resident set size polled in a background thread —
-                   captures C-extension allocations (SuperLU fill-in etc.) but
-                   has ~5 ms polling granularity so very short-lived spikes
-                   may be missed.
+Input
+-----
+A sparse matrix and right-hand side; see the configuration below the imports.
 
-Note on RSS: SuperLU and the OS tend to *reuse* already-mapped pages across
-calls, so the net-delta after a call is often near-zero. What matters is the
-*peak above baseline* during the call, which the background poller tracks.
+Variants compared
+-----------------
+    fp32 LU with fp64 refinement   the method under test
+    fp64 spsolve, no refinement    the accuracy reference
+    fp32 solve, no refinement      the lower bound refinement must improve upon
 
-Algorithm (LU-IR, Buttari et al. 2006):
-  1. Cast A to fp32, compute LU factorisation
-  2. Solve L~U~ x0 = b          (fp32, result cast to fp64)
-  3. r = b - A x0               (fp64 residual)
-  4. Solve L~U~ dx = r          (fp32 correction solve)
-  5. x += dx
-  6. Repeat 3-5 until ||r||/||b|| < tol or max_iter reached
+Algorithm
+---------
+Classical LU-based iterative refinement (Buttari et al., 2006):
+
+    1. cast A to fp32 and factorize it
+    2. x = solve(b) in fp32, promoted to fp64
+    3. r = b - A x, computed in fp64
+    4. dx = solve(r) in fp32, reusing the same factorization
+    5. x = x + dx
+    6. repeat from 3 until ||r|| / ||b|| < tol or max_iter is reached
+
+The residual at step 3 is the only quantity computed in the working precision,
+and computing it there is what permits the refined solution to attain fp64
+accuracy from an fp32 factorization. Convergence requires approximately
+kappa_inf(A) * u_f < 1; see mpir.py for the general treatment and for the
+GMRES-based variant that relaxes this requirement.
+
+Instrumentation
+---------------
+Memory is measured two ways, since neither is sufficient alone. tracemalloc
+records the Python heap exactly, covering the NumPy and SciPy allocations, but
+does not observe allocations made inside SuperLU, where the fill-in resides.
+The RSS poller samples the resident set size from a background thread every
+5 ms and does observe them, at the cost of missing peaks shorter than its
+sampling interval.
+
+SuperLU and the operating system tend to reuse pages already mapped across
+calls, so the net RSS delta after a call is frequently near zero. The
+meaningful quantity is the peak above baseline during the call, which is what
+the background poller records.
+
+Output
+------
+A table of relative error, wall time and peak memory per variant, on stdout.
 """
 
 import gc

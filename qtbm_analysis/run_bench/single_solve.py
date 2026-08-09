@@ -1,12 +1,46 @@
 #!/usr/bin/env python3
 """
-Single-solve timing + memory check (CPU). Choose which solvers to run
-via --solvers. Prints progress at every stage.
+Timing and memory of a single solve on the CPU, with per-stage progress.
 
-Usage:
-    python single_solve_cpu.py --solvers superlu mumps
-    python single_solve_cpu.py --solvers block_thomas --bs 104
-    python single_solve_cpu.py /path/to/M.npz /path/to/rhs.npy --solvers superlu umfpack mumps gmres
+Input
+-----
+    matrix    a CSR .npz triplet holding data, indices, indptr and shape
+    rhs       a .npy right-hand side
+    --solvers which solvers to run
+    --bs / --auto-blocks   the partition, required by the block solvers
+
+Purpose
+-------
+The diagnostic entry point. Where run_benchmarks.py sweeps every material
+silently, this runs one matrix with one right-hand side and reports progress at
+every stage, so that a failure or an unexpected cost can be localized.
+
+Algorithm
+---------
+Per requested solver: construct, which performs the whole factorization and is
+what the reported factorization time measures, then solve, then report the
+relative residual, the solver-reported factor footprint, and the peak resident
+set size before and after.
+
+The two memory figures answer different questions. factor_nbytes is what the
+solver believes it stores; the peak RSS delta is what the process actually
+consumed, including workspace and fill-in the solver does not account for.
+
+Block partitions are validated with offband_nnz before any block solver runs,
+and the script aborts rather than returning a solution computed from a
+partition that discards real couplings.
+
+Output
+------
+A per-solver report on stdout. Nothing is written to disk.
+
+Usage
+-----
+    python single_solve.py --solvers superlu mumps
+    python single_solve.py --solvers block_thomas block_thomas_inv --bs 104
+    python single_solve.py --solvers block_thomas --auto-blocks
+    python single_solve.py --solvers block_thomas_inv_fp16 --bs 32 --inv-dtype float16
+    python single_solve.py /path/M.npz /path/rhs.npy --solvers superlu umfpack
 """
 
 import sys
@@ -37,6 +71,7 @@ DTYPE = np.complex128
 
 
 def load_matrix(path):
+    """Load a CSR matrix from an .npz triplet of data, indices, indptr, shape."""
     print(f"[load] reading {path} ...", flush=True)
     d = np.load(path)
     A = sp.csr_matrix((d["data"], d["indices"], d["indptr"]), shape=tuple(d["shape"]))
@@ -45,11 +80,13 @@ def load_matrix(path):
 
 
 def cpu_peak_mb():
+    """Peak resident set size of this process so far, in MB."""
     ru = resource.getrusage(resource.RUSAGE_SELF)
     return ru.ru_maxrss / 1024.0
 
 
 def timed(label, fn, *args, **kwargs):
+    """Call fn with progress reporting; return (result, elapsed seconds)."""
     print(f"[run] starting: {label} ...", flush=True)
     t0 = time.perf_counter()
     out = fn(*args, **kwargs)
@@ -60,6 +97,10 @@ def timed(label, fn, *args, **kwargs):
 
 def report(label, x, A, b, t_factor, t_solve, mem_factor_bytes,
            cpu_before, cpu_after, extra=""):
+    """
+    Report one solver result: the two timings, the relative residual, the
+    solver-reported factor footprint, and the peak RSS before and after.
+    """
     res = np.linalg.norm(A @ x - b) / np.linalg.norm(b)
     print(f"\n--- {label} ---")
     print(f"  factor time      : {t_factor*1e3:10.2f} ms")
@@ -150,8 +191,8 @@ def main():
                   f"  skipped (pass --bs <block_size> or --auto-blocks)")
 
         if partition is not None:
-            # A partition that cuts a real coupling returns a wrong x silently,
-            # so check before solving rather than trusting the input.
+            # A partition that cuts a real coupling yields a wrong solution
+            # without raising, so it is verified before any solve.
             bad = offband_nnz(A, partition)
             print(f"[prep] off-band nnz = {bad}", flush=True)
             if bad:

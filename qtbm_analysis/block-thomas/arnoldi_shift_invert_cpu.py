@@ -1,68 +1,78 @@
 #!/usr/bin/env python3
 """
 Extreme eigenvalues, singular values and the condition number of a QTBM
-matrix, on CPU.
+matrix, on the CPU.
 
-TWO ORTHOGONAL CHOICES
-----------------------
-  --quantity {eigenvalue, singular, condition}   WHAT to compute
-  --end      {smallest, largest, both}           WHICH end of the spectrum
+Input
+-----
+    MATRIX      a CSR .npz triplet of data, indices, indptr and shape
+    --quantity  what to compute: eigenvalue, singular or condition
+    --end       which end of the spectrum: smallest, largest or both
+    --backend   which solver provides A^-1, when one is needed
 
-Everything else follows from those two. In particular there is no
---shift-invert flag any more: which end you ask for decides whether a
-factorization is needed at all.
+Algorithm
+---------
+The two flags --quantity and --end determine everything else, including
+whether a factorization is required at all.
 
-  --end largest    the EASY end. Krylov methods converge on the dominant
-                   part of the spectrum naturally, so this is plain
-                   matrix-vector products: no factorization, and --backend
-                   is unused.
-  --end smallest   the HARD end, and the reason this script exists. The
-                   spectrum is transformed so the wanted end becomes the
-                   dominant one:
-                     eigenvalues     eigs(A, sigma=0, OPinv=A^-1)
-                     singular values svds(A^-1, which="LM"), then 1/sigma
-                   Both need A^-1 applied repeatedly, which is what
-                   --backend factorizes once and reuses. Singular values
-                   need a SECOND factorization for A^H, because svds wants
-                   rmatvec and neither MUMPS's nor Block Thomas's python API
-                   exposes a transpose solve.
+--end largest is the well-conditioned case. Krylov methods converge on the
+dominant part of the spectrum naturally, so this requires only matrix-vector
+products; no factorization is performed and --backend is unused.
 
-  --quantity condition   sigma_max / sigma_min, i.e. --quantity singular
-                         --end both plus the ratio. The 2-norm condition
-                         number, the number that decides whether a
-                         mixed-precision iterative refinement scheme can
-                         converge on these matrices.
+--end smallest is the difficult case and the reason this script exists. The
+spectrum is transformed so that the wanted end becomes the dominant one:
 
-METHODS
+    eigenvalues       eigs(A, sigma=0, OPinv=A^-1)
+    singular values   svds(A^-1, which="LM"), then invert the results
+
+Both apply A^-1 repeatedly, which is what --backend factorizes once and
+reuses. Singular values at the small end require a second factorization, of
+A^H, because svds needs rmatvec and neither the MUMPS nor the Block Thomas
+Python interface exposes a transpose solve.
+
+--quantity condition computes sigma_max / sigma_min, that is, --quantity
+singular --end both followed by the ratio. This is the 2-norm condition
+number, the quantity that determines whether a mixed-precision iterative
+refinement scheme can converge on these matrices; see mixed_prec_ir/mpir.py.
+
+Methods
 -------
-  eigenvalue: arpack (default)   Arnoldi. The one that works.
-              power              one-vector power / inverse iteration. Kept
-                                 because it is trivially auditable and
-                                 because its failure to converge on a
-                                 clustered spectrum is worth showing rather
-                                 than asserting.
-  singular:   arpack (default)   svds via eigsh on the normal equations.
-              propack            Lanczos bidiagonalization, never forms
-                                 A^H A.
+    eigenvalue  arpack (default)  implicitly restarted Arnoldi
+                power             single-vector power or inverse iteration.
+                                  Retained because it is directly auditable
+                                  and because its behaviour on a clustered
+                                  spectrum is itself a result worth recording.
+    singular    arpack (default)  svds through eigsh on the normal equations
+                propack           Lanczos bidiagonalization, which never forms
+                                  A^H A
 
-WHY ARPACK BEATS PROPACK HERE, AND WHY THAT IS NOT PROPACK'S FAULT
-------------------------------------------------------------------
-scipy's svds hardcodes maxiter=None in its propack branch, so PROPACK never
-receives a basis-size limit and falls back to its own default kmax = 10*k.
-At k=1 that is a Lanczos basis of 10, against ARPACK's default ncv of 20 --
-and on the WS2-hBN matrix a basis of 20 converged while 10 did not. Raising
--k is the only lever the public API leaves: kmax scales with it. Under
---end smallest a PROPACK non-convergence therefore falls back to ARPACK on
-the already-paid-for factorizations rather than discarding them
-(--no-fallback to disable).
+PROPACK against ARPACK
+----------------------
+ARPACK converges here where PROPACK does not, and this is a consequence of the
+SciPy interface rather than of the method. SciPy's svds passes maxiter=None in
+its PROPACK branch, so PROPACK never receives a basis-size limit and falls back
+to its own default kmax = 10k. At k = 1 this is a Lanczos basis of 10, against
+ARPACK's default ncv of 20; on the WS2-hBN matrix a basis of 20 converged and a
+basis of 10 did not. Raising -k is the only control the public interface
+offers, since kmax scales with it. Under --end smallest, a PROPACK
+non-convergence therefore falls back to ARPACK using the factorizations already
+computed rather than discarding them; --no-fallback disables this.
 
-WHAT --no-shift-invert IS FOR
------------------------------
-It attacks the small end of A directly (which="SM") instead of transforming
-it. This is the slow, badly-conditioned path -- for eigenvalues ARPACK has
-no way to target small magnitudes, and for singular values ARPACK reaches
-them through A^H A and hence cond(A)^2. It is kept so the comparison can be
-run rather than asserted. Expect it to be slow or to fail.
+--no-shift-invert
+-----------------
+Attacks the small end of A directly, with which="SM", instead of transforming
+the spectrum. This is the slow and badly conditioned path: for eigenvalues
+ARPACK has no mechanism for targeting small magnitudes, and for singular values
+it reaches them through A^H A and therefore through kappa(A)^2. It is retained
+so that the comparison can be performed rather than asserted, and is expected
+to be slow or to fail.
+
+Output
+------
+The requested values with their residuals, on stdout. Residuals are taken
+against the original A, not against the transformed operator, so --tol, which
+refers to the transformed problem, does not bound them; the residual column is
+what establishes whether a value is converged.
 """
 
 import argparse
@@ -157,8 +167,8 @@ def build_solver(A, backend, dtype=np.complex128, block_sizes=None):
 
     Block Thomas needs a block-tridiagonal partition; it is detected from the
     sparsity pattern and verified with offband_nnz -- a partition that cuts a
-    real coupling does not fail loudly, extract_blocks_sparse just drops those
-    entries and the solve returns a plausible, wrong answer.
+    real coupling does not fail loudly: extract_blocks_sparse discards those
+    entries and the solve returns a plausible but wrong answer.
     """
     if backend == "mumps":
         return MUMPS(A, dtype=dtype)
@@ -170,9 +180,9 @@ def build_solver(A, backend, dtype=np.complex128, block_sizes=None):
         return CuDSS(A, dtype=dtype)
 
     if backend == "gmres_cupy":
-        # Iterative: solves are only as exact as rtol, which the outer Krylov
-        # method assumes they are not. Fine for a timing comparison, not for
-        # a converged eigenvalue.
+        # Iterative, so each solve is accurate only to rtol, whereas the outer
+        # Krylov method assumes an exact solve. Adequate for a timing
+        # comparison, not for a converged eigenvalue.
         return GMRESCuPy(A, dtype=dtype)
 
     if backend in ("blockthomas", "blockthomas_inv"):
@@ -616,7 +626,7 @@ def print_results(out):
 # CLI
 # ===========================================================================
 EPILOG = """\
-what you can ask for
+available quantities
 --------------------
   --quantity eigenvalue --end smallest   lambda_min, shift-invert  [factorizes]
   --quantity eigenvalue --end largest    lambda_max, plain Arnoldi

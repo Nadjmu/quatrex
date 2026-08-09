@@ -1,39 +1,53 @@
 #!/usr/bin/env python3
 """
-determine_custom_block_size.py -- derive a custom (non-uniform) block
-partition from a matrix's sparsity pattern and check it is safe to solve with.
+Derivation and verification of a non-uniform block partition.
 
-The detection algorithm itself now lives in solver_classes (find_block_slices
-/ block_sizes_from_matrix), so the solvers and the detector cannot drift apart;
-this file is the command-line front end and the verification wrapper.
+Input
+-----
+Either a material HDF5 file, in which case one energy index is read and the
+choice of index is immaterial because the sparsity pattern does not depend on
+it, or a bare CSR .npz triplet of data, indices, indptr and shape.
 
-WHY VERIFY. The detector grows a reach frontier row by row and only ever looks
-FORWARD (the largest column index in each row). That yields a correct
-block-tridiagonal partition when the matrix is structurally symmetric, which
-the QTBM matrices are -- but nothing in the algorithm enforces it. A partition
-that cuts through a real coupling does not fail loudly: extract_blocks_sparse
-would silently discard the out-of-band entries and Block Thomas would return a
-plausible, wrong x. offband_nnz() counts exactly those entries, so it is
-checked here and again inside bench().
+Algorithm
+---------
+The detection itself is solver_classes.find_block_slices, which grows a reach
+frontier row by row and declares a block boundary wherever the frontier stops
+advancing. It resides in the solver module rather than here so that the
+detector and the solvers consuming its output cannot diverge; this file is the
+command-line front end and the verification wrapper.
 
-The detector also merges its first two slices by construction (the seed row is
-absorbed into the first real block), so the leading block comes out coarser
-than the true structure. That is harmless -- a coarser partition is still a
-valid one, just with slightly more arithmetic in the first block.
+Verification
+------------
+The detector looks forward only, using the largest column index of each row.
+That produces a correct block-tridiagonal partition when the matrix is
+structurally symmetric, which the QTBM matrices are, but nothing in the
+algorithm enforces the property. A partition that cuts through a real coupling
+does not fail loudly: extract_blocks_sparse would discard the out-of-band
+entries and Block Thomas would return a plausible but wrong solution.
+offband_nnz counts exactly those entries, so it is checked here and again
+inside bench().
 
-Usage:
-    # from a material HDF5 file (uses one energy index; the pattern is the
-    # same at every index, so which one does not matter)
+The detector also merges its first two slices by construction, the seed row
+being absorbed into the first real block, so the leading block is coarser than
+the true structure. This is harmless: a coarser partition remains valid, at the
+cost of slightly more arithmetic in the first block.
+
+Output
+------
+The block count, the size range, sum(bs^2), which is the dense block-storage
+cost that determines whether a custom partition is worthwhile, and the
+off-band nonzero count. Exit status 1 if the off-band count is nonzero.
+
+--compare-bs reports the same figures for a uniform partition and their storage
+ratio. --emit-python prints a line to paste into
+run_benchmarks.MATERIAL_BLOCKS.
+
+Usage
+-----
     python determine_custom_block_size.py /scratch/yimili/matrices/hdf5/graphene.h5
     python determine_custom_block_size.py .../graphene.h5 --idx 25
-
-    # from a bare CSR .npz (data/indices/indptr/shape)
-    python determine_custom_block_size.py /scratch/yimili/matrices/.../M_E_0.npz
-
-    # compare against the uniform block size currently used for that material
+    python determine_custom_block_size.py .../M_E_0.npz
     python determine_custom_block_size.py .../graphene.h5 --compare-bs 416
-
-    # emit a python literal to paste into run_benchmarks.MATERIAL_BLOCKS
     python determine_custom_block_size.py .../graphene.h5 --emit-python
 """
 
@@ -51,12 +65,14 @@ from solver_classes import block_sizes_from_matrix, offband_nnz
 
 def load_matrix(path, idx=0):
     """
-    Accept either a material HDF5 file (groups are CSC) or a bare CSR .npz
-    triplet as written by export_qtbm_systems._save_csr_npz.
+    Load a matrix from a material HDF5 file or a bare CSR .npz triplet.
 
-    find_block_slices walks indptr row by row, so it needs CSR -- hence the
-    .tocsr() on the h5 branch. Building csr_matrix straight from the CSC
-    triplet would hand back the transpose instead.
+    HDF5 groups store CSC; the .npz files written by
+    export_qtbm_systems._save_csr_npz store CSR.
+
+    find_block_slices walks indptr row by row and therefore requires CSR, hence
+    the conversion on the HDF5 branch. Constructing a csr_matrix directly from
+    the CSC triplet would silently yield the transpose.
     """
     path = Path(path)
     if path.suffix in (".h5", ".hdf5"):
@@ -73,6 +89,10 @@ def load_matrix(path, idx=0):
 
 
 def describe(sizes, A):
+    """
+    Report the properties of one partition. Returns True if it is a valid
+    block-tridiagonal partition of A.
+    """
     sizes = list(sizes)
     n = A.shape[0]
     print(f"matrix shape      = {A.shape}, nnz = {A.nnz} "
@@ -86,8 +106,9 @@ def describe(sizes, A):
     print(f"off-band nnz      = {bad}"
           f"{'   <-- NOT block tridiagonal, do not use' if bad else '   (clean)'}")
 
-    # dense storage cost of the block factors, the figure that decides whether
-    # a non-uniform partition is worth it at all
+    # Dense storage cost of the block factors. This is the figure that decides
+    # whether a non-uniform partition is worth adopting: the diagonal blocks
+    # are stored densely, so the cost scales as the sum of their squared sizes.
     cost = sum(s * s for s in sizes)
     print(f"sum of bs^2       = {cost:,}  (dense diagonal-block storage units)")
     return bad == 0
