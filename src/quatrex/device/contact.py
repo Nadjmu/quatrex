@@ -883,9 +883,6 @@ class Contact:
         # is some strange fancy indexing bug that makes it necessary to
         # handle slicing on the CPU. (cupy-13.5.1)
         # TODO: Change how to check where the data resides (GPU or CPU)
-        hopping_matrix = (
-            hopping_matrix.get() if hasattr(hopping_matrix, "get") else hopping_matrix
-        )
 
         opposite_hopping_matrix = quantity.get(opposite_hopping_indices)
 
@@ -895,24 +892,18 @@ class Contact:
                 f"Hopping matrix found at {hopping_indices} without corresponding opposite hopping at {opposite_hopping_indices}."
             )
 
-        opposite_hopping_matrix = (
-            opposite_hopping_matrix.get()
-            if hasattr(opposite_hopping_matrix, "get")
-            else opposite_hopping_matrix
-        )
-
         # In reduced, the coupling is only given by the upper triangular part of the Hamiltonian.
         # We need to add the lower part to get the full coupling.
-        unit = (
-            sparse.csr_matrix(
-                hopping_matrix[self.origin_orbital_indices, :][:, orbital_indices]
-            )
-            + sparse.csr_matrix(
-                opposite_hopping_matrix[orbital_indices, :][
-                    :, self.origin_orbital_indices
-                ]
-            ).T.conj()
-        )
+
+        unit1 = (
+            hopping_matrix[self.origin_orbital_indices, :][:, orbital_indices]
+        ).tocoo()
+        unit2 = (
+            opposite_hopping_matrix[orbital_indices, :][
+                :, self.origin_orbital_indices
+            ].T.conj()
+        ).tocoo()
+        unit = unit1.tocsr() + unit2.tocsr()
 
         if np.array_equal(self.origin_orbital_indices, orbital_indices):
             unit -= sparse.diags(
