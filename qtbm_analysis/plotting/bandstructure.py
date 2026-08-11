@@ -74,7 +74,7 @@ MATERIALS = {
     "si-bulk": Material(
         # Bandwidth 382 -> smallest admissible divisor of 3840 is 192.
         input_dir=EXAMPLES_DIR / "w90/si-bulk/inputs",
-        blocksize=192,
+        blocksize=256,
         mid_gap_energy=6.0953,
     ),
     "carbon-chain": Material(
@@ -85,7 +85,7 @@ MATERIALS = {
     "graphene": Material(
         # Bandwidth 431 -> smallest admissible divisor of 2080 is 260.
         input_dir=EXAMPLES_DIR / "graphene/inputs",
-        blocksize=260,
+        blocksize=416,
         mid_gap_energy=0.5,
     ),
 }
