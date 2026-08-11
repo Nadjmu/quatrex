@@ -72,10 +72,10 @@ MATERIALS = {
         mid_gap_energy=-3.8,
     ),
     "si-bulk": Material(
-        # 960 Si atoms * 4 orbitals / 30 cells along x = 128.
+        # Bandwidth 382 -> smallest admissible divisor of 3840 is 192.
         input_dir=EXAMPLES_DIR / "w90/si-bulk/inputs",
-        blocksize=128,
-        mid_gap_energy=6.2,
+        blocksize=192,
+        mid_gap_energy=6.0953,
     ),
     "carbon-chain": Material(
         input_dir=EXAMPLES_DIR / "cp2k/carbon-chain/inputs",
@@ -83,9 +83,9 @@ MATERIALS = {
         mid_gap_energy=-12,
     ),
     "graphene": Material(
-        # 160 C atoms * 13 orbitals / 20 cells along x = 104.
+        # Bandwidth 431 -> smallest admissible divisor of 2080 is 260.
         input_dir=EXAMPLES_DIR / "graphene/inputs",
-        blocksize=104,
+        blocksize=260,
         mid_gap_energy=0.5,
     ),
 }
@@ -170,9 +170,19 @@ def band_structure(
             s_k = s_01 * minus + s_00 + s_10 * plus
 
         # NOTE: `eigvalsh` returns the eigenvalues in ascending order.
-        e_k[start : start + k_chunk.shape[0]] = eigvalsh(
-            h_k, s_k, compute_module=xp.__name__, output_module="numpy"
-        )
+        w = eigvalsh(h_k, s_k, compute_module=xp.__name__, output_module="numpy")
+
+        # The generalized solver factorizes S(k) with a Cholesky
+        # decomposition, which silently yields NaN rather than raising if
+        # S(k) is not positive definite. That happens when the blocks are
+        # not the true lead blocks, i.e. the block size is wrong.
+        if not np.all(np.isfinite(w)):
+            raise ValueError(
+                "eigensolve produced non-finite values; S(k) is not positive "
+                "definite, which usually means the block size is wrong."
+            )
+
+        e_k[start : start + k_chunk.shape[0]] = w
 
         del h_k, s_k
         if xp.__name__ == "cupy":
