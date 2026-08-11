@@ -22,6 +22,7 @@ import numpy as np
 import scipy.io
 
 from qttools import xp
+from qttools.kernels.linalg import eigvalsh
 from qttools.utils.gpu_utils import get_host
 from quatrex.bandstructure import band_edges, contact
 
@@ -68,7 +69,7 @@ MATERIALS = {
     "carbon-chain": Material(
         input_dir=EXAMPLES_DIR / "cp2k/carbon-chain/inputs",
         blocksize=104,
-        mid_gap_energy=-12,
+        mid_gap_energy=2.21,
     ),
     "graphene": Material(
         input_dir=EXAMPLES_DIR / "graphene/inputs",
@@ -78,11 +79,46 @@ MATERIALS = {
 }
 
 
-def load_hamiltonian(input_dir: Path) -> np.ndarray:
-    """Loads the dense device Hamiltonian from `hamiltonian.mat`."""
-    mat = scipy.io.loadmat(input_dir / "hamiltonian.mat")
-    (key,) = [k for k in mat if not k.startswith("__")]
-    return mat[key].toarray()
+def load_matrix(path: Path) -> np.ndarray:
+    """Loads a dense matrix from a MATLAB file holding a single matrix."""
+    mat = scipy.io.loadmat(path)
+    keys = [k for k in mat if not k.startswith("__")]
+    if len(keys) != 1:
+        raise ValueError(
+            f"expected a single matrix in {path}, found {len(keys)}: {keys}"
+        )
+    return mat[keys[0]].toarray()
+
+
+def lead_blocks(matrix: np.ndarray, blocksize: int) -> tuple:
+    """Extracts the (0,0), (0,1) and (1,0) blocks of a matrix."""
+    return (
+        xp.asarray(matrix[:blocksize, :blocksize]),
+        xp.asarray(matrix[:blocksize, blocksize : 2 * blocksize]),
+        xp.asarray(matrix[blocksize : 2 * blocksize, :blocksize]),
+    )
+
+
+def generalized_band_structure(
+    h_10, h_00, h_01, s_10, s_00, s_01, num_k_points: int
+):
+    """Band structure in a non-orthogonal basis.
+
+    Solves the generalized problem H(k) v = E S(k) v, which is what a
+    non-orthonormal basis requires. `contact.contact_band_structure`
+    solves the standard problem and is only valid when S is the
+    identity.
+
+    """
+    k = xp.linspace(-xp.pi, xp.pi, num_k_points)
+    minus = xp.exp(-1j * k)[:, xp.newaxis, xp.newaxis]
+    plus = xp.exp(1j * k)[:, xp.newaxis, xp.newaxis]
+
+    h_k = h_01 * minus + h_00 + h_10 * plus
+    s_k = s_01 * minus + s_00 + s_10 * plus
+
+    e_k = eigvalsh(h_k, s_k, compute_module=xp.__name__, output_module=xp.__name__)
+    return xp.sort(e_k.real, axis=1)
 
 
 def check_lead_blocks(hamiltonian: np.ndarray, blocksize: int) -> None:
@@ -177,11 +213,14 @@ def run(name: str, material: Material) -> None:
 
     blocksize = material.blocksize
 
-    # NOTE: The Wannier basis is orthonormal, so no overlap matrix is
-    # needed and the band structure follows from a standard eigenvalue
-    # problem.
-    hamiltonian = load_hamiltonian(material.input_dir)
-    print(f"  {hamiltonian.shape=}, {blocksize=}")
+    # NOTE: An orthonormal basis (e.g. Wannier) needs no overlap matrix
+    # and gives a standard eigenvalue problem. A non-orthogonal basis
+    # (e.g. the CP2K Gaussian sets) ships an `overlap.mat` and requires
+    # the generalized problem instead.
+    hamiltonian = load_matrix(material.input_dir / "hamiltonian.mat")
+    overlap_path = material.input_dir / "overlap.mat"
+    overlap = load_matrix(overlap_path) if overlap_path.exists() else None
+    print(f"  {hamiltonian.shape=}, {blocksize=}, overlap={overlap is not None}")
 
     if hamiltonian.shape[0] < 3 * blocksize:
         raise ValueError(
@@ -192,11 +231,17 @@ def run(name: str, material: Material) -> None:
     check_lead_blocks(hamiltonian, blocksize)
     plot_hamiltonian(hamiltonian, out_dir)
 
-    h_00 = xp.asarray(hamiltonian[:blocksize, :blocksize])
-    h_01 = xp.asarray(hamiltonian[:blocksize, blocksize : 2 * blocksize])
-    h_10 = xp.asarray(hamiltonian[blocksize : 2 * blocksize, :blocksize])
+    h_00, h_01, h_10 = lead_blocks(hamiltonian, blocksize)
 
-    e_k = get_host(contact.contact_band_structure(h_10, h_00, h_01, NUM_K_POINTS))
+    if overlap is None:
+        e_k = contact.contact_band_structure(h_10, h_00, h_01, NUM_K_POINTS)
+    else:
+        s_00, s_01, s_10 = lead_blocks(overlap, blocksize)
+        e_k = generalized_band_structure(
+            h_10, h_00, h_01, s_10, s_00, s_01, NUM_K_POINTS
+        )
+
+    e_k = get_host(e_k)
     k = np.linspace(-np.pi, np.pi, NUM_K_POINTS)
 
     print(f"  eigenvalue range: {e_k.min():.4f} .. {e_k.max():.4f}")
