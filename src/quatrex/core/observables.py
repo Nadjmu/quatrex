@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the methods to calculate density and current from Green's functions."""
+
 from qttools import NDArray, xp
 from qttools.comm import comm
 from qttools.datastructures.dsdbsparse import DSDBSparse

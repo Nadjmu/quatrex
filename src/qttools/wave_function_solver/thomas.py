@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes our Thomas algorithm based wave function solver."""
+
 from functools import partial
 
 from qttools import NDArray, sparse, xp

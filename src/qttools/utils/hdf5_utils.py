@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes utility functions for HDF5 operations."""
+
 import re
 
 import h5py

@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes contact band structure related functions."""
+
 import numpy as np
 from scipy.optimize import minimize_scalar
 

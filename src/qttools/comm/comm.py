@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes the singleton communicator."""
+
 import numpy as np
 from mpi4py import MPI
 from mpi4py.MPI import COMM_WORLD as global_comm

@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes the contour integral kernels."""
+
 from qttools import QTX_USE_CUPY_JIT, NDArray, xp
 from qttools.kernels import linalg
 

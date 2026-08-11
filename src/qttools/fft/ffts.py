@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes the FFT-based convolution and correlation functions."""
+
 from qttools import NDArray, xp
 
 if xp.__name__ == "cupy":

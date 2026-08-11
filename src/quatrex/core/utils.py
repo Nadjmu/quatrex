@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes utility methods. TODO will be refactored"""
+
 from qttools import NDArray, sparse, xp
 
 

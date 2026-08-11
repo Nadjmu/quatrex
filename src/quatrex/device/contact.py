@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the contact class."""
+
 import itertools
 from collections import defaultdict
 from dataclasses import dataclass

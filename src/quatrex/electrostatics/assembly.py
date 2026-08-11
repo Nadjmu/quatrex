@@ -1,4 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
+
+"""Includes the methods to assemble the stiffness matrix."""
+
 import meshio
 import numpy as np
 import skfem

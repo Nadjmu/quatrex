@@ -1,4 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
+
+"""Includes the methods to compute Fermi integrals and their inverses."""
+
 import numpy as np
 import scipy as sp
 from scipy.optimize import minimize
@@ -307,22 +310,23 @@ def inverse_fermi_integral(
         = -1/2 and k = 1/2 minimax rational approximation schemes
         [^1][^2] are implemented and can be used by setting method to
         "approximate".
+
+        [^1]: T. Fukushima, "Analytical computation of inverse
+        Fermi-Dirac integral of order -1/2 by piecewise rational
+        function approximation", 2020.
+
+        [^2]: T. Fukushima, "Precise and fast computation of inverse
+        Fermi-Dirac integral of order 1/2 by minimax rational function
+        approximation", 2015.
+
     num_quad_points : int
         The number of points to use in the quadrature for the Fermi
         integral.
-
-    [^1]: T. Fukushima, "Analytical computation of inverse Fermi-Dirac
-    integral of order -1/2 by piecewise rational function
-    approximation", 2020.
-    [^2]: T. Fukushima, "Precise and fast computation of inverse
-    Fermi-Dirac integral of order 1/2 by minimax rational function
-    approximation", 2015.
 
     Returns
     -------
     eta : float
         The value of eta such that fermi_integral(k, eta) = u.
-
 
     """
     if np.any(u < 0):

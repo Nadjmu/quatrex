@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the methods for Coulomb screening calculations."""
+
 from quatrex.coulomb_screening.polarization import PCoulombScreening
 from quatrex.coulomb_screening.solver import CoulombScreeningSolver
 

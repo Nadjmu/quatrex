@@ -4,10 +4,9 @@ hide:
   - toc
 ---
 
-# Quantum Transport at the Exascale and Beyond :rocket:
+# Quantum Transport at the Exascale and Beyond
 
 Welcome to the documentation for `quatrex`!
-
 
 <div class="grid cards" markdown>
 

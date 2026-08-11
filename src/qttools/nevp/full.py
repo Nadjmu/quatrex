@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes our NEVP solver based on linearization."""
+
 import warnings
 
 from qttools import NDArray, sparse, xp
@@ -22,15 +24,14 @@ class Full(NEVP):
         The location where to compute the eigenvalues and eigenvectors.
         Can be either "numpy" or "cupy" or "nvmath".
     use_pinned_memory : bool, optional
-        Whether to use pinnend memory if cupy is used. Default is
-       `True`.
+        Whether to use pinned memory if cupy is used. Default is `True`.
     reduce : bool, optional
         Whether to reduce the problem size by eliminating columns that
         are zero in the first and last coefficient blocks. These columns
         correspond to eigenvalues that are infinity or zero.
     a_xx_sparsity : tuple[sparse.csc_matrix, ...] or None, optional
-        The sparsity patterns of the coefficient blocks of the NEVP.
-        If `reduce` is `True`, this can be provided at instantiation to
+        The sparsity patterns of the coefficient blocks of the NEVP. If
+        `reduce` is `True`, this can be provided at instantiation to
         identify the zero columns and perform the reduction. If `reduce`
         is `True` and `a_xx` is not provided, the zero columns will be
         identified at runtime, which may introduce some overhead.

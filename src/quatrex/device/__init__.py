@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the device and contact classes."""
+
 from quatrex.device.contact import Contact
 from quatrex.device.device import Device
 

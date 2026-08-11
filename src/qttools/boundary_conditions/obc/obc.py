@@ -1,5 +1,8 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes classes for the open boundary system, solver and
+system reduction."""
+
 from abc import ABC, abstractmethod
 
 from qttools import NDArray, xp

@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes routines for multiplication of distributed block banded matrices."""
+
 from qttools import xp
 from qttools.comm import comm
 from qttools.datastructures.dsdbsparse import DSDBSparse, _DStackView
@@ -372,8 +374,10 @@ def bd_matmul(
     out : DSDBSparse | None
         The output matrix. This matrix must have the same block size as `a` and
         `b`. It will compute up to `out_num_diag` diagonals.
-    in_num_diag: int, optional
-        The number of diagonals in input matrices
+    a_num_diag: int, optional
+        The number of diagonals in the first input matrix.
+    b_num_diag: int, optional
+        The number of diagonals in the second input matrix.
     out_num_diag: int, optional
         The number of diagonals in output matrices
     start_block: int, optional

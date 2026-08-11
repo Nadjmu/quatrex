@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes abstract boundary condition classes."""
+
 import warnings
 from abc import ABC, abstractmethod
 

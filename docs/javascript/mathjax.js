@@ -1,9 +1,12 @@
 window.MathJax = {
+  loader: {load: ['[tex]/boldsymbol']},
   tex: {
     inlineMath: [["\\(", "\\)"]],
     displayMath: [["\\[", "\\]"]],
     processEscapes: true,
-    processEnvironments: true
+    processEnvironments: true,
+    tags: 'ams',
+    packages: { "[+]": ["boldsymbol"] }
   },
   options: {
     ignoreHtmlClass: ".*|",
@@ -16,4 +19,9 @@ document$.subscribe(() => {
   MathJax.typesetClear()
   MathJax.texReset()
   MathJax.typesetPromise()
+})
+
+component$.subscribe(({ ref }) => {
+  if (ref.classList.contains("md-annotation"))
+    MathJax.typesetPromise([ref])
 })

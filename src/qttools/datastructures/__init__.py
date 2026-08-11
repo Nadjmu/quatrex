@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes data structures for distributed block-accessible sparse matrices and related routines."""
+
 from qttools.datastructures.dsdbcoo import DSDBCOO
 from qttools.datastructures.dsdbcsr import DSDBCSR
 from qttools.datastructures.dsdbsparse import DSDBSparse

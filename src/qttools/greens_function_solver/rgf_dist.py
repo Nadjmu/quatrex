@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes the distributed selected inversion solver."""
+
 import numpy as np
 
 from qttools import NDArray, xp
@@ -18,12 +20,6 @@ class RGFDist(GFSolver):
 
     Parameters
     ----------
-    solve_lesser : bool, optional
-        Whether to solve the quadratic system associated with the lesser right-hand-side,
-        by default False.
-    solve_greater : bool, optional
-        Whether to solve the quadratic system associated with the greater right-hand-side,
-        by default False.
     max_batch_size : int, optional
         Maximum batch size to use when inverting the matrix, by default
         100.
@@ -141,7 +137,7 @@ class RGFDist(GFSolver):
         r"""Performs selected inversion of a block-tridiagonal matrix.
 
         Can optionally solve the quadratic system associated with the
-        Bl and Bg matrices in the equation AXA^T = B.
+        lesser and greater right-hand-sides.
 
         Parameters
         ----------

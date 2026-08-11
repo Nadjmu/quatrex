@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the Coulomb screening solver class."""
+
 import numpy as np
 
 from qttools import NDArray, sparse, xp
@@ -18,7 +20,6 @@ from qttools.utils.mpi_utils import get_section_sizes
 from qttools.utils.solvers_utils import get_batches
 from qttools.utils.sparse_utils import product_sparsity_pattern_dsdbsparse
 from quatrex.core.config import QuatrexConfig
-from quatrex.core.statistics import bose_einstein
 from quatrex.core.subsystem import SubsystemSolver
 from quatrex.core.utils import compute_num_connected_blocks
 from quatrex.device.contact import get_inverse_order, order_block
@@ -156,16 +157,6 @@ class CoulombScreeningSolver(SubsystemSolver):
             global_stack_shape=self.energies.shape
             + tuple([k for k in kpoint_grid if k > 1]),
             allocate=False,
-        )
-
-        # Boundary conditions.
-        self.left_occupancies = bose_einstein(
-            self.local_energies,
-            config.coulomb_screening.temperature,
-        )
-        self.right_occupancies = bose_einstein(
-            self.local_energies,
-            config.coulomb_screening.temperature,
         )
 
         self.dos_peak_limit = config.coulomb_screening.dos_peak_limit

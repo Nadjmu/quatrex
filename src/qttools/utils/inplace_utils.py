@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes utility functions for inplace operations on sparse matrices."""
+
 import numpy as np
 
 from qttools import NDArray, sparse, xp
@@ -92,8 +94,6 @@ def compute_update_indices_dense(
     ----------
     M : sparse.csr_matrix
         The original system matrix.
-    U : NDArray
-        The update matrix to be applied.
     destination_indexes : NDArray
         The indices in the system matrix where the update should be applied.
 

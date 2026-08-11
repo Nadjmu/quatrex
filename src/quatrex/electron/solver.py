@@ -1,4 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
+
+"""Includes the electron solver."""
+
 from typing import Literal
 
 import numpy as np

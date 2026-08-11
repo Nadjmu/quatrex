@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes a helper function for testing the FFT-based convolution and correlation functions."""
+
 from qttools import NDArray, xp
 
 

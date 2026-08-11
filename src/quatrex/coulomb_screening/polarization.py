@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
 
+"""Includes the Polarization class."""
+
 import numpy as np
 from mpi4py.MPI import COMM_WORLD as comm
 
@@ -19,7 +21,7 @@ if xp.__name__ == "cupy":
 
 
 def hilbert_transform(a: NDArray, energies: NDArray) -> NDArray:
-    """Computes the Hilbert transform of the array a, assuming the symmetries of the
+    r"""Computes the Hilbert transform of the array a, assuming the symmetries of the
     polarization, i.e \([P^{\lessgtr}_{ij}(\omega)]^{\dagger} = -P^{\gtrless}_{ij}(-\omega)\).
     This becomes \(a(-\omega)=a^{*}(\omega)\), where a is \(a=P^>-P^<\).
 

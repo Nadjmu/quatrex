@@ -1,3 +1,7 @@
+# Copyright (c) 2024-2026 ETH Zurich and the authors of the quatrex package.
+
+"""Includes the geometry configuration classes."""
+
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeFloat, field_validator

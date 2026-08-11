@@ -1,5 +1,7 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes classes for the Lyapunov system, solver and system reduction."""
+
 from abc import ABC, abstractmethod
 
 from qttools import NDArray, xp
@@ -436,27 +438,21 @@ class LyapunovSystem(BaseBoundarySystem):
         An object with 'compress' and 'decompress' methods to handle
         cache compression. If None, no compression is applied.
     num_ref_iterations : int, optional
-        The number of fixed-point iterations to refine the solution. Default is 2.
+        The number of fixed-point iterations to refine the solution.
+        Default is 2.
     relative_tol : float, optional
         The relative tolerance for convergence. Default is 0.2.
     absolute_tol : float, optional
         The absolute tolerance for convergence. Default is 1e-6.
     warning_threshold : float, optional
-        The threshold for issuing a warning about high residuals. Default is 0.1.
+        The threshold for issuing a warning about high residuals.
+        Default is 0.1.
     memoization_mode : str, optional
-        The memoization mode. Can be 'off', 'auto', 'force-after-first', or 'force'.
-        Default is 'auto'.
+        The memoization mode. Can be 'off', 'auto', 'force-after-first',
+        or 'force'. Default is 'auto'.
     agreement_threshold : float, optional
-        The threshold for agreement across MPI ranks to consider a memoized solution valid.
-        Default is 0.999.
-    reduce_sparsity : bool, optional
-        Whether to reduce the sparsity of the system matrix.
-        If sparsity of any obc is changed during runtime, then the cache
-        needs to be invalidated. Default is True.
-    assume_constant_sparsity : bool, optional
-        Whether to assume that the sparsity pattern of the system matrix
-        remains constant during runtime. If True, the sparsity pattern
-        is only computed once. Default is True.
+        The threshold for agreement across MPI ranks to consider a
+        memoized solution valid. Default is 0.999.
 
     """
 

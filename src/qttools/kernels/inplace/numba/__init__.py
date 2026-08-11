@@ -1,5 +1,6 @@
 # Copyright (c) 2024-2026 ETH Zurich and the authors of the qttools package.
 
+"""Includes our Numba inplace kernels."""
 
 from qttools.kernels.inplace.numba.inplace import (
     scatter_add_scaled,
