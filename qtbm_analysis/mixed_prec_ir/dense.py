@@ -63,7 +63,7 @@ import psutil
 import scipy.linalg as la
 
 # ── paths ────────────────────────────────────────────────────────────────────
-MATRIX_PATH = "/scratch/yimili/matrices/carbon-nanotube/M_E_50.npy"
+MATRIX_PATH = "/scratch/yimili/matrices/carbon-nanotube/M_E_50.npz"
 RHS_PATH    = "/scratch/yimili/matrices/carbon-nanotube/rhs_E_50.npy"
 
 

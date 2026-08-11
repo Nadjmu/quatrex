@@ -8,16 +8,13 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy.sparse as sps
+import scipy.io
 
 from qttools import xp
 from qttools.utils.gpu_utils import get_host
 from quatrex.bandstructure import band_edges, contact
-from quatrex.core.config import parse_config
 
-simulation_dir = Path("/scratch/yimili/examples/w90/carbon-nanotube/qtbm")
-
-config = parse_config(simulation_dir / "quatrex_config.toml")
+input_dir = Path("/scratch/yimili/examples/w90/carbon-nanotube/inputs")
 
 # An energy that lies inside the band gap, used to separate the valence
 # from the conduction bands.
@@ -25,17 +22,15 @@ MID_GAP_ENERGY = -3.8
 
 NUM_K_POINTS = 401
 
+blocksize = 32
+
 # --- Load the device Hamiltonian -------------------------------------
 
 # NOTE: The Wannier basis is orthonormal, so no overlap matrix is needed
 # and the band structure follows from a standard eigenvalue problem.
-hamiltonian = sps.load_npz(config.input_dir / "hamiltonian.npz").toarray()
-
-try:
-    block_sizes = np.load(config.input_dir / "block_sizes.npy")
-    blocksize = int(block_sizes[0])
-except FileNotFoundError:
-    blocksize = 32
+mat = scipy.io.loadmat(input_dir / "hamiltonian.mat")
+(key,) = [k for k in mat if not k.startswith("__")]
+hamiltonian = mat[key].toarray()
 
 print(f"{hamiltonian.shape=}, {blocksize=}")
 
