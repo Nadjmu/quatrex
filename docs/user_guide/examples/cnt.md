@@ -68,7 +68,7 @@ captured very well by this Wannierization.
 
 Say we are interested in seeing the transmission spectrum through this
 CNT. This kind of coherent transport is most efficiently treated in the
-[wavefunction formalism](../user_guide/methodology/qtbm.md), so we set
+[wavefunction formalism](../methodology/qtbm.md), so we set
 `#!toml formalism = "wf"`. We will not be employing a self-consistent
 solution of the Hartree potential for this purpose, so we do not include
 a [`[scsp]`](../parameters/scsp.md) section in the config here.
