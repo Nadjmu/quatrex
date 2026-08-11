@@ -24,12 +24,16 @@ import scipy.io
 from qttools import xp
 from qttools.kernels.linalg import eigvalsh
 from qttools.utils.gpu_utils import get_host
-from quatrex.bandstructure import band_edges, contact
+from quatrex.bandstructure import band_edges
 
 EXAMPLES_DIR = Path("/scratch/yimili/examples")
 PLOTS_DIR = Path("/scratch/yimili/plots")
 
 NUM_K_POINTS = 401
+
+# Memory budget for one chunk of k points. Lower this if the eigensolve
+# runs out of device memory.
+K_CHUNK_BYTES = 8 * 1024**3
 
 
 @dataclass
@@ -56,6 +60,7 @@ class Material:
     blocksize: int | None
     mid_gap_energy: float | None
     transport_direction: str = "z"
+    num_k_points: int = NUM_K_POINTS
 
 
 # NOTE: Fill in `blocksize` and `mid_gap_energy` per material. Materials
@@ -72,6 +77,7 @@ MATERIALS = {
         blocksize=None,
         mid_gap_energy=6.2,
         transport_direction="z",
+        num_k_points=101,
     ),
     "carbon-chain": Material(
         input_dir=EXAMPLES_DIR / "cp2k/carbon-chain/inputs",
@@ -84,6 +90,7 @@ MATERIALS = {
         blocksize=None,
         mid_gap_energy=0.5,
         transport_direction="z",
+        num_k_points=101,
     ),
 }
 
@@ -137,26 +144,47 @@ def hopping_blocks(matrices: dict[str, np.ndarray], transport_direction: str) ->
     return xp.asarray(blocks[0]), xp.asarray(blocks[1]), xp.asarray(blocks[-1])
 
 
-def generalized_band_structure(
-    h_10, h_00, h_01, s_10, s_00, s_01, num_k_points: int
-):
-    """Band structure in a non-orthogonal basis.
+def band_structure(
+    h_00, h_01, h_10, s_blocks: tuple | None, num_k_points: int
+) -> np.ndarray:
+    """Computes the band structure of a periodic lead.
 
-    Solves the generalized problem H(k) v = E S(k) v, which is what a
-    non-orthonormal basis requires. `contact.contact_band_structure`
-    solves the standard problem and is only valid when S is the
-    identity.
+    Solves H(k) v = E S(k) v, falling back to the standard problem when
+    no overlap is given. The k points are processed in chunks, since the
+    full batch of (num_k_points, n, n) matrices does not fit in memory
+    for large unit cells.
 
     """
+    n = h_00.shape[-1]
+
+    # h_k, s_k and the solver's temporaries are all (chunk, n, n)
+    # complex128; allow for roughly eight such arrays at a time.
+    chunk = max(1, K_CHUNK_BYTES // (n * n * 16 * 8))
+
     k = xp.linspace(-xp.pi, xp.pi, num_k_points)
-    minus = xp.exp(-1j * k)[:, xp.newaxis, xp.newaxis]
-    plus = xp.exp(1j * k)[:, xp.newaxis, xp.newaxis]
+    e_k = np.empty((num_k_points, n))
 
-    h_k = h_01 * minus + h_00 + h_10 * plus
-    s_k = s_01 * minus + s_00 + s_10 * plus
+    for start in range(0, num_k_points, chunk):
+        k_chunk = k[start : start + chunk]
+        minus = xp.exp(-1j * k_chunk)[:, xp.newaxis, xp.newaxis]
+        plus = xp.exp(1j * k_chunk)[:, xp.newaxis, xp.newaxis]
 
-    e_k = eigvalsh(h_k, s_k, compute_module=xp.__name__, output_module=xp.__name__)
-    return xp.sort(e_k.real, axis=1)
+        h_k = h_01 * minus + h_00 + h_10 * plus
+        s_k = None
+        if s_blocks is not None:
+            s_00, s_01, s_10 = s_blocks
+            s_k = s_01 * minus + s_00 + s_10 * plus
+
+        # NOTE: `eigvalsh` returns the eigenvalues in ascending order.
+        e_k[start : start + k_chunk.shape[0]] = eigvalsh(
+            h_k, s_k, compute_module=xp.__name__, output_module="numpy"
+        )
+
+        del h_k, s_k
+        if xp.__name__ == "cupy":
+            xp.get_default_memory_pool().free_all_blocks()
+
+    return e_k
 
 
 def check_lead_blocks(hamiltonian: np.ndarray, blocksize: int) -> None:
@@ -301,16 +329,9 @@ def run(name: str, material: Material) -> None:
             hopping_blocks(overlap, direction) if overlap is not None else None
         )
 
-    if s_blocks is None:
-        e_k = contact.contact_band_structure(h_10, h_00, h_01, NUM_K_POINTS)
-    else:
-        s_00, s_01, s_10 = s_blocks
-        e_k = generalized_band_structure(
-            h_10, h_00, h_01, s_10, s_00, s_01, NUM_K_POINTS
-        )
-
-    e_k = get_host(e_k)
-    k = np.linspace(-np.pi, np.pi, NUM_K_POINTS)
+    num_k_points = material.num_k_points
+    e_k = band_structure(h_00, h_01, h_10, s_blocks, num_k_points)
+    k = np.linspace(-np.pi, np.pi, num_k_points)
 
     print(f"  eigenvalue range: {e_k.min():.4f} .. {e_k.max():.4f}")
     report_gaps(e_k)
