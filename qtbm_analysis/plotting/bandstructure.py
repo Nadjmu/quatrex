@@ -45,21 +45,21 @@ class Material:
     input_dir : Path
         The directory holding `hamiltonian.mat`.
     blocksize : int
-        The size of one periodic lead block. Only used when the input is
-        an assembled device Hamiltonian.
+        The size of one periodic lead block along the transport
+        direction.
     mid_gap_energy : float
         An energy inside the band gap, used to separate the valence from
         the conduction bands.
-    transport_direction : str
-        The transport direction. Only used when the input is a hopping
-        grid H(R).
+    transverse_k : tuple
+        The transverse momentum at which to evaluate the device, in
+        fractional coordinates. The origin is Gamma.
 
     """
 
     input_dir: Path
     blocksize: int | None
     mid_gap_energy: float | None
-    transport_direction: str = "z"
+    transverse_k: tuple[float, float, float] = (0.0, 0.0, 0.0)
     num_k_points: int = NUM_K_POINTS
 
 
@@ -72,12 +72,10 @@ MATERIALS = {
         mid_gap_energy=-3.8,
     ),
     "si-bulk": Material(
-        # Hopping grid: blocksize is unused, transport_direction is not.
+        # 960 Si atoms * 4 orbitals / 30 cells along x = 128.
         input_dir=EXAMPLES_DIR / "w90/si-bulk/inputs",
-        blocksize=None,
+        blocksize=128,
         mid_gap_energy=6.2,
-        transport_direction="z",
-        num_k_points=101,
     ),
     "carbon-chain": Material(
         input_dir=EXAMPLES_DIR / "cp2k/carbon-chain/inputs",
@@ -85,17 +83,12 @@ MATERIALS = {
         mid_gap_energy=-12,
     ),
     "graphene": Material(
-        # Hopping grid: blocksize is unused, transport_direction is not.
+        # 160 C atoms * 13 orbitals / 20 cells along x = 104.
         input_dir=EXAMPLES_DIR / "graphene/inputs",
-        blocksize=None,
+        blocksize=104,
         mid_gap_energy=0.5,
-        transport_direction="z",
-        num_k_points=101,
     ),
 }
-
-
-AXES = {"x": 0, "y": 1, "z": 2}
 
 
 def load_matrices(path: Path) -> dict[str, np.ndarray]:
@@ -113,35 +106,36 @@ def lead_blocks(matrix: np.ndarray, blocksize: int) -> tuple:
     )
 
 
-def hopping_blocks(matrices: dict[str, np.ndarray], transport_direction: str) -> tuple:
-    """Folds a hopping grid H(R) into the (0,0), (0,1) and (1,0) blocks.
+def report_hopping_grid(matrices: dict[str, np.ndarray]) -> None:
+    """Reports the magnitude of each neighbor-cell matrix.
 
-    The matrices are keyed by neighbor cell as "[x, y, z]". Cells are
-    summed over the two transverse directions, which evaluates the
-    transverse momentum at Gamma.
+    The direction along which the couplings are strongest is a good
+    indication of the transport direction.
 
     """
-    axis = AXES[transport_direction]
+    keys = sorted(matrices, key=lambda k: tuple(int(i) for i in k.strip("[]").split(",")))
+    print("  neighbor cells:")
+    for key in keys:
+        print(f"    {key:>14}  max|H| = {np.abs(matrices[key]).max():.4e}")
 
-    blocks: dict[int, np.ndarray] = {}
+
+def assemble_device(
+    matrices: dict[str, np.ndarray], transverse_k: tuple[float, float, float]
+) -> np.ndarray:
+    """Assembles the device matrix at a given transverse k point.
+
+    The matrices are keyed by neighbor cell as "[x, y, z]" and are summed
+    as sum_R M(R) exp(2i pi k.R). Since the device is already assembled
+    along the transport direction, these cells are the transverse
+    periodic images, and `transverse_k` selects the transverse momentum
+    (in fractional coordinates; the origin is Gamma).
+
+    """
+    device = 0
     for key, matrix in matrices.items():
-        r = tuple(int(i) for i in key.strip("[]").split(","))[axis]
-        if abs(r) > 1:
-            raise ValueError(
-                f"neighbor cell {key} couples beyond nearest neighbor along "
-                f"'{transport_direction}'; a supercell would be needed."
-            )
-        blocks[r] = blocks.get(r, 0) + matrix
-
-    missing = [r for r in (-1, 1) if r not in blocks]
-    if missing:
-        raise ValueError(
-            f"hopping grid has no neighbor cells at R[{transport_direction}]="
-            f"{missing}, so '{transport_direction}' is not the transport "
-            f"direction. Available cells: {sorted(matrices)}"
-        )
-
-    return xp.asarray(blocks[0]), xp.asarray(blocks[1]), xp.asarray(blocks[-1])
+        r = [int(i) for i in key.strip("[]").split(",")]
+        device = device + np.exp(2j * np.pi * np.dot(transverse_k, r)) * matrix
+    return device
 
 
 def band_structure(
@@ -185,6 +179,26 @@ def band_structure(
             xp.get_default_memory_pool().free_all_blocks()
 
     return e_k
+
+
+def report_blocksize(matrix: np.ndarray, tol: float = 1e-10) -> None:
+    """Reports the smallest block size the matrix is tridiagonal for.
+
+    A block-tridiagonal matrix with block size b has all its nonzeros
+    within |i - j| < 2b, so the bandwidth fixes the smallest admissible
+    block. Any multiple of it is also valid but folds the bands.
+
+    """
+    rows, cols = np.nonzero(np.abs(matrix) > tol * np.abs(matrix).max())
+    bandwidth = int(np.abs(rows - cols).max())
+    minimal = -(-(bandwidth + 1) // 2)
+
+    n = matrix.shape[0]
+    divisors = [b for b in range(minimal, n + 1) if n % b == 0]
+    print(
+        f"  bandwidth = {bandwidth} -> smallest blocksize = {minimal}"
+        f", admissible divisors of {n}: {divisors[:5]}"
+    )
 
 
 def check_lead_blocks(hamiltonian: np.ndarray, blocksize: int) -> None:
@@ -287,47 +301,34 @@ def run(name: str, material: Material) -> None:
     overlap_path = material.input_dir / "overlap.mat"
     overlap = load_matrices(overlap_path) if overlap_path.exists() else None
 
-    # A single matrix is an assembled device Hamiltonian, which has to be
-    # sliced into lead blocks. Several matrices are a hopping grid H(R),
-    # whose cells already are the blocks once folded.
-    assembled = len(hamiltonian) == 1
     print(
-        f"  {'assembled device' if assembled else 'hopping grid'} "
-        f"({len(hamiltonian)} matrices), overlap={overlap is not None}"
+        f"  {len(hamiltonian)} neighbor cell(s), overlap={overlap is not None}, "
+        f"transverse_k={material.transverse_k}"
     )
+    if len(hamiltonian) > 1:
+        report_hopping_grid(hamiltonian)
 
-    if assembled:
-        if blocksize is None:
-            raise ValueError("blocksize is required for an assembled device.")
+    # The matrices are already assembled along the transport direction;
+    # the neighbor cells are the transverse periodic images.
+    matrix = assemble_device(hamiltonian, material.transverse_k)
+    print(f"  {matrix.shape=}, {blocksize=}")
+    report_blocksize(matrix)
 
-        matrix = next(iter(hamiltonian.values()))
-        print(f"  {matrix.shape=}, {blocksize=}")
-
-        if matrix.shape[0] < 3 * blocksize:
-            raise ValueError(
-                f"Hamiltonian of shape {matrix.shape} is too small for "
-                f"{blocksize=}; at least three blocks are needed."
-            )
-
-        check_lead_blocks(matrix, blocksize)
-        plot_hamiltonian(matrix, out_dir)
-
-        h_00, h_01, h_10 = lead_blocks(matrix, blocksize)
-        s_blocks = (
-            lead_blocks(next(iter(overlap.values())), blocksize)
-            if overlap is not None
-            else None
+    if matrix.shape[0] < 3 * blocksize:
+        raise ValueError(
+            f"Hamiltonian of shape {matrix.shape} is too small for "
+            f"{blocksize=}; at least three blocks are needed."
         )
-    else:
-        direction = material.transport_direction
-        h_00, h_01, h_10 = hopping_blocks(hamiltonian, direction)
-        print(f"  unit cell {tuple(h_00.shape)}, transport along '{direction}'")
 
-        plot_hamiltonian(get_host(h_00), out_dir)
+    check_lead_blocks(matrix, blocksize)
+    plot_hamiltonian(matrix, out_dir)
 
-        s_blocks = (
-            hopping_blocks(overlap, direction) if overlap is not None else None
-        )
+    h_00, h_01, h_10 = lead_blocks(matrix, blocksize)
+    s_blocks = (
+        lead_blocks(assemble_device(overlap, material.transverse_k), blocksize)
+        if overlap is not None
+        else None
+    )
 
     num_k_points = material.num_k_points
     e_k = band_structure(h_00, h_01, h_10, s_blocks, num_k_points)
