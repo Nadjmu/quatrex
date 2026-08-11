@@ -150,6 +150,26 @@ def plot_band_structure(
         plt.close(fig)
 
 
+def report_gaps(e_k: np.ndarray, num_gaps: int = 5) -> None:
+    """Reports the widest gaps in the spectrum.
+
+    Use this to pick `mid_gap_energy`: a value that does not sit inside
+    one of these gaps yields band edges that are really just adjacent
+    levels within a band.
+
+    """
+    levels = np.sort(e_k.ravel())
+    spacings = np.diff(levels)
+    widest = np.argsort(spacings)[::-1][:num_gaps]
+    print(f"  {num_gaps} widest gaps in the spectrum:")
+    for i in widest:
+        print(
+            f"    {spacings[i]:8.4f} eV  between {levels[i]:9.4f} and "
+            f"{levels[i + 1]:9.4f}  -> mid_gap_energy="
+            f"{0.5 * (levels[i] + levels[i + 1]):.4f}"
+        )
+
+
 def run(name: str, material: Material) -> None:
     """Computes and plots the band structure of a single material."""
     out_dir = PLOTS_DIR / name
@@ -180,6 +200,7 @@ def run(name: str, material: Material) -> None:
     k = np.linspace(-np.pi, np.pi, NUM_K_POINTS)
 
     print(f"  eigenvalue range: {e_k.min():.4f} .. {e_k.max():.4f}")
+    report_gaps(e_k)
 
     # `find_band_edges` takes a max/min over the two sides of the mid-gap
     # energy, which raises on an empty slice if it lies outside the
