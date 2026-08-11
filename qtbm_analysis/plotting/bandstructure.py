@@ -41,16 +41,21 @@ class Material:
     input_dir : Path
         The directory holding `hamiltonian.mat`.
     blocksize : int
-        The size of one periodic lead block.
+        The size of one periodic lead block. Only used when the input is
+        an assembled device Hamiltonian.
     mid_gap_energy : float
         An energy inside the band gap, used to separate the valence from
         the conduction bands.
+    transport_direction : str
+        The transport direction. Only used when the input is a hopping
+        grid H(R).
 
     """
 
     input_dir: Path
     blocksize: int | None
     mid_gap_energy: float | None
+    transport_direction: str = "z"
 
 
 # NOTE: Fill in `blocksize` and `mid_gap_energy` per material. Materials
@@ -62,41 +67,74 @@ MATERIALS = {
         mid_gap_energy=-3.8,
     ),
     "si-bulk": Material(
+        # Hopping grid: blocksize is unused, transport_direction is not.
         input_dir=EXAMPLES_DIR / "w90/si-bulk/inputs",
-        blocksize=256,
+        blocksize=None,
         mid_gap_energy=6.2,
+        transport_direction="z",
     ),
     "carbon-chain": Material(
         input_dir=EXAMPLES_DIR / "cp2k/carbon-chain/inputs",
         blocksize=104,
-        mid_gap_energy=2.21,
+        mid_gap_energy=-12,
     ),
     "graphene": Material(
+        # Hopping grid: blocksize is unused, transport_direction is not.
         input_dir=EXAMPLES_DIR / "graphene/inputs",
-        blocksize=416,
+        blocksize=None,
         mid_gap_energy=0.5,
+        transport_direction="z",
     ),
 }
 
 
-def load_matrix(path: Path) -> np.ndarray:
-    """Loads a dense matrix from a MATLAB file holding a single matrix."""
+AXES = {"x": 0, "y": 1, "z": 2}
+
+
+def load_matrices(path: Path) -> dict[str, np.ndarray]:
+    """Loads all matrices from a MATLAB file, keyed by neighbor cell."""
     mat = scipy.io.loadmat(path)
-    keys = [k for k in mat if not k.startswith("__")]
-    if len(keys) != 1:
-        raise ValueError(
-            f"expected a single matrix in {path}, found {len(keys)}: {keys}"
-        )
-    return mat[keys[0]].toarray()
+    return {k: v.toarray() for k, v in mat.items() if not k.startswith("__")}
 
 
 def lead_blocks(matrix: np.ndarray, blocksize: int) -> tuple:
-    """Extracts the (0,0), (0,1) and (1,0) blocks of a matrix."""
+    """Extracts the (0,0), (0,1) and (1,0) blocks of a device matrix."""
     return (
         xp.asarray(matrix[:blocksize, :blocksize]),
         xp.asarray(matrix[:blocksize, blocksize : 2 * blocksize]),
         xp.asarray(matrix[blocksize : 2 * blocksize, :blocksize]),
     )
+
+
+def hopping_blocks(matrices: dict[str, np.ndarray], transport_direction: str) -> tuple:
+    """Folds a hopping grid H(R) into the (0,0), (0,1) and (1,0) blocks.
+
+    The matrices are keyed by neighbor cell as "[x, y, z]". Cells are
+    summed over the two transverse directions, which evaluates the
+    transverse momentum at Gamma.
+
+    """
+    axis = AXES[transport_direction]
+
+    blocks: dict[int, np.ndarray] = {}
+    for key, matrix in matrices.items():
+        r = tuple(int(i) for i in key.strip("[]").split(","))[axis]
+        if abs(r) > 1:
+            raise ValueError(
+                f"neighbor cell {key} couples beyond nearest neighbor along "
+                f"'{transport_direction}'; a supercell would be needed."
+            )
+        blocks[r] = blocks.get(r, 0) + matrix
+
+    missing = [r for r in (-1, 1) if r not in blocks]
+    if missing:
+        raise ValueError(
+            f"hopping grid has no neighbor cells at R[{transport_direction}]="
+            f"{missing}, so '{transport_direction}' is not the transport "
+            f"direction. Available cells: {sorted(matrices)}"
+        )
+
+    return xp.asarray(blocks[0]), xp.asarray(blocks[1]), xp.asarray(blocks[-1])
 
 
 def generalized_band_structure(
@@ -217,26 +255,56 @@ def run(name: str, material: Material) -> None:
     # and gives a standard eigenvalue problem. A non-orthogonal basis
     # (e.g. the CP2K Gaussian sets) ships an `overlap.mat` and requires
     # the generalized problem instead.
-    hamiltonian = load_matrix(material.input_dir / "hamiltonian.mat")
+    hamiltonian = load_matrices(material.input_dir / "hamiltonian.mat")
     overlap_path = material.input_dir / "overlap.mat"
-    overlap = load_matrix(overlap_path) if overlap_path.exists() else None
-    print(f"  {hamiltonian.shape=}, {blocksize=}, overlap={overlap is not None}")
+    overlap = load_matrices(overlap_path) if overlap_path.exists() else None
 
-    if hamiltonian.shape[0] < 3 * blocksize:
-        raise ValueError(
-            f"Hamiltonian of shape {hamiltonian.shape} is too small for "
-            f"{blocksize=}; at least three blocks are needed."
+    # A single matrix is an assembled device Hamiltonian, which has to be
+    # sliced into lead blocks. Several matrices are a hopping grid H(R),
+    # whose cells already are the blocks once folded.
+    assembled = len(hamiltonian) == 1
+    print(
+        f"  {'assembled device' if assembled else 'hopping grid'} "
+        f"({len(hamiltonian)} matrices), overlap={overlap is not None}"
+    )
+
+    if assembled:
+        if blocksize is None:
+            raise ValueError("blocksize is required for an assembled device.")
+
+        matrix = next(iter(hamiltonian.values()))
+        print(f"  {matrix.shape=}, {blocksize=}")
+
+        if matrix.shape[0] < 3 * blocksize:
+            raise ValueError(
+                f"Hamiltonian of shape {matrix.shape} is too small for "
+                f"{blocksize=}; at least three blocks are needed."
+            )
+
+        check_lead_blocks(matrix, blocksize)
+        plot_hamiltonian(matrix, out_dir)
+
+        h_00, h_01, h_10 = lead_blocks(matrix, blocksize)
+        s_blocks = (
+            lead_blocks(next(iter(overlap.values())), blocksize)
+            if overlap is not None
+            else None
+        )
+    else:
+        direction = material.transport_direction
+        h_00, h_01, h_10 = hopping_blocks(hamiltonian, direction)
+        print(f"  unit cell {tuple(h_00.shape)}, transport along '{direction}'")
+
+        plot_hamiltonian(get_host(h_00), out_dir)
+
+        s_blocks = (
+            hopping_blocks(overlap, direction) if overlap is not None else None
         )
 
-    check_lead_blocks(hamiltonian, blocksize)
-    plot_hamiltonian(hamiltonian, out_dir)
-
-    h_00, h_01, h_10 = lead_blocks(hamiltonian, blocksize)
-
-    if overlap is None:
+    if s_blocks is None:
         e_k = contact.contact_band_structure(h_10, h_00, h_01, NUM_K_POINTS)
     else:
-        s_00, s_01, s_10 = lead_blocks(overlap, blocksize)
+        s_00, s_01, s_10 = s_blocks
         e_k = generalized_band_structure(
             h_10, h_00, h_01, s_10, s_00, s_01, NUM_K_POINTS
         )
@@ -291,8 +359,8 @@ def main() -> None:
         material = MATERIALS[name]
         print(f"--- {name} ---")
 
-        if material.blocksize is None or material.mid_gap_energy is None:
-            print("  SKIPPED: blocksize and mid_gap_energy are not set.")
+        if material.mid_gap_energy is None:
+            print("  SKIPPED: mid_gap_energy is not set.")
             continue
 
         try:
