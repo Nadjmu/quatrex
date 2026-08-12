@@ -327,6 +327,15 @@ def check_overlap(s_blocks: tuple) -> bool:
     diagonal = get_host(xp.diag(s_00).real)
     print(f"  diag(s_00): {diagonal.min():.4f} .. {diagonal.max():.4f}")
 
+    # s_00 is a principal submatrix of the device overlap, so it must be
+    # positive definite whatever the block structure is. If it is not,
+    # the stored matrix is not an overlap, or the blocks do not group
+    # contiguous orbitals.
+    w_00 = eigvalsh(s_00, compute_module=xp.__name__, output_module="numpy")
+    print(f"  s_00 eigenvalues: {w_00.min():.3e} .. {w_00.max():.3e}")
+    if w_00.min() <= 0:
+        print("  WARNING: s_00 itself is not positive definite.")
+
     positive_definite = True
     for name, phase in (("0", 1.0), ("pi", -1.0)):
         s_k = phase * s_01 + s_00 + phase * s_10
