@@ -62,6 +62,7 @@ class Material:
     mid_gap_energy: float | None
     transverse_k: tuple[float, float, float] = (0.0, 0.0, 0.0)
     num_k_points: int = NUM_K_POINTS
+    lead_offset: int = 0
 
 
 # NOTE: Fill in `blocksize` and `mid_gap_energy` per material. Materials
@@ -126,12 +127,19 @@ def block(matrix: sps.spmatrix, blocksize: int, row: int, col: int) -> np.ndarra
     ].toarray()
 
 
-def lead_blocks(matrix: sps.spmatrix, blocksize: int) -> tuple:
-    """Extracts the (0,0), (0,1) and (1,0) blocks of a device matrix."""
+def lead_blocks(matrix: sps.spmatrix, blocksize: int, offset: int = 0) -> tuple:
+    """Extracts the diagonal and off-diagonal blocks of a periodic lead.
+
+    `offset` selects which block of the device to take them from. The
+    first block is not always bulk-like: a device can start on a partial
+    cell, in which case its blocks are not a valid periodic lead.
+
+    """
+    i = offset
     return (
-        xp.asarray(block(matrix, blocksize, 0, 0)),
-        xp.asarray(block(matrix, blocksize, 0, 1)),
-        xp.asarray(block(matrix, blocksize, 1, 0)),
+        xp.asarray(block(matrix, blocksize, i, i)),
+        xp.asarray(block(matrix, blocksize, i, i + 1)),
+        xp.asarray(block(matrix, blocksize, i + 1, i)),
     )
 
 
@@ -303,17 +311,23 @@ def check_lead_blocks(matrix: sps.spmatrix, blocksize: int, label: str = "h") ->
     print(f"  hermiticity error = {hermiticity:.3e}")
 
 
-def check_overlap(s_blocks: tuple) -> None:
+def check_overlap(s_blocks: tuple) -> bool:
     """Reports the spectrum of S(k) at the edges of the Brillouin zone.
 
     The generalized eigensolve factorizes S(k) with a Cholesky
     decomposition, which requires S(k) to be positive definite. A
-    non-positive smallest eigenvalue means the three-block truncation of
-    the overlap is invalid; a tiny positive one means the basis is close
-    to linearly dependent.
+    non-positive smallest eigenvalue means the blocks are not a valid
+    periodic lead; a tiny positive one means the basis is close to
+    linearly dependent.
 
     """
     s_00, s_01, s_10 = s_blocks
+
+    # A Gram matrix of normalized basis functions has a unit diagonal.
+    diagonal = get_host(xp.diag(s_00).real)
+    print(f"  diag(s_00): {diagonal.min():.4f} .. {diagonal.max():.4f}")
+
+    positive_definite = True
     for name, phase in (("0", 1.0), ("pi", -1.0)):
         s_k = phase * s_01 + s_00 + phase * s_10
         w = eigvalsh(s_k, compute_module=xp.__name__, output_module="numpy")
@@ -322,12 +336,43 @@ def check_overlap(s_blocks: tuple) -> None:
             f"  (condition {w.max() / abs(w.min()):.2e})"
         )
         if w.min() <= 0:
+            positive_definite = False
             print(
                 f"  WARNING: S(k={name}) is not positive definite; the "
                 f"Cholesky factorization will fail."
             )
 
         del s_k
+        if xp.__name__ == "cupy":
+            xp.get_default_memory_pool().free_all_blocks()
+
+    return positive_definite
+
+
+def scan_lead_offsets(
+    matrix: sps.spmatrix, blocksize: int, num_offsets: int = 5
+) -> None:
+    """Reports where along the device the lead blocks are valid.
+
+    A device can start on a partial cell or inside a contact region, so
+    the leading blocks are not necessarily bulk-like. The blocks of a
+    genuine periodic lead give a positive definite S(k).
+
+    """
+    num_blocks = matrix.shape[0] // blocksize
+    offsets = sorted(
+        set(np.linspace(0, num_blocks - 2, num_offsets).astype(int).tolist())
+    )
+
+    print("  scanning lead block offsets:")
+    for offset in offsets:
+        s_00, s_01, s_10 = lead_blocks(matrix, blocksize, offset)
+        s_k = s_01 + s_00 + s_10
+        w = eigvalsh(s_k, compute_module=xp.__name__, output_module="numpy")
+        status = "ok" if w.min() > 0 else "NOT positive definite"
+        print(f"    offset {offset:3d}: min eig S(k=0) = {w.min():11.3e}  {status}")
+
+        del s_00, s_01, s_10, s_k
         if xp.__name__ == "cupy":
             xp.get_default_memory_pool().free_all_blocks()
 
@@ -444,7 +489,7 @@ def run(name: str, material: Material) -> None:
     check_block_tridiagonal(matrix, blocksize, label="h")
     plot_hamiltonian(matrix, blocksize, out_dir)
 
-    h_00, h_01, h_10 = lead_blocks(matrix, blocksize)
+    h_00, h_01, h_10 = lead_blocks(matrix, blocksize, material.lead_offset)
 
     s_blocks = None
     if overlap is not None:
@@ -452,9 +497,16 @@ def run(name: str, material: Material) -> None:
         report_blocksize(overlap_matrix)
         check_lead_blocks(overlap_matrix, blocksize, label="s")
         check_block_tridiagonal(overlap_matrix, blocksize, label="s")
-        s_blocks = lead_blocks(overlap_matrix, blocksize)
+        s_blocks = lead_blocks(overlap_matrix, blocksize, material.lead_offset)
+
+        if not check_overlap(s_blocks):
+            scan_lead_offsets(overlap_matrix, blocksize)
+            raise ValueError(
+                "S(k) is not positive definite at "
+                f"lead_offset={material.lead_offset}; pick an offset marked "
+                "'ok' above."
+            )
         del overlap_matrix, overlap
-        check_overlap(s_blocks)
 
     num_k_points = material.num_k_points
     e_k = band_structure(h_00, h_01, h_10, s_blocks, num_k_points)
