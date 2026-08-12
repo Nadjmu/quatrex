@@ -52,6 +52,8 @@ Written to EXPORT_DIR/<material>/, which make_hdf5.py consolidates:
                                  old name for the files already exported
     conduction_band_edge.npy     the same value, under the current name
     valence_band_edge.npy        the valence band edge, eV, where it is known
+    H.npz                        the bare Hamiltonian, CSR triplet
+    S.npz                        the bare overlap matrix, CSR triplet
     spectrum_bare.npy            eigenvalues of the pencil (H, S)
     condition_bare.npy           kappa_2(H - E S) along the grid
     condition_full_svd.npy       kappa_2(M(E)) along the grid
@@ -94,7 +96,7 @@ EXAMPLES = ["carbon-nanotube", "si-bulk", "carbon-chain", "graphene"]
 # right-hand side at every point of the grid, which is what stages 2 to 5
 # expect; a larger stride subsamples for a quick pass. The grid itself, and so
 # the number of indices, is the `grid` of the material in cli.MATERIALS.
-EXPORT_STRIDE = 100
+EXPORT_STRIDE = 1
 
 # Dense analyses, O(n^3) each. Feasible only for the small examples.
 RUN_SPECTRUM = False
@@ -275,6 +277,8 @@ def process_example(name):
     np.save(out_dir / "conduction_band_edge.npy", np.array(band_edge))
     if valence is not None:
         np.save(out_dir / "valence_band_edge.npy", np.array(valence))
+    _save_csr_npz(out_dir / "H.npz", hamiltonian.tocsr())
+    _save_csr_npz(out_dir / "S.npz", overlap.tocsr())
 
     if RUN_SPECTRUM:
         eigenvalues, _ = bare_spectrum(hamiltonian, overlap, band_edge)
