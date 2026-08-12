@@ -93,7 +93,7 @@ MATERIALS = {
         # Run once with both unset to get the blocksize and gap reports.
         input_dir=EXAMPLES_DIR
         / "WS2-hBN-25_benchmark-QUATREX-DZ/qtbm/inputs",
-        blocksize=None,
+        blocksize=6526,
         mid_gap_energy=None,
     ),
 }
