@@ -8,9 +8,9 @@ drivers are in [`../run_bench/`](../run_bench/), the analysis scripts in
 | File | Contents |
 |---|---|
 | `solver_classes.py` | every solver behind one interface, plus the block-partition utilities |
-| `cli.py` | the canonical solver and option names, and the shared argparse fragments |
+| `cli.py` | the canonical solver and option names, the shared argparse fragments, and the scratch directory layout |
 | `bench_all.py` | the single `bench()` implementation |
-| `factor_io.py` | HDF5 persistence of factors and metadata, and factor verification |
+| `factor_io.py` | HDF5 persistence of factors, metadata and analysis tables, and factor verification |
 | `generate_matrix.py` | the shared synthetic test system |
 | `test_pipeline.py` | self-tests; synthetic data only, no cluster files required |
 
@@ -18,9 +18,11 @@ drivers are in [`../run_bench/`](../run_bench/), the analysis scripts in
 
 ## 1. Names and the shared command line
 
-`cli.py` is the single source of truth for two things that every script needs:
-the canonical name of a solver, and the canonical spelling of a command-line
-option. Every executable script builds its parser from its helpers.
+`cli.py` is the single source of truth for three things that every script
+needs: the canonical name of a solver, the canonical spelling of a command-line
+option, and the location of every input and output on the cluster. Every
+executable script builds its parser from its helpers and takes its default
+paths from its constants.
 
 Canonical solver names are lower-case kebab and are used on every command line
 and in every Python API — `bench(solvers=...)`, `mpir.SOLVER_BUILDERS`, the
@@ -42,6 +44,21 @@ Precision names are spelled in full everywhere: `complex128`, `complex64`,
 the half-precision embedded-real factorizations. The precision in which
 implementation 2 forms its inverses is a real dtype: `float64`, `float32`,
 `float16`.
+
+The directory constants, `EXPORT_DIR`, `HDF5_DIR`, `BLOCK_THOMAS_DIR` and the
+rest, are tabulated in
+[the top-level README, section 2.3](../README.md#23-directories-on-the-cluster).
+All derive from `SCRATCH`, which the environment variable `QTBM_SCRATCH`
+overrides, so the whole pipeline can be exercised outside the cluster.
+`material_h5(material)` gives a stage-3 file and `analysis_h5(outdir, material)`
+a stage-4 file.
+
+`MATERIALS` is the per-material registry: band edges, the energy grid, block
+size, input directories and the contact band structure parameters, one
+`Material` per entry, read by every stage. The grid of each material is an
+`EnergyGrid(start, end, resolution)` in eV, so the number of energy indices
+follows from it rather than being stated anywhere. Both are described in
+[the top-level README, section 2.4](../README.md#24-materials-and-the-energy-grid).
 
 ---
 
@@ -219,6 +236,27 @@ Each `save_*` deletes and recreates its own `E_<idx>/<solver>/<dtype>` group,
 so re-running a combination overwrites cleanly and never touches `M`, `rhs`,
 `Sigma` or `spectrum`. Pass the material file opened `"a"` or `"r+"`; there is
 no separate factor file.
+
+### Analysis tables
+
+The stage-4 scripts write their results through `save_table`, which stores a
+long-format table as one group holding one 1-D dataset per column, all of the
+same length, with the run configuration attached as group attributes:
+
+```
+<analysis dir>/<material>.h5
+└── <analysis>/    growth_factor, fp16_sweep, gmres_ir
+    ├── attrs      material, source, n_rows, columns, run parameters
+    └── one dataset per column, int64, float64 or variable-length UTF-8
+```
+
+The file is opened in append mode and only the named group is replaced, so
+several analyses of one material write into the same file without interfering.
+`load_table` returns one array per column plus the attributes, and `table_rows`
+converts those columns to per-row dicts for the scripts that filter or group
+rather than plot whole columns.
+
+### Factor verification
 
 `diagnose_lu_convention` determines a solver's factor reconstruction convention
 empirically, by enumerating the plausible combinations of permutation direction

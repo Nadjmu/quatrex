@@ -38,7 +38,8 @@ dtype, not a complex one, and is spelled float64, float32 or float16.
 
 Option vocabulary
 -----------------
-    h5path              positional; a material HDF5 file
+    h5path              positional; a material HDF5 file, or an analysis file
+                        for the plotting scripts
     matrix, rhs         positional; a CSR .npz triplet and a .npy vector
     --idx N [N ...]     explicit energy indices
     --start / --end     an inclusive index range, the alternative to --idx
@@ -51,11 +52,288 @@ Option vocabulary
     --auto-blocks       detect a non-uniform partition from the sparsity pattern
     --material          label used in output filenames and figure titles
     --outdir            output directory
+
+Scratch layout
+--------------
+The default location of every input and output is defined below and nowhere
+else. Each analysis stage has one directory, holding both its result files and
+the figures made from them. Set QTBM_SCRATCH to relocate the whole tree, for
+example when running outside the cluster; every path derives from it.
+
+Materials
+---------
+MATERIALS is the one place a per-material property is edited: the band edges,
+the energy grid, the Block Thomas block size, the input directories, and the
+parameters the contact band structure needs.
+
+The grid of each material is an explicit EnergyGrid(start, end, resolution) in
+eV. It is not derived from the band edges, and the number of energy indices is
+not stated anywhere; it follows from the three numbers.
 """
 
 import argparse
+import os
+from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
+
+# ---------------------------------------------------------------------------
+# Scratch layout
+# ---------------------------------------------------------------------------
+# One directory per stage of the pipeline and one per analysis. The analysis
+# directories are named after the thesis chapter whose figures they hold, so
+# the mapping from a result file to the text that uses it is direct.
+SCRATCH = Path(os.environ.get("QTBM_SCRATCH", "/scratch/yimili"))
+
+EXAMPLES_DIR = SCRATCH / "examples"           # QTBM/DFT inputs, stage 1 source
+EXPORT_DIR = SCRATCH / "matrices2"            # stage 1: per-material .npz/.npy
+HDF5_DIR = EXPORT_DIR / "hdf5"                # stage 2/3: <material>.h5
+RANDOM_DIR = SCRATCH / "random"               # synthetic test matrices
+
+# Stage 4/5. Each holds <material>.h5 and the figures drawn from it.
+BLOCK_THOMAS_DIR = SCRATCH / "error-analysis-block-thomas"
+CONDITION_DIR = SCRATCH / "condition-est"
+NON_NORMAL_DIR = SCRATCH / "non-normal"
+MIXED_PREC_DIR = SCRATCH / "mixed-precision-IR"
+MATERIALS_DIR = SCRATCH / "materials"
+
+
+def material_h5(material):
+    """Path of a material file, the input of every stage-3 and stage-4 script."""
+    return HDF5_DIR / f"{material}.h5"
+
+
+def analysis_h5(outdir, material):
+    """
+    Path of an analysis result file inside one stage-4 directory.
+
+    One file per material per directory; each script writes its own top-level
+    group into it, so results of different analyses of the same material stay
+    together and neither overwrites the other.
+    """
+    return Path(outdir) / f"{material}.h5"
+
+
+# ---------------------------------------------------------------------------
+# Energy grid
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class EnergyGrid:
+    """
+    The energy sweep of one material: a first energy, a last energy and a step,
+    all in eV.
+
+    The grid is `start`, `start + resolution`, ... up to and including `end`.
+    The number of energy indices follows from the three numbers and is stated
+    nowhere else: halving `resolution` doubles it, and every stage of the
+    pipeline picks the change up. Nothing downstream assumes a particular
+    count.
+
+    `end` is included only if it is an exact number of steps above `start`.
+    Where it is not, the grid stops at the last sample below it and `last` is
+    that sample rather than `end`; the two are reported separately so the
+    difference is visible.
+    """
+
+    start: float
+    end: float
+    resolution: float
+
+    def __post_init__(self):
+        if self.resolution <= 0:
+            raise ValueError(f"resolution must be positive, got {self.resolution}")
+        if self.end <= self.start:
+            raise ValueError(f"end ({self.end}) must exceed start ({self.start})")
+
+    @property
+    def num_points(self):
+        """Number of samples, hence of energy indices."""
+        steps = (self.end - self.start) / self.resolution
+        # Tolerate the rounding of a step that does not divide the span
+        # exactly, without ever running past `end`.
+        return int(np.floor(steps + 1e-9)) + 1
+
+    @property
+    def last(self):
+        """Energy of the final sample, which is at most `end`."""
+        return self.start + self.resolution * (self.num_points - 1)
+
+    def energies(self):
+        """
+        The grid itself, as an array of `num_points` energies in eV.
+
+        This is the only definition of the grid in the project. Stage 1 saves
+        the array it produces and stage 2 reads that array back, so the two
+        cannot disagree even if these parameters are changed between runs.
+        """
+        return self.start + self.resolution * np.arange(self.num_points,
+                                                        dtype=float)
+
+    def index_of(self, energy):
+        """
+        Fractional index of an energy, for placing a mark on an index axis.
+
+        Outside [start, last] the value is still returned, so a caller can
+        decide whether a band edge lies inside the sweep.
+        """
+        return (float(energy) - self.start) / self.resolution
+
+    @classmethod
+    def around(cls, centre, half_window, resolution, offset_low=0.0):
+        """
+        A grid centred on `centre`, from `centre - half_window - offset_low` to
+        `centre + half_window`.
+
+        Provided because a sweep is often described relative to a band edge.
+        The stored form is still start, end and resolution.
+        """
+        return cls(start=centre - half_window - offset_low,
+                   end=centre + half_window, resolution=resolution)
+
+
+# ---------------------------------------------------------------------------
+# Materials
+# ---------------------------------------------------------------------------
+@dataclass
+class Material:
+    """
+    Everything known about one material, in one place.
+
+    Fields
+    ------
+    example
+        QTBM example directory holding quatrex_config.toml. Stage 1 assembles
+        M(E) from it.
+    inputs
+        DFT input directory holding hamiltonian.mat and, for a non-orthogonal
+        basis, overlap.mat. plotting/bandstructure.py reads it.
+    block_size
+        Uniform Block Thomas block size. One periodic lead block.
+    blocks
+        Non-uniform partition, if one is used in place of block_size.
+    valence_band_edge, conduction_band_edge
+        In eV. Written into the material file's metadata and marked by every
+        figure. None means not yet determined: stage 1 then falls back to the
+        values in the QTBM configuration, and stage 2 records only what it has.
+    grid
+        The energy sweep, as an explicit EnergyGrid(start, end, resolution) in
+        eV. It is not derived from the band edges; set it to whatever range and
+        resolution the material is to be swept over.
+    mid_gap_energy
+        An energy inside the band gap, used by plotting/bandstructure.py to
+        separate the valence from the conduction bands when it locates the
+        edges. Not used elsewhere.
+    transverse_k, num_k_points, lead_offset
+        Contact band structure parameters; see plotting/bandstructure.py.
+    """
+
+    example: Path | None = None
+    inputs: Path | None = None
+    block_size: int | None = None
+    blocks: list | None = None
+    valence_band_edge: float | None = None
+    conduction_band_edge: float | None = None
+    grid: EnergyGrid | None = None
+    mid_gap_energy: float | None = None
+    transverse_k: tuple = (0.0, 0.0, 0.0)
+    num_k_points: int = 401
+    lead_offset: int = 0
+
+    @property
+    def band_gap(self):
+        """Conduction minus valence edge, or None if either is unknown."""
+        if self.valence_band_edge is None or self.conduction_band_edge is None:
+            return None
+        return self.conduction_band_edge - self.valence_band_edge
+
+
+# Edit the band edges and the grid here. The grid entries below reproduce the
+# sweep used so far, [conduction edge - 1.005, conduction edge + 1.0] at 0.005
+# eV, written out as explicit energies; replace the numbers with the range and
+# resolution each material is to be swept over. The index count follows.
+MATERIALS = {
+    "carbon-nanotube": Material(
+        example=EXAMPLES_DIR / "w90/carbon-nanotube/qtbm",
+        inputs=EXAMPLES_DIR / "w90/carbon-nanotube/inputs",
+        block_size=32,
+        valence_band_edge=-4.17,
+        conduction_band_edge=-3.57,
+        grid=EnergyGrid(start=-5.17, end=-2.57, resolution=0.001),
+        mid_gap_energy=-3.87,
+    ),
+    "si-bulk": Material(
+        # Bandwidth 382 -> smallest admissible divisor of 3840 is 192.
+        example=EXAMPLES_DIR / "w90/si-bulk/qtbm",
+        inputs=EXAMPLES_DIR / "w90/si-bulk/inputs",
+        block_size=256,
+        valence_band_edge=5.69,
+        conduction_band_edge=6.46,
+        grid=EnergyGrid(start=4.69, end=7.46, resolution=0.001),
+        mid_gap_energy=6.075,
+    ),
+    "carbon-chain": Material(
+        example=EXAMPLES_DIR / "cp2k/carbon-chain/qtbm",
+        inputs=EXAMPLES_DIR / "cp2k/carbon-chain/inputs",
+        block_size=104,
+        valence_band_edge=-13.74,
+        conduction_band_edge=-9.86,
+        grid=EnergyGrid(start=-14.74, end=-8.86, resolution=0.001),
+        mid_gap_energy=-11.8,
+    ),
+    "graphene": Material(
+        # Bandwidth 431 -> smallest admissible divisor of 2080 is 260.
+        example=EXAMPLES_DIR / "graphene/qtbm",
+        inputs=EXAMPLES_DIR / "graphene/inputs",
+        block_size=416,
+        valence_band_edge=0.499,
+        conduction_band_edge=0.500,
+        grid=EnergyGrid(start=-0.5, end=1.500, resolution=0.001),
+        mid_gap_energy=0.5,
+    ),
+    "ws2-hbn": Material(
+        example=EXAMPLES_DIR / "WS2-hBN-25_benchmark-QUATREX-DZ/qtbm",
+        inputs=EXAMPLES_DIR / "WS2-hBN-25_benchmark-QUATREX-DZ/qtbm/inputs",
+        # Bandwidth 6303 -> 6526 is the smallest divisor that guarantees
+        # block tridiagonality.
+        block_size=6526,
+        mid_gap_energy=None,
+        # The blocks are large enough that each eigensolve is expensive.
+        num_k_points=21,
+    ),
+    "dev_12_sorted_BENCH": Material(
+        example=EXAMPLES_DIR / "dev_12_sorted_BENCH/qtbm",
+    ),
+}
+
+
+def material(name):
+    """Registry entry for a material name."""
+    try:
+        return MATERIALS[name]
+    except KeyError:
+        raise KeyError(f"unknown material {name!r}; "
+                       f"choose from {', '.join(MATERIALS)}") from None
+
+
+def band_edge_attrs(mat):
+    """
+    Band edge metadata of a Material, as a dict, omitting unknown values.
+
+    Written into the material file's metadata group by make_hdf5.py and copied
+    into every analysis file by the stage-4 scripts, so that a figure can mark
+    the edges without opening the material file.
+    """
+    attrs = {}
+    if mat is None:
+        return attrs
+    if mat.valence_band_edge is not None:
+        attrs["valence_band_edge"] = float(mat.valence_band_edge)
+    if mat.conduction_band_edge is not None:
+        attrs["conduction_band_edge"] = float(mat.conduction_band_edge)
+    if mat.band_gap is not None:
+        attrs["band_gap"] = float(mat.band_gap)
+    return attrs
 
 # ---------------------------------------------------------------------------
 # Solver registry
@@ -196,10 +474,15 @@ def new_parser(description, epilog=None, prog=None):
         formatter_class=argparse.RawDescriptionHelpFormatter)
 
 
-def add_h5_input(ap, required=True, default=None):
-    """Positional material HDF5 file, spelled `h5path` in every script."""
+def add_h5_input(ap, required=True, default=None, help=None):
+    """
+    Positional HDF5 input file, spelled `h5path` in every script.
+
+    A material file for the solver and analysis drivers, and the analysis file
+    written by one of them for the plotting scripts; `help` names which.
+    """
     ap.add_argument("h5path", type=str, nargs=None if required else "?",
-                    default=default, help="material HDF5 file")
+                    default=default, help=help or "material HDF5 file")
     return ap
 
 

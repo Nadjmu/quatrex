@@ -46,27 +46,25 @@ block, an fp16 overflow) are recorded and the sweep continues.
 
 Output
 ------
-Written to --outdir, default <script_dir>/plots:
+    <outdir>/<material>.h5, group fp16_sweep
 
-    <material>_metrics.csv   idx, relres_fp16, relres_fp16_inv,
-                             fwd_err_fp16_vs_c128, fwd_err_fp16_inv_vs_c128,
-                             fwd_err_c64_vs_c128, cond_full_svd
-    <material>_metrics.txt   the same table plus run metadata and the list of
-                             failed indices
-
-No figures are produced; see plotting/plot_fp16_accuracy.py, which consumes the
-CSV.
+with the columns idx, relres_fp16, relres_fp16_inv, fwd_err_fp16_vs_c128,
+fwd_err_fp16_inv_vs_c128, fwd_err_c64_vs_c128 and cond_full_svd. The run
+configuration and the list of failed indices are group attributes. The file is
+opened in append mode and only that group is rewritten, so results of other
+analyses of the same material are preserved. No figures are produced; see
+plotting/plot_fp16_accuracy.py, which consumes the group.
 
 Usage
 -----
     python sweep_fp16.py .../carbon-nanotube.h5 --start 0 --end 401 --block-size 32
     python sweep_fp16.py .../graphene.h5 --start 0 --end 401 --auto-blocks
     python sweep_fp16.py .../graphene.h5 --idx 0 25 50 --inv-dtype float16
-    python ../plotting/plot_fp16_accuracy.py plots/carbon-nanotube_metrics.csv
+    python ../plotting/plot_fp16_accuracy.py \
+        /scratch/yimili/error-analysis-block-thomas/carbon-nanotube.h5
 """
 
 import argparse
-import csv
 import sys
 from pathlib import Path
 
@@ -77,28 +75,34 @@ import numpy as np
 import scipy.sparse as sp
 
 import cli
+from factor_io import save_table, material_metadata
 from solver_classes import (
     extract_blocks_sparse, block_sizes_from_matrix, offband_nnz,
     BlockThomasFP16, BlockThomasExplicitInvFP16,
 )
 
-CSV_COLUMNS = ["idx", "relres_fp16", "relres_fp16_inv",
-               "fwd_err_fp16_vs_c128", "fwd_err_fp16_inv_vs_c128",
-               "fwd_err_c64_vs_c128", "cond_full_svd"]
+# Top-level group of the analysis file this script writes.
+GROUP = "fp16_sweep"
+COLUMNS = ["idx", "relres_fp16", "relres_fp16_inv",
+           "fwd_err_fp16_vs_c128", "fwd_err_fp16_inv_vs_c128",
+           "fwd_err_c64_vs_c128", "cond_full_svd"]
+
+DEFAULT_OUTDIR = cli.BLOCK_THOMAS_DIR
 
 
 def parse_args():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap, required=False,
-                     default="/scratch/yimili/matrices/hdf5/carbon-nanotube.h5")
+                     default=str(cli.material_h5("carbon-nanotube")))
     cli.add_index_selection(ap)
     cli.add_block_partition(ap, default_block_size=32)
     cli.add_inv_dtype(ap)
     ap.add_argument("--cond-path", type=str,
                     default="global/condition_full_svd", metavar="PATH",
                     help="dataset holding one condition number per index")
-    cli.add_output(ap, outdir_help="output directory "
-                                   "(default: <script_dir>/plots)")
+    cli.add_output(ap, outdir_default=str(DEFAULT_OUTDIR),
+                   outdir_help=f"directory holding the analysis file "
+                               f"<material>.h5 (default: {DEFAULT_OUTDIR})")
     return ap, ap.parse_args()
 
 
@@ -140,7 +144,7 @@ def sweep(args, indices, inv_dtype):
     Run both half-precision variants over the requested index range.
 
     Returns (rows, partition, failed) where rows is a list of dicts keyed by
-    CSV_COLUMNS, partition is the block partition used, and failed is
+    COLUMNS, partition is the block partition used, and failed is
     a list of (index, exception repr).
     """
     rows, failed = [], []
@@ -203,38 +207,31 @@ def sweep(args, indices, inv_dtype):
     return rows, partition, failed
 
 
-def write_csv(rows, csv_path):
-    with open(csv_path, "w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
-        writer.writeheader()
-        writer.writerows(rows)
+def run_attrs(args, partition, part_desc, failed, indices):
+    """
+    Run configuration and failure record, attached to the group as attributes.
 
-
-def write_txt(rows, txt_path, args, partition, part_desc, failed, indices):
-    with open(txt_path, "w") as fh:
-        fh.write(f"material   : {args.material}\n")
-        fh.write(f"h5path     : {args.h5path}\n")
-        fh.write(f"partition  : {part_desc}\n")
-        if isinstance(partition, (list, tuple)):
-            fh.write(f"block sizes: {list(partition)}\n")
-        fh.write(f"inv dtype  : {args.inv_dtype} (implementation 2)\n")
-        fh.write(f"requested  : idx {indices[0]}..{indices[-1]} "
-                 f"({len(indices)} indices)\n")
-        fh.write(f"completed  : {len(rows)}\n")
-        fh.write(f"failed     : {len(failed)}\n")
-        if failed:
-            fh.write("failed indices:\n")
-            for idx, message in failed:
-                fh.write(f"  idx={idx}: {message}\n")
-        fh.write("\nidx  relres_fp16   relres_fp16_inv  fwd_err_fp16  "
-                 "fwd_err_fp16_inv  fwd_err_c64   cond_full_svd\n")
-        for row in rows:
-            fh.write(f"{row['idx']:4d}  {row['relres_fp16']:.6e}  "
-                     f"{row['relres_fp16_inv']:.6e}  "
-                     f"{row['fwd_err_fp16_vs_c128']:.6e}  "
-                     f"{row['fwd_err_fp16_inv_vs_c128']:.6e}  "
-                     f"{row['fwd_err_c64_vs_c128']:.6e}  "
-                     f"{row['cond_full_svd']:.6e}\n")
+    The failed indices and their messages are recorded so that a gap in the
+    plotted curves can be attributed without repeating the sweep.
+    """
+    attrs = dict(
+        material=args.material,
+        source=str(args.h5path),
+        partition=part_desc,
+        inv_dtype=args.inv_dtype,
+        idx_requested=[int(indices[0]), int(indices[-1])],
+        n_requested=len(indices),
+        n_failed=len(failed),
+        **material_metadata(args.h5path),
+    )
+    if isinstance(partition, (list, tuple)):
+        attrs["block_sizes"] = np.asarray(partition, dtype=np.int64)
+    else:
+        attrs["block_size"] = int(partition)
+    if failed:
+        attrs["failed_idx"] = np.asarray([i for i, _ in failed], dtype=np.int64)
+        attrs["failed_reason"] = [message for _, message in failed]
+    return attrs
 
 
 def main():
@@ -249,9 +246,6 @@ def main():
     if not indices:
         raise SystemExit("no requested index is present in the file")
 
-    outdir = Path(args.outdir or Path(__file__).resolve().parent / "plots")
-    outdir.mkdir(parents=True, exist_ok=True)
-
     inv_dtype = getattr(np, args.inv_dtype)
     rows, partition, failed = sweep(args, indices, inv_dtype)
 
@@ -265,13 +259,12 @@ def main():
         for idx, message in failed[:10]:
             print(f"  idx={idx}: {message}")
 
-    csv_path = outdir / f"{args.material}_metrics.csv"
-    txt_path = outdir / f"{args.material}_metrics.txt"
-    write_csv(rows, csv_path)
-    write_txt(rows, txt_path, args, partition, part_desc, failed, indices)
+    out_path = cli.analysis_h5(args.outdir, args.material)
+    save_table(out_path, GROUP, rows, columns=COLUMNS,
+               attrs=run_attrs(args, partition, part_desc, failed, indices))
 
-    print(f"\nwrote {csv_path}\nwrote {txt_path}")
-    print(f"Plot with: python ../plotting/plot_fp16_accuracy.py {csv_path}")
+    print(f"\nwrote {out_path}:/{GROUP}  ({len(rows)} rows)")
+    print(f"Plot with: python ../plotting/plot_fp16_accuracy.py {out_path}")
 
 
 if __name__ == "__main__":

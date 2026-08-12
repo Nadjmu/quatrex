@@ -30,7 +30,7 @@ divides by the SuperLU complex128 baseline already in the file.
 Usage
 -----
     python gpu_run_benchmarks.py
-    python ../plotting/plot_speedup.py /scratch/yimili/matrices/hdf5/graphene.h5 \
+    python ../plotting/plot_speedup.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
         --solvers cudss gmres_cupy --suffix _gpu
 """
 

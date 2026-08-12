@@ -22,10 +22,26 @@ FP16_UNIT_ROUNDOFF
                u = 2^-11 for IEEE binary16, the reference level against which
                half-precision residuals are read.
 
+The energy axis
+---------------
+Every sweep figure is drawn against energy in eV, not against the energy index.
+The index is a position in a grid whose resolution and range are a per-material
+choice, so a figure labelled by index cannot be compared across materials or
+across two runs of the same material at different resolutions, and the band
+edges cannot be marked on it.
+
+The conversion is carried in the metadata of every material and analysis file,
+as `grid_energy_min` and `resolution`, and applied by energies_of(). Files
+written before those attributes existed carry neither; the axis then falls back
+to the index, which axis_label() reports.
+
 Functions
 ---------
 solver_label(key), dtype_label(key)  Legend text, falling back to the raw key.
 legend_handles(solvers, dtypes, ...) Proxy artists for a combined legend.
+energies_of(attrs, indices)          Energies in eV, or None if unavailable.
+axis_label(have_energy)              Axis label matching what was plotted.
+mark_band_edges(ax, attrs, ...)      Vertical lines at the two band edges.
 save_figure(fig, path, dpi)          Create the parent directory, write, close.
 """
 
@@ -34,6 +50,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")                     # no interactive display in batch use
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.lines import Line2D
 
 # Solver identity: colour and marker are fixed per solver across all figures.
@@ -59,6 +76,72 @@ DTYPE_STYLE = {
 }
 
 FP16_UNIT_ROUNDOFF = 2.0 ** -11           # 4.883e-4
+
+# Band edge marks. The valence and conduction edge are distinguished by colour,
+# matching plotting/bandstructure.py, where the same two levels are drawn.
+BAND_EDGE_STYLE = {
+    "valence_band_edge": ("tab:blue", "valence band edge"),
+    "conduction_band_edge": ("tab:red", "conduction band edge"),
+}
+
+
+def energies_of(attrs, indices):
+    """
+    Energies in eV of the given indices, or None if the file does not record
+    the mapping.
+
+    `attrs` is the attribute dict of a material file's metadata group or of an
+    analysis group, both of which carry grid_energy_min and resolution as
+    written by make_hdf5.py. The grid is uniform, so
+
+        energy(i) = grid_energy_min + resolution * i.
+    """
+    if attrs is None:
+        return None
+    if "grid_energy_min" not in attrs or "resolution" not in attrs:
+        return None
+    start = float(attrs["grid_energy_min"])
+    step = float(attrs["resolution"])
+    return start + step * np.asarray(indices, dtype=float)
+
+
+def axis_label(have_energy):
+    """Label of the sweep axis, naming what was actually plotted."""
+    return "Energy (eV)" if have_energy else "energy index"
+
+
+def mark_band_edges(ax, attrs, orientation="vertical", label=True):
+    """
+    Draw the valence and conduction band edges on an energy axis.
+
+    Only edges recorded in `attrs` are drawn, and only those inside the current
+    axis limits: a band edge outside the swept range would otherwise widen the
+    axis to accommodate a line carrying no data. A sweep positioned on the
+    conduction edge commonly excludes the valence edge for that reason.
+
+    Returns the list of keys actually drawn, which a caller building its own
+    legend must use rather than the keys present in `attrs`, so that the legend
+    names only lines the figure contains.
+
+    `orientation` is "vertical" for a figure with energy on the x-axis and
+    "horizontal" for one with energy on the y-axis. With `label` false the
+    lines are drawn without legend entries, for panels that share a legend.
+    """
+    if not attrs:
+        return []
+    lo, hi = ax.get_xlim() if orientation == "vertical" else ax.get_ylim()
+    drawn = []
+    for key, (colour, text) in BAND_EDGE_STYLE.items():
+        if key not in attrs:
+            continue
+        edge = float(attrs[key])
+        if not (lo <= edge <= hi):
+            continue
+        line = ax.axvline if orientation == "vertical" else ax.axhline
+        line(edge, color=colour, ls="--", lw=1.0, alpha=0.8, zorder=1.5,
+             label=text if label else None)
+        drawn.append(key)
+    return drawn
 
 
 def solver_label(key):

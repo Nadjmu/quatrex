@@ -24,11 +24,19 @@ Output
 A per-solver, per-column table on stdout. Nothing is written to disk.
 """
 
+import sys
+from pathlib import Path
+
+sys.path.append(str((Path(__file__).resolve().parent
+                     / "solvers").resolve()))
+
 import h5py
 import numpy as np
 
+import cli
+
 # ---- config: edit these ----
-FILE = "/scratch/yimili/matrices/hdf5/graphene.h5"
+FILE = str(cli.material_h5("graphene"))
 ENERGY = "E_25"
 
 # list of (solver, dtype) to load

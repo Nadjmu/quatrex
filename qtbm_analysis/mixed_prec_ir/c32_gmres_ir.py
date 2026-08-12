@@ -61,12 +61,14 @@ ahead of the half-precision one and would misattribute its effect.
 
 Output
 ------
-    <outdir>/<material>_fp16_gmres_ir.csv
+    <outdir>/<material>.h5, group gmres_ir
 
 in long format, one row per (index, variant), carrying the residual, the
 forward error, the outer iteration count, the convergence flag, the inner GMRES
-iteration counts, the wall time and the factor memory. The header lines record
-the run configuration.
+iteration counts, the wall time and the factor memory. The run configuration
+and the skipped indices are group attributes. The file is opened in append mode
+and only that group is rewritten, so results of other analyses of the same
+material are preserved.
 
 A verbose per-index log is written to stdout, including the refinement
 convergence history and the inner iteration counts. That history, rather than
@@ -80,14 +82,13 @@ Usage
     python c32_gmres_ir.py .../carbon-nanotube.h5 --idx 84 --block-size 32
 
     python c32_gmres_ir.py .../carbon-nanotube.h5 --start 0 --end 401 \
-        --block-size 32 --outdir plots
+        --block-size 32
 
     python ../plotting/plot_mixed_prec_ir.py \
-        plots/carbon-nanotube_fp16_gmres_ir.csv
+        /scratch/yimili/mixed-precision-IR/carbon-nanotube.h5
 """
 
 import argparse
-import csv
 import sys
 import time
 import warnings
@@ -104,7 +105,16 @@ sys.path.insert(0, str((_HERE / ".." / "solvers").resolve()))
 
 import cli
 import mpir
+from factor_io import save_table, material_metadata
 from solver_classes import extract_blocks_sparse, BlockThomasFP16
+
+# Top-level group of the analysis file this script writes.
+GROUP = "gmres_ir"
+COLUMNS = ["idx", "kappa", "n", "nnz", "variant", "relres", "true_err",
+           "outer_iters", "converged", "inner_gmres_total",
+           "inner_gmres_mean", "wall_s", "factor_mb", "note"]
+
+DEFAULT_OUTDIR = cli.MIXED_PREC_DIR
 
 
 # ---------------------------------------------------------------------------
@@ -292,8 +302,9 @@ def parse_args():
     ap.add_argument("--skip-c128", action="store_true",
                     help="skip the complex128 direct variant")
 
-    cli.add_output(ap, outdir_help="output directory "
-                                   "(default: <script_dir>/plots)")
+    cli.add_output(ap, outdir_default=str(DEFAULT_OUTDIR),
+                   outdir_help=f"directory holding the analysis file "
+                               f"<material>.h5 (default: {DEFAULT_OUTDIR})")
     return ap, ap.parse_args()
 
 
@@ -304,10 +315,7 @@ def main():
     args.h5path = Path(args.h5path)
     indices = cli.resolve_indices(ap, args)
     material = args.material or args.h5path.stem
-    script_dir = Path(__file__).resolve().parent
-    outdir = Path(args.outdir) if args.outdir else script_dir / "plots"
-    outdir.mkdir(parents=True, exist_ok=True)
-    csv_path = outdir / f"{material}_fp16_gmres_ir.csv"
+    out_path = cli.analysis_h5(args.outdir, material)
 
     print(f"material   : {material}")
     print(f"h5path     : {args.h5path}")
@@ -329,26 +337,26 @@ def main():
             skipped.append((idx, f"{type(e).__name__}: {e}"))
             print(f"\nE_{idx}: skipped ({type(e).__name__}: {e})")
 
-    # ---- CSV, with the run configuration in the header lines ----------------
-    fields = ["idx", "kappa", "n", "nnz", "variant", "relres", "true_err",
-              "outer_iters", "converged", "inner_gmres_total", "inner_gmres_mean",
-              "wall_s", "factor_mb", "note"]
-    with open(csv_path, "w", newline="") as f:
-        f.write(f"# material     : {material}\n")
-        f.write(f"# h5path       : {args.h5path}\n")
-        f.write(f"# block size   : {args.block_size}\n")
-        f.write(f"# indices      : {indices[0]}..{indices[-1]} ({len(indices)} requested)\n")
-        f.write(f"# outer tol    : {args.tol}   max_iter {args.max_iter}\n")
-        f.write(f"# inner gmres  : rtol {args.gmres_tol} restart {args.gmres_restart} "
-                f"maxiter {args.gmres_max_iter}\n")
-        f.write(f"# x_true       : superlu complex128\n")
-        f.write(f"# skipped      : {len(skipped)}\n")
-        for i, msg in skipped:
-            f.write(f"#   idx={i}: {msg}\n")
-        w = csv.DictWriter(f, fieldnames=fields)
-        w.writeheader()
-        for row in all_rows:
-            w.writerow(row)
+    # ---- table, with the run configuration as group attributes --------------
+    attrs = dict(
+        material=material,
+        source=str(args.h5path),
+        block_size=int(args.block_size),
+        idx_requested=[int(indices[0]), int(indices[-1])],
+        n_requested=len(indices),
+        outer_tol=float(args.tol),
+        outer_max_iter=int(args.max_iter),
+        gmres_tol=float(args.gmres_tol),
+        gmres_restart=int(args.gmres_restart),
+        gmres_max_iter=int(args.gmres_max_iter),
+        x_true="superlu complex128",
+        n_skipped=len(skipped),
+        **material_metadata(args.h5path),
+    )
+    if skipped:
+        attrs["skipped_idx"] = np.asarray([i for i, _ in skipped], dtype=np.int64)
+        attrs["skipped_reason"] = [message for _, message in skipped]
+    save_table(out_path, GROUP, all_rows, columns=COLUMNS, attrs=attrs)
 
     # ---- summary ------------------------------------------------------------
     print(f"\n{'='*78}")
@@ -368,7 +376,8 @@ def main():
                   f"{' ...' if len(bad) > 20 else ''}")
     if skipped:
         print(f"{len(skipped)} indices skipped entirely.")
-    print(f"\nSaved: {csv_path}")
+    print(f"\nwrote {out_path}:/{GROUP}  ({len(all_rows)} rows)")
+    print(f"Plot with: python ../plotting/plot_mixed_prec_ir.py {out_path}")
 
 
 if __name__ == "__main__":

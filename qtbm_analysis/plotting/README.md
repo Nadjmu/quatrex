@@ -1,10 +1,9 @@
 # `plotting/` — figures
 
 Every figure in the project is produced here, and **nothing here computes a
-result**. Each script reads an artefact that a compute script has already
-written, a CSV or an HDF5 dataset, and renders it. No script in `solvers/`,
-`run_bench/`, `block-thomas/`, `mixed_prec_ir/` or `non-normal/` imports
-matplotlib.
+result**. Each script reads an HDF5 dataset that a compute script has already
+written and renders it. No script in `solvers/`, `run_bench/`, `block-thomas/`,
+`mixed_prec_ir/` or `non-normal/` imports matplotlib.
 
 This separation means a sweep that takes hours on the cluster is never repeated
 in order to change an axis label, the numbers behind every figure exist as a
@@ -13,13 +12,25 @@ a measurement.
 
 | Script | Input | Figures produced |
 |---|---|---|
-| `plot_speedup.py` | a material HDF5 file | `<material>_speedup.png` |
-| `plot_growth_factor.py` | `<material>_growth_factor.csv` | `<material>_growth_factor.png` |
-| `plot_fp16_accuracy.py` | `<material>_metrics.csv` | `_relres_fwderr.png`, `_forward_accuracy.png`, `_error_vs_condition.png` |
-| `plot_mixed_prec_ir.py` | `<material>_fp16_gmres_ir.csv` | `_ir_accuracy.png`, `_ir_iterations.png`, `_ir_error_vs_condition.png` |
-| `plot_non_normal.py` | the `non-normal/` output directory | `frames/E_*.png`, `non_normal_shift.gif` |
+| `plot_speedup.py` | material file, timing datasets | `<material>_speedup.png` |
+| `plot_growth_factor.py` | analysis file, `growth_factor` | `<material>_growth_factor.png` |
+| `plot_fp16_accuracy.py` | analysis file, `fp16_sweep` | `_relres_fwderr.png`, `_forward_accuracy.png`, `_error_vs_condition.png` |
+| `plot_mixed_prec_ir.py` | analysis file, `gmres_ir` | `_ir_accuracy.png`, `_ir_iterations.png`, `_ir_error_vs_condition.png` |
+| `plot_non_normal.py` | analysis file, `non_normality` | `<material>_frames/E_*.png`, `<material>_non_normal.gif` |
 | `plot_qtbm_spectra.py` | a `main3.py` output directory | `_spectrum.png`, `_condition.png`, `_singular_values.png` |
+| `bandstructure.py` | `examples/<material>/inputs` | `bandstructure.png`, `bandstructure_zoom.png`, `hamiltonian_matrix.png` |
 | `style.py` | — | library; not executable |
+
+Every script that reads an analysis file takes it as the positional `h5path`
+and defaults its output directory to that file's own directory, so a figure is
+written beside the data it was drawn from. The three that read something else
+default as follows.
+
+| Script | Default output directory |
+|---|---|
+| `plot_speedup.py` | `cli.BLOCK_THOMAS_DIR` |
+| `plot_qtbm_spectra.py` | `cli.CONDITION_DIR` |
+| `bandstructure.py` | `cli.MATERIALS_DIR/<material>` |
 
 ---
 
@@ -40,6 +51,22 @@ compared directly:
 - `FP16_UNIT_ROUNDOFF` is `u = 2^-11` for IEEE binary16, the reference level
   against which half-precision residuals are read.
 
+- **The sweep axis is energy in eV**, never the energy index. The index is a
+  position in a grid whose range and resolution are a per-material choice, so a
+  figure labelled by index cannot be compared across materials or across two
+  runs at different resolutions. The conversion is carried in the metadata of
+  every material and analysis file, as `grid_energy_min` and `resolution`, and
+  applied by `style.energies_of`. A file written before those attributes
+  existed carries neither; the axis then falls back to the index, and
+  `style.axis_label` labels it accordingly.
+- **The band edges are marked** on every energy axis by `style.mark_band_edges`,
+  the valence edge in blue and the conduction edge in red, matching
+  `bandstructure.py`. Only edges recorded in the file and lying inside the swept
+  range are drawn: a sweep positioned on the conduction edge commonly excludes
+  the valence edge, and a line outside the data would widen the axis for
+  nothing. The function returns the edges it drew, which a figure building its
+  own legend must use so that the legend names only lines the figure contains.
+
 All scripts use the `Agg` backend and write PNG; none opens a window.
 
 ---
@@ -47,38 +74,42 @@ All scripts use the `Agg` backend and write PNG; none opens a window.
 ## Which producer feeds which figure
 
 ```
-run_bench/run_benchmarks.py       ──► <material>.h5              ──► plot_speedup.py
-run_bench/gpu_run_benchmarks.py   ──► the same file              ──► plot_speedup.py --suffix _gpu
-block-thomas/growth_factor.py     ──► *_growth_factor.csv        ──► plot_growth_factor.py
-run_bench/sweep_fp16.py           ──► *_metrics.csv              ──► plot_fp16_accuracy.py
-mixed_prec_ir/c32_gmres_ir.py     ──► *_fp16_gmres_ir.csv        ──► plot_mixed_prec_ir.py
-non-normal/non-normal.py          ──► ratio_matrix.npy, ...      ──► plot_non_normal.py
-main3.py / main3_gpu.py           ──► energies.npy, ...          ──► plot_qtbm_spectra.py
+run_bench/run_benchmarks.py      ─► matrices2/hdf5/<material>.h5            ─► plot_speedup.py
+run_bench/gpu_run_benchmarks.py  ─► the same file                           ─► plot_speedup.py --suffix _gpu
+block-thomas/growth_factor.py    ─► error-analysis-block-thomas/            ─► plot_growth_factor.py
+                                     <material>.h5 :/growth_factor
+run_bench/sweep_fp16.py          ─► the same file :/fp16_sweep              ─► plot_fp16_accuracy.py
+mixed_prec_ir/c32_gmres_ir.py    ─► mixed-precision-IR/                     ─► plot_mixed_prec_ir.py
+                                     <material>.h5 :/gmres_ir
+non-normal/non-normal.py         ─► non-normal/<material>.h5                ─► plot_non_normal.py
+                                     :/non_normality
+main3.py / main3_gpu.py          ─► matrices2/<material>/energies.npy, ...  ─► plot_qtbm_spectra.py
 ```
 
-`plot_speedup.py` is the one script that reads the HDF5 file rather than a CSV,
-because the timings it needs are already stored there and no intermediate
-artefact is required.
+`plot_speedup.py` reads the material file itself, because the timings it needs
+are already stored there and no intermediate artefact is required. Its figure
+is written to the Block Thomas analysis directory, beside the stability and
+accuracy figures drawn from the same solver runs.
 
 ---
 
 ## Usage
 
 ```bash
-python plot_speedup.py        /scratch/yimili/matrices/hdf5/graphene.h5
+python plot_speedup.py        /scratch/yimili/matrices2/hdf5/graphene.h5
 python plot_speedup.py        .../graphene.h5 --solvers cudss --suffix _gpu
-python plot_growth_factor.py  /scratch/yimili/block-thomas/graphene_growth_factor.csv
-python plot_fp16_accuracy.py  ../run_bench/plots/graphene_metrics.csv
-python plot_mixed_prec_ir.py  ../mixed_prec_ir/plots/graphene_fp16_gmres_ir.csv
-python plot_non_normal.py     /scratch/yimili/non-normal/carbon-chain --ping-pong
-python plot_qtbm_spectra.py   /scratch/yimili/matrices/dev_12_sorted_BENCH
+python plot_growth_factor.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
+python plot_fp16_accuracy.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
+python plot_mixed_prec_ir.py  /scratch/yimili/mixed-precision-IR/graphene.h5
+python plot_non_normal.py     /scratch/yimili/non-normal/carbon-chain.h5 --ping-pong
+python plot_qtbm_spectra.py   /scratch/yimili/matrices2/dev_12_sorted_BENCH
+python bandstructure.py       graphene si-bulk
 ```
 
-Every script defaults its output directory to that of its input and accepts
-`--outdir` to override it, `--material` to set the label used in filenames and
-titles, and where applicable `--solvers` and `--dtypes` in the canonical
-spellings. Each has a `--help` describing the quantities it plots and how they
-are to be read.
+Every script accepts `--outdir` to override its default, `--material` to set
+the label used in filenames and titles, and where applicable `--solvers` and
+`--dtypes` in the canonical spellings. Each has a `--help` describing the
+quantities it plots and how they are to be read.
 
 ---
 
@@ -106,14 +137,25 @@ the reference line `kappa_2 u`.
 against conditioning. The inner GMRES iteration count is the quantity that
 determines whether refinement is cheaper than factorizing at higher precision.
 
-**`plot_non_normal.py`.** Per rank, `sigma_i / |lambda_i|`, and its cumulative
+**`plot_non_normal.py`.** Its panels are per rank rather than per energy, so it
+has no energy axis to mark; the energy of the frame appears in the frame title
+instead. Per rank, `sigma_i / |lambda_i|`, and its cumulative
 logarithmic form. For a normal matrix the first is identically 1 and the second
 identically 0, so deviation measures departure from normality. Axis limits are
-computed once over the whole sweep so that frames are comparable, and rows are
-read from the memory-mapped arrays one at a time.
+computed once over the whole sweep so that frames are comparable, and the
+`(P, n)` datasets are read one row at a time, so the sweep is never resident.
 
 **`plot_qtbm_spectra.py`.** The pencil spectrum, the conditioning of the bare
 pencil against that of the full system matrix, and the two extreme singular
 values. The last figure matters because a peak in `kappa_2` may arise either
 from `sigma_min` approaching zero, the near-singular case of interest, or from
 `sigma_max` growing, and the ratio alone does not distinguish them.
+
+**`bandstructure.py`.** The contact band structure of each configured device,
+full and zoomed on the gap, with the valence and conduction band edges marked,
+plus the magnitude of the leading Hamiltonian blocks. It is the one script here
+that computes what it plots, since the eigensolve is its subject rather than a
+measurement to be reused; it reads the device Hamiltonian directly and writes
+one directory per material under `cli.MATERIALS_DIR`. The materials it can
+process, their block sizes and their mid-gap energies come from `cli.MATERIALS`;
+run it to determine the band edges, then record them there.

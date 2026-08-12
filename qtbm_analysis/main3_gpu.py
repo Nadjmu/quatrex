@@ -21,9 +21,10 @@ QTBM example directories listed in EXAMPLES, read through
 
 Output
 ------
-Written to FOLDER/matrices/<example>/, identical to main3.py:
+Written to EXPORT_DIR/<material>/, identical to main3.py:
 
-    energies.npy, band_edge.npy, spectrum_bare.npy, condition_bare.npy,
+    energies.npy, band_edge.npy, conduction_band_edge.npy,
+    valence_band_edge.npy, spectrum_bare.npy, condition_bare.npy,
     condition_full_svd.npy, max_singular_values.npy, min_singular_values.npy,
     M_E_<idx>.npz, Sigma_E_<idx>.npz, rhs_E_<idx>.npy
 
@@ -32,9 +33,10 @@ No figures are produced; see plotting/plot_qtbm_spectra.py.
 Usage
 -----
     python main3_gpu.py
-    python plotting/plot_qtbm_spectra.py /scratch/yimili/matrices/dev_12_sorted_BENCH
+    python plotting/plot_qtbm_spectra.py /scratch/yimili/matrices2/dev_12_sorted_BENCH
 """
 
+import sys
 from pathlib import Path
 
 import cupy as cp
@@ -43,18 +45,21 @@ from scipy.linalg import eigh
 
 from export_qtbm_systems import export_system, _host_array, _save_csr_npz
 
-FOLDER = Path("/scratch/yimili")
+sys.path.append(str((Path(__file__).resolve().parent / "solvers").resolve()))
 
-EXAMPLES = [
-    Path("/scratch/yimili/examples/dev_12_sorted_BENCH/qtbm"),
-    Path("/scratch/yimili/examples/WS2-hBN-25_benchmark-QUATREX-DZ/qtbm"),
-]
+import cli
 
-OFFSET = 1.0
-OFFSET_LOW = 0.005
-POINTS = 401
+# Stage 1 writes one directory per example here; make_hdf5.py reads them.
+EXPORT_DIR = cli.EXPORT_DIR
 
-INSPECTION_INDICES = [0] + list(range(10, 400, 20))
+# Materials to process, as keys of cli.MATERIALS. The example directory, the
+# band edges and the block size are taken from that registry, which is the one
+# place they are edited.
+EXAMPLES = ["carbon-nanotube", "si-bulk", "carbon-chain", "graphene"]
+
+
+# Stride between exported energy indices; see main3.py.
+EXPORT_STRIDE = 1
 
 # Dense analyses, O(n^3) each. Feasible only for the small examples.
 RUN_SPECTRUM = False
@@ -85,19 +90,34 @@ def load_matrices(example):
     return -hamiltonian, -overlap, config
 
 
-def band_edge_of(config):
+def band_edges_of(config, material):
     """
-    Conduction band edge in eV, falling back to the left Fermi level when the
-    configuration does not set one.
+    Valence and conduction band edge in eV, either may be None.
+
+    Identical to main3.band_edges_of; see it for the precedence rules.
+
+    Returns (valence, conduction).
     """
-    edge = config.electron.conduction_band_edge
-    return config.electron.left_fermi_level if edge is None else edge
+    valence = material.valence_band_edge if material else None
+    conduction = material.conduction_band_edge if material else None
+
+    if valence is None:
+        valence = config.electron.valence_band_edge
+    if conduction is None:
+        conduction = config.electron.conduction_band_edge
+    if conduction is None:
+        conduction = config.electron.left_fermi_level
+        print("  [warn] no conduction band edge in cli.MATERIALS or the QTBM "
+              "configuration; using the left Fermi level")
+    if valence is None:
+        print("  [warn] no valence band edge in cli.MATERIALS or the QTBM "
+              "configuration; it will be absent from the material file")
+    return valence, conduction
 
 
-def energy_grid(band_edge):
-    """Energy sweep around the band edge, POINTS + 1 samples."""
-    return np.linspace(band_edge - OFFSET - OFFSET_LOW, band_edge + OFFSET,
-                       POINTS + 1)
+def export_indices(energies):
+    """Energy indices to export, every EXPORT_STRIDE-th point of the grid."""
+    return list(range(0, len(energies), EXPORT_STRIDE))
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +185,7 @@ def export_matrices(example, hamiltonian, overlap, energies, out_dir):
     All arithmetic stays sparse and device-resident; the transfer to host
     memory happens inside the writers.
     """
-    for index in INSPECTION_INDICES:
+    for index in export_indices(energies):
         energy = energies[index]
         print(f"  inspection index {index}: E = {energy} eV")
 
@@ -188,21 +208,38 @@ def export_matrices(example, hamiltonian, overlap, energies, out_dir):
 # Driver
 # ---------------------------------------------------------------------------
 
-def process_example(example):
-    name = example.parent.name
+def process_example(name):
+    """Run every enabled analysis for one material of cli.MATERIALS."""
+    material = cli.material(name)
+    example = material.example
+    if example is None:
+        raise ValueError(f"cli.MATERIALS['{name}'] has no example directory")
     print(f"Example: {name}")
 
-    out_dir = FOLDER / "matrices" / name
+    out_dir = EXPORT_DIR / name
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    if material.grid is None:
+        raise ValueError(
+            f"cli.MATERIALS['{name}'] has no grid. Set "
+            f"grid=EnergyGrid(start=..., end=..., resolution=...) in eV.")
+
     hamiltonian, overlap, config = load_matrices(example)
-    band_edge = band_edge_of(config)
-    energies = energy_grid(band_edge)
-    print(f"  band edge = {band_edge} eV, "
-          f"grid resolution = {2 * OFFSET / POINTS:.3e} eV")
+    valence, band_edge = band_edges_of(config, material)
+    energies = material.grid.energies()
+    print(f"  conduction band edge = {band_edge} eV, "
+          f"valence band edge = {valence} eV")
+    print(f"  grid: {len(energies)} points, "
+          f"{energies[0]:.4f} .. {energies[-1]:.4f} eV, "
+          f"resolution {material.grid.resolution:.3e} eV")
+    print(f"  exporting every {EXPORT_STRIDE} index "
+          f"({len(export_indices(energies))} matrices)")
 
     np.save(out_dir / "energies.npy", energies)
     np.save(out_dir / "band_edge.npy", np.array(band_edge))
+    np.save(out_dir / "conduction_band_edge.npy", np.array(band_edge))
+    if valence is not None:
+        np.save(out_dir / "valence_band_edge.npy", np.array(valence))
 
     if RUN_SPECTRUM:
         eigenvalues, _ = bare_spectrum(hamiltonian, overlap, band_edge)
@@ -227,8 +264,8 @@ def process_example(example):
 
 
 def main():
-    for example in EXAMPLES:
-        process_example(example)
+    for name in EXAMPLES:
+        process_example(name)
 
 
 if __name__ == "__main__":

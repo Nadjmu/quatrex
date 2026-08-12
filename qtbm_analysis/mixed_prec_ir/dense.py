@@ -54,17 +54,24 @@ A table of relative error, wall time and peak memory per variant, on stdout.
 """
 
 import gc
+import sys
 import threading
 import time
 import tracemalloc
+from pathlib import Path
+
+sys.path.append(str((Path(__file__).resolve().parent / ".."
+                     / "solvers").resolve()))
+
+import cli
 
 import numpy as np
 import psutil
 import scipy.linalg as la
 
 # ── paths ────────────────────────────────────────────────────────────────────
-MATRIX_PATH = "/scratch/yimili/matrices/carbon-nanotube/M_E_50.npz"
-RHS_PATH    = "/scratch/yimili/matrices/carbon-nanotube/rhs_E_50.npy"
+MATRIX_PATH = str(cli.EXPORT_DIR / "carbon-nanotube/M_E_50.npz")
+RHS_PATH    = str(cli.EXPORT_DIR / "carbon-nanotube/rhs_E_50.npy")
 
 
 # ── memory helpers ───────────────────────────────────────────────────────────

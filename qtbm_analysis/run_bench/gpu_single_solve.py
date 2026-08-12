@@ -35,10 +35,11 @@ sys.path.append(str((Path(__file__).parent / ".." / "solvers").resolve()))
 import numpy as np
 import scipy.sparse as sp
 
+import cli
 from solver_classes import CuDSS, gpu_available
 
-M_PATH = "/scratch/yimili/matrices/dev_12_sorted_BENCH/M_E_0.npz"
-RHS_PATH = "/scratch/yimili/matrices/dev_12_sorted_BENCH/rhs_E_0.npy"
+M_PATH = str(cli.EXPORT_DIR / "dev_12_sorted_BENCH/M_E_0.npz")
+RHS_PATH = str(cli.EXPORT_DIR / "dev_12_sorted_BENCH/rhs_E_0.npy")
 
 DTYPE = np.complex128
 

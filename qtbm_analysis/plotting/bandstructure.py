@@ -4,13 +4,16 @@ For each material the periodic lead blocks (h_00, h_01, h_10) are
 extracted from the device Hamiltonian and used to compute the contact
 band structure and the band edges.
 
+Output goes to one subdirectory per material inside the materials directory
+defined in `solvers/cli.py`.
+
 Usage:
     python bandstructure.py               # all configured materials
     python bandstructure.py mos2 si-bulk  # a subset
 """
 
 import argparse
-from dataclasses import dataclass
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -22,86 +25,31 @@ import numpy as np
 import scipy.io
 import scipy.sparse as sps
 
+sys.path.append(str((Path(__file__).resolve().parent / ".."
+                     / "solvers").resolve()))
+
+import cli
+
 from qttools import xp
 from qttools.kernels.linalg import eigvalsh
 from qttools.utils.gpu_utils import get_host
 from quatrex.bandstructure import band_edges
 
-EXAMPLES_DIR = Path("/scratch/yimili/examples")
-PLOTS_DIR = Path("/scratch/yimili/plots")
-
-NUM_K_POINTS = 401
+EXAMPLES_DIR = cli.EXAMPLES_DIR
+PLOTS_DIR = cli.MATERIALS_DIR
 
 # Memory budget for one chunk of k points. Lower this if the eigensolve
 # runs out of device memory.
 K_CHUNK_BYTES = 8 * 1024**3
 
 
-@dataclass
-class Material:
-    """A device to compute the band structure of.
-
-    Attributes
-    ----------
-    input_dir : Path
-        The directory holding `hamiltonian.mat`.
-    blocksize : int
-        The size of one periodic lead block along the transport
-        direction.
-    mid_gap_energy : float
-        An energy inside the band gap, used to separate the valence from
-        the conduction bands.
-    transverse_k : tuple
-        The transverse momentum at which to evaluate the device, in
-        fractional coordinates. The origin is Gamma.
-
-    """
-
-    input_dir: Path
-    blocksize: int | None
-    mid_gap_energy: float | None
-    transverse_k: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    num_k_points: int = NUM_K_POINTS
-    lead_offset: int = 0
-
-
-# NOTE: Fill in `blocksize` and `mid_gap_energy` per material. Materials
-# still set to `None` are skipped.
-MATERIALS = {
-    "carbon-nanotube": Material(
-        input_dir=EXAMPLES_DIR / "w90/carbon-nanotube/inputs",
-        blocksize=32,
-        mid_gap_energy=-3.8,
-    ),
-    "si-bulk": Material(
-        # Bandwidth 382 -> smallest admissible divisor of 3840 is 192.
-        input_dir=EXAMPLES_DIR / "w90/si-bulk/inputs",
-        blocksize=256,
-        mid_gap_energy=6.0953,
-    ),
-    "carbon-chain": Material(
-        input_dir=EXAMPLES_DIR / "cp2k/carbon-chain/inputs",
-        blocksize=104,
-        mid_gap_energy=-12,
-    ),
-    "graphene": Material(
-        # Bandwidth 431 -> smallest admissible divisor of 2080 is 260.
-        input_dir=EXAMPLES_DIR / "graphene/inputs",
-        blocksize=416,
-        mid_gap_energy=0.5,
-    ),
-    "ws2-hbn": Material(
-        # Run once with both unset to get the blocksize and gap reports.
-        input_dir=EXAMPLES_DIR
-        / "WS2-hBN-25_benchmark-QUATREX-DZ/qtbm/inputs",
-        # Bandwidth 6303 -> 6526 is the smallest divisor that guarantees
-        # block tridiagonality.
-        blocksize=6526,
-        mid_gap_energy=None,
-        # The blocks are large enough that each eigensolve is expensive.
-        num_k_points=21,
-    ),
-}
+# The materials this script can process: those of cli.MATERIALS that declare a
+# DFT input directory. Every per-material property, the block size and the
+# mid-gap energy included, is edited there and not here. A material whose
+# blocksize or mid_gap_energy is still None stops with the report that
+# determines it.
+MATERIALS = {name: mat for name, mat in cli.MATERIALS.items()
+             if mat.inputs is not None}
 
 
 def load_matrices(path: Path) -> dict[str, sps.csr_matrix]:
@@ -260,6 +208,49 @@ def report_blocksize(matrix: np.ndarray, tol: float = 1e-10) -> None:
         f"    divisors of {n}: {divisors[:5]}, "
         f"guaranteed: {sufficient[:3]}"
     )
+
+
+def check_periodicity(
+    matrix: sps.spmatrix, blocksize: int, label: str = "h", num_blocks: int = 5
+) -> None:
+    """Checks whether the device is block-Toeplitz at this block size.
+
+    The contact band structure repeats the (0,0) and (0,1) blocks to
+    build an infinite lead, which is only physical if every diagonal
+    block is the same and every off-diagonal block is the same.
+
+    """
+    available = matrix.shape[0] // blocksize
+    reference = block(matrix, blocksize, 0, 0)
+    scale = np.abs(reference).max()
+
+    print(f"  periodicity of '{label}' (max|{label}_ii - {label}_00|):")
+    for i in range(1, min(num_blocks, available)):
+        difference = np.abs(block(matrix, blocksize, i, i) - reference).max()
+        print(f"    block {i:3d}: {difference:.3e}  ({difference / scale:7.2%})")
+
+
+def find_period(matrix: sps.spmatrix, max_period: int = 8192) -> None:
+    """Finds the repeat length of the on-site energies.
+
+    The diagonal of a periodic region repeats with the period of the
+    unit cell, which gives the contact block size independently of how
+    the device as a whole is partitioned.
+
+    """
+    diagonal = np.asarray(matrix.diagonal()).real
+    window = min(diagonal.size, 4 * max_period)
+    d = diagonal[:window]
+    scale = np.abs(d).max()
+
+    periods = []
+    for p in range(1, min(max_period, window // 2) + 1):
+        if np.abs(d[p:] - d[:-p]).max() <= 1e-8 * scale:
+            periods.append(p)
+            if len(periods) == 3:
+                break
+
+    print(f"  on-site periods within the first {window} orbitals: {periods}")
 
 
 def check_block_tridiagonal(
@@ -456,19 +447,19 @@ def report_gaps(e_k: np.ndarray, num_gaps: int = 5) -> None:
         )
 
 
-def run(name: str, material: Material) -> None:
+def run(name: str, material: cli.Material) -> None:
     """Computes and plots the band structure of a single material."""
     out_dir = PLOTS_DIR / name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    blocksize = material.blocksize
+    blocksize = material.block_size
 
     # NOTE: An orthonormal basis (e.g. Wannier) needs no overlap matrix
     # and gives a standard eigenvalue problem. A non-orthogonal basis
     # (e.g. the CP2K Gaussian sets) ships an `overlap.mat` and requires
     # the generalized problem instead.
-    hamiltonian = load_matrices(material.input_dir / "hamiltonian.mat")
-    overlap_path = material.input_dir / "overlap.mat"
+    hamiltonian = load_matrices(material.inputs / "hamiltonian.mat")
+    overlap_path = material.inputs / "overlap.mat"
     overlap = load_matrices(overlap_path) if overlap_path.exists() else None
 
     print(
@@ -485,7 +476,8 @@ def run(name: str, material: Material) -> None:
     report_blocksize(matrix)
 
     if blocksize is None:
-        print("  STOPPED: set blocksize from the report above.")
+        print(f"  STOPPED: set block_size for '{name}' in "
+              f"cli.MATERIALS from the report above.")
         return
 
     if matrix.shape[0] < 3 * blocksize:
@@ -496,6 +488,8 @@ def run(name: str, material: Material) -> None:
 
     check_lead_blocks(matrix, blocksize)
     check_block_tridiagonal(matrix, blocksize, label="h")
+    check_periodicity(matrix, blocksize, label="h")
+    find_period(matrix)
     plot_hamiltonian(matrix, blocksize, out_dir)
 
     h_00, h_01, h_10 = lead_blocks(matrix, blocksize, material.lead_offset)
@@ -525,7 +519,8 @@ def run(name: str, material: Material) -> None:
     report_gaps(e_k)
 
     if material.mid_gap_energy is None:
-        print("  STOPPED: set mid_gap_energy from the report above.")
+        print(f"  STOPPED: set mid_gap_energy for '{name}' in "
+              f"cli.MATERIALS from the report above.")
         return
 
     # `find_band_edges` takes a max/min over the two sides of the mid-gap

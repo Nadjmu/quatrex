@@ -5,8 +5,8 @@ and write results back. **No benchmarking logic lives here**: there is exactly
 one `bench()` implementation, in `solvers/bench_all.py`, so a correction or a
 new solver added there is picked up by every driver.
 
-**No figures are produced here either.** Every driver writes its results to the
-HDF5 file or to a CSV, and the corresponding figure is produced by a script in
+**No figures are produced here either.** Every driver writes its results into
+an HDF5 file, and the corresponding figure is produced by a script in
 [`../plotting/`](../plotting/). See
 [the pipeline description](../README.md#2-the-pipeline).
 
@@ -21,7 +21,7 @@ from `solvers/cli.py`, so the option names match every other script; see
 | `gpu_run_benchmarks.py` | the GPU solvers only, appended into the same files |
 | `single_solve.py` | one matrix, one right-hand side, chosen solvers: timing and peak RSS. The diagnostic entry point |
 | `gpu_single_solve.py` | the same for cuDSS |
-| `sweep_fp16.py` | accuracy sweep of the two half-precision Block Thomas variants, writing a CSV |
+| `sweep_fp16.py` | accuracy sweep of the two half-precision Block Thomas variants, writing an analysis file |
 
 ---
 
@@ -29,10 +29,11 @@ from `solvers/cli.py`, so the option names match every other script; see
 
 ```bash
 python run_benchmarks.py
-python ../plotting/plot_speedup.py /scratch/yimili/matrices/hdf5/graphene.h5
+python ../plotting/plot_speedup.py /scratch/yimili/matrices2/hdf5/graphene.h5
 ```
 
-Sweeps every material in `MATERIAL_BS`, appending solver results into each
+Sweeps every material of `cli.MATERIALS` that declares a block size, appending
+solver results into each
 material's own HDF5 file as `E_<idx>/<solver>/<dtype>/`, siblings of
 `E_<idx>/M`. **This mutates the source file in place**; copy it first if the
 original must be preserved. Indices whose right-hand side has zero columns are
@@ -44,15 +45,16 @@ skipped, and appear as gaps in the figures produced downstream.
 
 | Mode | Source | Notes |
 |---|---|---|
-| `"uniform"` | `MATERIAL_BS` | the default |
-| `"custom"` | `MATERIAL_BLOCKS` | an error if the material has no entry |
+| `"uniform"` | `block_size` of `cli.MATERIALS` | the default |
+| `"custom"` | `blocks` of `cli.MATERIALS` | an error if the material has no entry |
 | `"auto"` | detected per material | from the sparsity pattern |
 
 The sparsity pattern is identical at every energy index, so `"auto"` detects
 the partition once per material from the first matrix and reuses it. Both
 non-uniform modes verify `offband_nnz == 0` before anything runs.
 
-To populate `MATERIAL_BLOCKS`, generate a line and paste it in:
+To populate the `blocks` field of a material, generate a line and paste it into
+`cli.MATERIALS`:
 
 ```bash
 python ../block-thomas/determine_custom_block_size.py <material>.h5 --emit-python
@@ -106,22 +108,25 @@ range, against the stored `complex128` Block Thomas solution as reference.
 python sweep_fp16.py .../carbon-nanotube.h5 --start 0 --end 401 --block-size 32
 python sweep_fp16.py .../graphene.h5 --start 0 --end 401 --auto-blocks
 python sweep_fp16.py .../graphene.h5 --idx 0 25 50 --inv-dtype float16
-python ../plotting/plot_fp16_accuracy.py plots/graphene_metrics.csv
+python ../plotting/plot_fp16_accuracy.py \
+    /scratch/yimili/error-analysis-block-thomas/graphene.h5
 ```
 
 Reads `E_<idx>/blockthomas/complex128/x` and the `complex64` equivalent, so
 **`run_benchmarks.py` must have run first**.
 
-Writes to `plots/`:
+Writes the `fp16_sweep` group of `<outdir>/<material>.h5`, with `--outdir`
+defaulting to `cli.BLOCK_THOMAS_DIR`, holding the columns `idx, relres_fp16,
+relres_fp16_inv, fwd_err_fp16_vs_c128, fwd_err_fp16_inv_vs_c128,
+fwd_err_c64_vs_c128, cond_full_svd`. The run configuration and the failed
+indices with their reasons are group attributes. The file is opened in append
+mode and only that group is rewritten, so the `growth_factor` group written by
+[`../block-thomas/growth_factor.py`](../block-thomas/growth_factor.py) into the
+same file is preserved.
 
-- `<material>_metrics.csv` — `idx, relres_fp16, relres_fp16_inv,
-  fwd_err_fp16_vs_c128, fwd_err_fp16_inv_vs_c128, fwd_err_c64_vs_c128,
-  cond_full_svd`
-- `<material>_metrics.txt` — the same table plus run metadata and the failed
-  indices
-
-Unlike the other drivers this one does **not** write into the HDF5 file. It is
-read-only by design, so an accuracy sweep may be repeated freely.
+Unlike the other drivers this one does **not** write into the material file. It
+is read-only with respect to it by design, so an accuracy sweep may be repeated
+freely.
 
 The residual and the forward error must be read together. The residual measures
 backward error and is expected near the half-precision unit roundoff

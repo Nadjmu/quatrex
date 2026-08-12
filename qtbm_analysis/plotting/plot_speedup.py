@@ -33,11 +33,12 @@ Output
 ------
 One two-panel figure, factorization time and solve time, on a logarithmic
 speedup axis with the unit line marked. Values above unity are faster than the
-baseline.
+baseline. It is written to the Block Thomas analysis directory, beside the
+stability and accuracy figures drawn from the same solver runs.
 
 Usage
 -----
-    python plot_speedup.py /scratch/yimili/matrices/hdf5/graphene.h5
+    python plot_speedup.py /scratch/yimili/matrices2/hdf5/graphene.h5
     python plot_speedup.py .../graphene.h5 --outdir figures
     python plot_speedup.py .../graphene.h5 --solvers cudss gmres-cupy \
         --suffix _gpu
@@ -56,7 +57,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import cli
-from style import SOLVER_STYLE, DTYPE_STYLE, legend_handles, save_figure
+from factor_io import material_metadata
+from style import (BAND_EDGE_STYLE, SOLVER_STYLE, DTYPE_STYLE, axis_label,
+                   energies_of, legend_handles, mark_band_edges,
+                   save_figure)
 
 # Canonical (solver, precision) of the baseline every ratio refers to.
 BASELINE = ("superlu", "complex128")
@@ -115,7 +119,7 @@ def speedup_series(times, key, field):
     return list(xs), list(ys)
 
 
-def plot(times, indices, material, out_path):
+def plot(times, indices, attrs, material, out_path):
     """Two-panel speedup figure; returns False if no series could be drawn."""
     keys = [k for k in times if k != BASELINE]
     if not keys:
@@ -136,7 +140,15 @@ def plot(times, indices, material, out_path):
     missing = np.array(sorted(set(indices) - solved))
 
     fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.8), sharex=True, sharey=True)
-    drawn_solvers, drawn_dtypes = [], []
+    drawn_solvers, drawn_dtypes, drawn_edges = [], [], []
+
+    have_energy = energies_of(attrs, [0]) is not None
+    # Half a step, used to give a skipped index a visible width on either axis.
+    half_step = 0.5 * float(attrs["resolution"]) if have_energy else 0.5
+
+    def to_x(values):
+        converted = energies_of(attrs, values) if have_energy else None
+        return values if converted is None else converted
 
     for ax, (field, panel_title) in zip(axes, FIELDS):
         for solver, dtype in keys:
@@ -145,9 +157,9 @@ def plot(times, indices, material, out_path):
                 continue
             _, colour, marker = SOLVER_STYLE.get(solver, (solver, None, None))
             _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
-            ax.plot(xs, ys, color=colour, marker=marker, ls=ls, markersize=5,
-                    markeredgecolor="white", markeredgewidth=0.6, lw=1.6,
-                    alpha=0.95, zorder=3)
+            ax.plot(to_x(xs), ys, color=colour, marker=marker, ls=ls,
+                    markersize=5, markeredgecolor="white", markeredgewidth=0.6,
+                    lw=1.6, alpha=0.95, zorder=3)
             if solver not in drawn_solvers:
                 drawn_solvers.append(solver)
             if dtype not in drawn_dtypes:
@@ -161,15 +173,18 @@ def plot(times, indices, material, out_path):
         if len(missing):
             breaks = np.where(np.diff(missing) > 1)[0] + 1
             for run in np.split(missing, breaks):
-                ax.axvspan(run[0] - 0.5, run[-1] + 0.5, color="0.55",
+                left, right = to_x([run[0], run[-1]])
+                ax.axvspan(left - half_step, right + half_step, color="0.55",
                            alpha=0.25, zorder=1)
 
         ax.set_yscale("log")
         ax.set_ylim(ymin, ymax)
-        ax.set_xlabel("Energy index")
+        ax.set_xlabel(axis_label(have_energy))
         ax.set_title(panel_title, fontsize=11)
         ax.grid(True, which="major", alpha=0.3)
         ax.grid(True, which="minor", alpha=0.12)
+        if have_energy:
+            drawn_edges = mark_band_edges(ax, attrs, label=False)
         for spine in ("top", "right"):
             ax.spines[spine].set_visible(False)
 
@@ -185,6 +200,12 @@ def plot(times, indices, material, out_path):
     if len(missing):
         extra.append((plt.Rectangle((0, 0), 1, 1, color="0.55", alpha=0.25),
                       "no right-hand side"))
+    # The band edge lines are drawn without labels, since both panels carry
+    # them; they are named once here instead. Only the edges that fell inside
+    # the swept range were drawn, so only those are named.
+    for key in drawn_edges:
+        colour, text = BAND_EDGE_STYLE[key]
+        extra.append((plt.Line2D([], [], color=colour, ls="--", lw=1.0), text))
     handles, labels = legend_handles(drawn_solvers, drawn_dtypes, extra)
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
                frameon=False, fontsize=9, bbox_to_anchor=(0.5, -0.08))
@@ -205,17 +226,16 @@ def main():
                                   "file are skipped")
     cli.add_dtypes(ap, choices=cli.COMPLEX_DTYPES,
                    default=("complex128", "complex64"))
-    cli.add_output(ap, outdir_help="output directory "
-                                   "(default: <h5 dir>/../plots)")
+    cli.add_output(ap, outdir_default=str(cli.BLOCK_THOMAS_DIR),
+                   outdir_help=f"output directory "
+                               f"(default: {cli.BLOCK_THOMAS_DIR})")
     ap.add_argument("--suffix", type=str, default="", metavar="TEXT",
                     help="appended to the output filename stem, e.g. '_gpu'")
     args = ap.parse_args()
 
     args.h5path = Path(args.h5path)
     material = args.material or args.h5path.stem
-    outdir = Path(args.outdir) if args.outdir \
-        else args.h5path.parent.parent / "plots"
-    out_path = outdir / f"{material}_speedup{args.suffix}.png"
+    out_path = Path(args.outdir) / f"{material}_speedup{args.suffix}.png"
 
     solvers = list(dict.fromkeys([BASELINE[0]] + list(args.solvers)))
     dtypes = list(dict.fromkeys([BASELINE[1]] + list(args.dtypes)))
@@ -225,7 +245,8 @@ def main():
         raise SystemExit(f"{args.h5path} has no {BASELINE[0]}/{BASELINE[1]} "
                          f"result to use as a baseline; run "
                          f"run_bench/run_benchmarks.py first")
-    if not plot(times, indices, material, out_path):
+    attrs = material_metadata(args.h5path)
+    if not plot(times, indices, attrs, material, out_path):
         raise SystemExit(1)
 
 

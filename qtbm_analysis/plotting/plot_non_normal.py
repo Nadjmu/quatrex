@@ -4,17 +4,17 @@ Non-normality of M(E): singular values against eigenvalue magnitudes.
 
 Input
 -----
-The output directory of ``non-normal/non-normal.py``, containing the arrays it
-memory-maps during the SVD pass:
+The ``non_normality`` group written by ``non-normal/non-normal.py`` into its
+analysis file:
 
-    ratio_matrix.npy                 (num_indices, n)  sigma_i / |lambda_i|
-    log_cumulative_ratio_matrix.npy  (num_indices, n)  log(prod sigma / prod |lambda|)
-    ratio_matrix_indices.npy         (num_indices,)    energy index of each row
-    valid_rows.npy                   (num_indices,)    bool, row fully computed
-    nnz_by_index.npy                 (num_indices,)    nnz of M, -1 if unknown
+    ratio                  (P, n)  sigma_i / |lambda_i|
+    log_cumulative_ratio   (P, n)  log(prod sigma / prod |lambda|)
+    indices                (P,)    energy index of each row
+    valid                  (P,)    bool, row fully computed
+    nnz                    (P,)    nnz of M, -1 if unknown
 
-Both matrices are opened with mmap_mode="r"; only one row is resident at a
-time, so the sweep may be plotted without holding it in memory.
+The two matrices are read one row at a time, so the sweep may be plotted
+without holding it in memory.
 
 Algorithm
 ---------
@@ -38,15 +38,18 @@ default and on a logarithmic axis under --ratio-y-scale log.
 
 Output
 ------
-<outdir>/frames/E_<index>.png   one two-panel frame per valid index
-<outdir>/non_normal_shift.gif   the frames animated in index order
+<outdir>/<material>_frames/E_<index>.png   one two-panel frame per valid index
+<outdir>/<material>_non_normal.gif         the frames animated in index order
+
+The default output directory is the analysis file's own directory, so the
+figures are written beside the data they were drawn from.
 
 Usage
 -----
-    python plot_non_normal.py /scratch/yimili/non-normal/carbon-chain
-    python plot_non_normal.py /scratch/yimili/non-normal/carbon-chain \
+    python plot_non_normal.py /scratch/yimili/non-normal/carbon-chain.h5
+    python plot_non_normal.py /scratch/yimili/non-normal/carbon-chain.h5 \
         --ratio-y-scale log --gif-fps 6 --ping-pong
-    python plot_non_normal.py .../carbon-chain --skip-gif --clean-frames
+    python plot_non_normal.py .../carbon-chain.h5 --skip-gif --clean-frames
 """
 
 import argparse
@@ -58,45 +61,50 @@ _HERE = Path(__file__).resolve().parent
 sys.path.append(str(_HERE))
 sys.path.append(str((_HERE / ".." / "solvers").resolve()))
 
+import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 
 import cli
+from style import energies_of
 
-ARRAY_NAMES = {
-    "ratio": "ratio_matrix.npy",
-    "logcum": "log_cumulative_ratio_matrix.npy",
-    "indices": "ratio_matrix_indices.npy",
-    "valid": "valid_rows.npy",
-    "nnz": "nnz_by_index.npy",
-}
+GROUP = "non_normality"
+REQUIRED = ("ratio", "log_cumulative_ratio", "indices", "valid")
 
 
-def load_arrays(out_dir):
+def load_arrays(h5file):
     """
-    Memory-map the two per-rank matrices and read the small index arrays.
+    Bind the two per-rank matrices and read the small index arrays.
 
-    Returns (ratio_matrix, logcum_matrix, indices, valid_rows, nnz_array) where
-    valid_rows is an integer array of row positions, not a boolean mask.
+    The matrices are returned as HDF5 datasets, not arrays: they are indexed
+    one row at a time by the caller, so the sweep never becomes resident. The
+    file must stay open for as long as they are used.
+
+    Returns (ratio_matrix, logcum_matrix, indices, valid_rows, nnz_array,
+    attrs) where valid_rows is an integer array of row positions, not a boolean
+    mask, and attrs carries the band edges and the grid.
     """
-    paths = {key: out_dir / name for key, name in ARRAY_NAMES.items()}
-    missing = [str(p) for key, p in paths.items()
-               if key != "nnz" and not p.exists()]
+    if GROUP not in h5file:
+        raise SystemExit(f"{h5file.filename} has no '{GROUP}' group; "
+                         f"run non-normal/non-normal.py for this material first")
+    group = h5file[GROUP]
+    missing = [name for name in REQUIRED if name not in group]
     if missing:
-        raise SystemExit("missing input array(s):\n  " + "\n  ".join(missing) +
-                         "\nRun non-normal/non-normal.py for this material first.")
+        raise SystemExit(f"{h5file.filename}:/{GROUP} is missing "
+                         f"dataset(s): {', '.join(missing)}")
 
-    ratio_matrix = np.load(paths["ratio"], mmap_mode="r")
-    logcum_matrix = np.load(paths["logcum"], mmap_mode="r")
-    indices = np.load(paths["indices"])
-    valid_rows = np.where(np.load(paths["valid"]))[0]
-    nnz_array = np.load(paths["nnz"]) if paths["nnz"].exists() else None
+    ratio_matrix = group["ratio"]
+    logcum_matrix = group["log_cumulative_ratio"]
+    indices = group["indices"][:]
+    valid_rows = np.where(group["valid"][:])[0]
+    nnz_array = group["nnz"][:] if "nnz" in group else None
+    attrs = dict(group.attrs)
 
     if len(valid_rows) == 0:
-        raise SystemExit(f"{paths['valid']} marks no row as valid; "
+        raise SystemExit(f"{h5file.filename}:/{GROUP} marks no row as valid; "
                          f"the SVD pass produced no usable data")
-    return ratio_matrix, logcum_matrix, indices, valid_rows, nnz_array
+    return ratio_matrix, logcum_matrix, indices, valid_rows, nnz_array, attrs
 
 
 def make_plot_limits(ratio_matrix, logcum_matrix, valid_rows, diff,
@@ -149,7 +157,7 @@ def make_plot_limits(ratio_matrix, logcum_matrix, valid_rows, diff,
 
 
 def create_frames(frame_dir, indices, ratio_matrix, logcum_matrix, nnz_array,
-                  valid_rows, diff, ratio_y_scale, dpi):
+                  valid_rows, diff, ratio_y_scale, dpi, attrs=None):
     """
     Render one two-panel frame per valid row. Returns the frame paths in index
     order. Rows are read and released one at a time to bound resident memory.
@@ -204,7 +212,13 @@ def create_frames(frame_dir, indices, ratio_matrix, logcum_matrix, nnz_array,
         if nnz_array is not None and row < len(nnz_array) and nnz_array[row] >= 0:
             nnz_text = f"nnz={int(nnz_array[row])}   "
 
-        fig.suptitle(f"E_{index}   frame {frame_number}/{len(valid_rows)}   "
+        # The energy of the index, where the file records the grid. The panels
+        # are per rank, so this is the only place the sweep coordinate appears.
+        energy = energies_of(attrs, [index])
+        energy_text = "" if energy is None else f"E = {energy[0]:.4f} eV   "
+
+        fig.suptitle(f"E_{index}   {energy_text}"
+                     f"frame {frame_number}/{len(valid_rows)}   "
                      f"n={n}   {nnz_text}"
                      f"> {1.0 + diff:.2f}: {number_above}   "
                      f"< {1.0 - diff:.2f}: {number_below}   "
@@ -256,9 +270,8 @@ def create_gif(frame_paths, gif_path, gif_fps, ping_pong):
 
 def main():
     ap = cli.new_parser(__doc__)
-    ap.add_argument("data_dir", type=Path,
-                    help="material output directory written by "
-                         "non-normal/non-normal.py")
+    cli.add_h5_input(ap, help=f"analysis file written by "
+                              f"non-normal/non-normal.py, group {GROUP}")
     ap.add_argument("--ratio-y-scale", choices=["linear", "log"],
                     default="linear",
                     help="y-axis scale of the pointwise ratio panel")
@@ -274,27 +287,35 @@ def main():
                     help="render frames only")
     ap.add_argument("--clean-frames", action="store_true",
                     help="delete existing frames before rendering")
+    cli.add_output(ap, outdir_help="output directory "
+                                   "(default: the analysis file's directory)")
     args = ap.parse_args()
 
-    out_dir = args.data_dir.expanduser().resolve()
-    frame_dir = out_dir / "frames"
-    gif_path = out_dir / "non_normal_shift.gif"
+    h5path = Path(args.h5path).expanduser().resolve()
+    material = args.material or h5path.stem
+    out_dir = Path(args.outdir) if args.outdir else h5path.parent
+    frame_dir = out_dir / f"{material}_frames"
+    gif_path = out_dir / f"{material}_non_normal.gif"
 
-    ratio_matrix, logcum_matrix, indices, valid_rows, nnz_array = \
-        load_arrays(out_dir)
-    print(f"[input] {len(valid_rows)} valid rows of "
-          f"{ratio_matrix.shape[0]}, n = {ratio_matrix.shape[1]}")
+    # The datasets are read row by row inside create_frames, so the file stays
+    # open for the whole render.
+    with h5py.File(h5path, "r") as h5file:
+        ratio_matrix, logcum_matrix, indices, valid_rows, nnz_array, attrs = \
+            load_arrays(h5file)
+        print(f"[input] {len(valid_rows)} valid rows of "
+              f"{ratio_matrix.shape[0]}, n = {ratio_matrix.shape[1]}")
 
-    if args.clean_frames and frame_dir.exists():
-        for old_frame in frame_dir.glob("E_*.png"):
-            old_frame.unlink()
+        if args.clean_frames and frame_dir.exists():
+            for old_frame in frame_dir.glob("E_*.png"):
+                old_frame.unlink()
 
-    frame_paths = create_frames(frame_dir=frame_dir, indices=indices,
-                                ratio_matrix=ratio_matrix,
-                                logcum_matrix=logcum_matrix,
-                                nnz_array=nnz_array, valid_rows=valid_rows,
-                                diff=args.diff,
-                                ratio_y_scale=args.ratio_y_scale, dpi=args.dpi)
+        frame_paths = create_frames(frame_dir=frame_dir, indices=indices,
+                                    ratio_matrix=ratio_matrix,
+                                    logcum_matrix=logcum_matrix,
+                                    nnz_array=nnz_array,
+                                    valid_rows=valid_rows, diff=args.diff,
+                                    ratio_y_scale=args.ratio_y_scale,
+                                    dpi=args.dpi, attrs=attrs)
     print(f"[frames] created {len(frame_paths)} frames in {frame_dir}")
 
     if not args.skip_gif:

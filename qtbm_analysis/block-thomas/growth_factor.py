@@ -80,24 +80,24 @@ the solver did, from the recorded partition.
 
 Output
 ------
-    <outdir>/<material>_growth_factor.csv
+    <outdir>/<material>.h5, group growth_factor
 
 one row per (index, solver, dtype, norm), plus a per-index report on stdout.
-No figures are produced; see plotting/plot_growth_factor.py, which consumes the
-CSV.
+The file is opened in append mode and only that group is rewritten, so results
+of other analyses of the same material are preserved. No figures are produced;
+see plotting/plot_growth_factor.py, which consumes the group.
 
 Usage
 -----
-    python growth_factor.py /scratch/yimili/matrices/hdf5/graphene.h5 --idx 25
+    python growth_factor.py /scratch/yimili/matrices2/hdf5/graphene.h5 --idx 25
     python growth_factor.py .../graphene.h5 --start 1 --end 400
     python growth_factor.py .../graphene.h5 --start 1 --end 400 \
         --solvers block-thomas superlu umfpack --dtypes complex128
     python ../plotting/plot_growth_factor.py \
-        /scratch/yimili/block-thomas/graphene_growth_factor.csv
+        /scratch/yimili/error-analysis-block-thomas/graphene.h5
 """
 
 import argparse
-import csv
 import sys
 from pathlib import Path
 
@@ -111,11 +111,17 @@ from scipy.sparse.linalg import norm as spnorm
 
 import cli
 from cli import COMPLEX_DTYPES as DTYPES, FACTOR_SOLVERS as SOLVERS
-from factor_io import load_sparse_factor, load_blocks
+from factor_io import (load_sparse_factor, load_blocks, save_table,
+                       material_metadata)
 from solver_classes import extract_blocks_sparse, embed_block
 
 NORMS = ("1-norm", "inf-norm")
-DEFAULT_OUTDIR = "/scratch/yimili/block-thomas"
+DEFAULT_OUTDIR = cli.BLOCK_THOMAS_DIR
+
+# Top-level group of the analysis file this script writes.
+GROUP = "growth_factor"
+COLUMNS = ["idx", "solver", "dtype", "norm", "nA", "nL", "nU", "prod",
+           "LU_abs", "rho", "loose", "tight", "resid_rel"]
 
 
 # ---------------------------------------------------------------------------
@@ -473,18 +479,6 @@ def process_index(f, idx, solvers, dtypes, records):
 # ---------------------------------------------------------------------------
 # output
 # ---------------------------------------------------------------------------
-def write_csv(records, csv_path):
-    """Write the accumulated records; the schema consumed by plot_growth_factor."""
-    fields = ["idx", "solver", "dtype", "norm", "nA", "nL", "nU", "prod",
-              "LU_abs", "rho", "loose", "tight", "resid_rel"]
-    with open(csv_path, "w", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=fields)
-        w.writeheader()
-        for row in records:
-            w.writerow(row)
-    print(f"wrote {csv_path}  ({len(records)} rows)")
-
-
 def main():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap)
@@ -495,11 +489,11 @@ def main():
              "file are skipped")
     cli.add_dtypes(ap, choices=DTYPES, default=DTYPES,
                    help="precisions to analyse; those absent are skipped")
-    cli.add_output(ap, material=True, outdir_default=DEFAULT_OUTDIR,
-                   outdir_help=f"where to write the CSV "
-                               f"(default: {DEFAULT_OUTDIR})")
-    ap.add_argument("--no-csv", action="store_true",
-                    help="print the per-index report only, write no CSV")
+    cli.add_output(ap, material=True, outdir_default=str(DEFAULT_OUTDIR),
+                   outdir_help=f"directory holding the analysis file "
+                               f"<material>.h5 (default: {DEFAULT_OUTDIR})")
+    ap.add_argument("--no-save", action="store_true",
+                    help="print the per-index report only, write no HDF5")
     args = ap.parse_args()
 
     h5path = Path(args.h5path)
@@ -511,17 +505,20 @@ def main():
         for idx in indices:
             process_index(f, idx, args.solvers, args.dtypes, records)
 
-    if args.no_csv:
+    if args.no_save:
         return
     if not records:
         print("no metrics collected; nothing to write")
         return
 
-    outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-    csv_path = outdir / f"{material}_growth_factor.csv"
-    write_csv(records, csv_path)
-    print(f"Plot with: python ../plotting/plot_growth_factor.py {csv_path}")
+    out_path = cli.analysis_h5(args.outdir, material)
+    save_table(out_path, GROUP, records, columns=COLUMNS,
+               attrs=dict(material=material, source=str(h5path),
+                          solvers=list(args.solvers), dtypes=list(args.dtypes),
+                          norms=list(NORMS),
+                          **material_metadata(h5path)))
+    print(f"wrote {out_path}:/{GROUP}  ({len(records)} rows)")
+    print(f"Plot with: python ../plotting/plot_growth_factor.py {out_path}")
 
 
 if __name__ == "__main__":

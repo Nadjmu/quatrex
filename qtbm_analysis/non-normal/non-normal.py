@@ -29,33 +29,38 @@ logcum_k = 0 for every k. Weyl's majorant theorem makes logcum non-negative and
 non-decreasing in k, with logcum_n = 0 exactly, because both products equal
 |det M|. Its interior maximum is therefore a scalar measure of non-normality.
 
-Results are written into memory-mapped arrays as they are produced, so a run
-may be interrupted and continued with --resume; rows already marked valid are
-not recomputed. A dense SVD is O(n^3) in time and O(n^2) in memory, so the
+Each row is written to disk as soon as it is produced, so a run may be
+interrupted and continued with --resume; rows already marked valid are not
+recomputed. A dense SVD is O(n^3) in time and O(n^2) in memory, so the
 estimated requirement is checked against --max-estimated-svd-gb before each
 factorization unless --no-memory-check is given.
 
 Output
 ------
-Written to <outdir>/<material>/:
+    <outdir>/<material>.h5, group non_normality
 
-    ratio_matrix.npy                 (num_indices, n)  ratio_i per index
-    log_cumulative_ratio_matrix.npy  (num_indices, n)  logcum_k per index
-    singular_value_matrix.npy        (num_indices, n)  sigma_i
-    eigenvalue_magnitude_matrix.npy  (num_indices, n)  |lambda_i|
-    ratio_matrix_indices.npy         (num_indices,)    energy index per row
-    nnz_by_index.npy                 (num_indices,)    nnz of M, -1 if unknown
-    valid_rows.npy                   (num_indices,)    bool, row fully computed
-    singular_eigenvalue_ratios.csv   long-format table, only with --save-csv
+    indices                (P,)    energy index of each row
+    valid                  (P,)    bool, row fully computed
+    nnz                    (P,)    nnz of M, -1 if unknown
+    ratio                  (P, n)  ratio_i
+    log_cumulative_ratio   (P, n)  logcum_k
+    singular_values        (P, n)  sigma_i
+    eigenvalue_magnitudes  (P, n)  |lambda_i|
 
-No figures are produced; see plotting/plot_non_normal.py, which reads these
-arrays and renders the per-index frames and the animation.
+The row dimension P is the number of selected indices and is fixed when the
+group is created; a later run over a different index selection requires
+--overwrite. The file is opened in append mode and only this group is written,
+so results of other analyses of the same material are preserved.
+
+No figures are produced; see plotting/plot_non_normal.py, which reads this group
+and renders the per-index frames and the animation.
 
 Usage
 -----
-    python non-normal.py /scratch/yimili/matrices/hdf5/carbon-chain.h5 \
+    python non-normal.py /scratch/yimili/matrices2/hdf5/carbon-chain.h5 \
         --start 0 --end 401
-    python ../plotting/plot_non_normal.py /scratch/yimili/non-normal/carbon-chain
+    python ../plotting/plot_non_normal.py \
+        /scratch/yimili/non-normal/carbon-chain.h5
 """
 
 import argparse
@@ -101,6 +106,7 @@ from scipy.linalg import svd
 sys.path.insert(0, str((Path(__file__).resolve().parent / ".."
                         / "solvers").resolve()))
 import cli
+from factor_io import material_metadata
 
 
 # ============================================================
@@ -114,9 +120,9 @@ def parse_args():
     cli.add_index_selection(parser)
     cli.add_output(
         parser,
-        outdir_default="/scratch/yimili/non-normal",
-        outdir_help="root output directory; a per-material subdirectory is "
-                    "created inside it (default: /scratch/yimili/non-normal)")
+        outdir_default=str(cli.NON_NORMAL_DIR),
+        outdir_help=f"directory holding the analysis file <material>.h5 "
+                    f"(default: {cli.NON_NORMAL_DIR})")
 
     parser.add_argument(
         "--threads",
@@ -126,21 +132,15 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--save-csv",
-        action="store_true",
-        help="Also save a CSV. This can be large and slow.",
-    )
-
-    parser.add_argument(
         "--resume",
         action="store_true",
-        help="Resume existing output folder and skip rows already valid.",
+        help="Keep an existing group and skip rows already marked valid.",
     )
 
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Overwrite existing output arrays and frames.",
+        help="Delete an existing group and recompute every row.",
     )
 
     parser.add_argument(
@@ -258,80 +258,68 @@ def sparse_to_dense_for_svd(M):
     return A
 
 
-def open_or_create_memmap(path, shape, dtype, resume, overwrite):
-    path = Path(path)
+GROUP = "non_normality"
 
-    if path.exists() and resume and not overwrite:
-        arr = np.load(path, mmap_mode="r+")
-        if arr.shape != shape:
-            raise ValueError(
-                f"Existing {path} has shape {arr.shape}, expected {shape}. "
-                "Use --overwrite or a different output folder."
+# Per-rank matrices, all (P, n) float64. The keys are the dataset names.
+MATRIX_DATASETS = (
+    "ratio",
+    "log_cumulative_ratio",
+    "singular_values",
+    "eigenvalue_magnitudes",
+)
+
+
+def open_group(h5_file, indices, n, resume, overwrite, attrs):
+    """
+    Create or reopen the output group.
+
+    The row dimension is fixed by the index selection, so an existing group is
+    only reusable for the same selection; a mismatch is an error rather than a
+    silent partial overwrite. Rows are chunked individually, since they are
+    written and read one at a time.
+
+    Returns the group.
+    """
+    if GROUP in h5_file and overwrite:
+        del h5_file[GROUP]
+
+    if GROUP in h5_file:
+        if not resume:
+            raise FileExistsError(
+                f"group '{GROUP}' already exists in {h5_file.filename}. "
+                "Use --resume or --overwrite."
             )
-        return arr
+        group = h5_file[GROUP]
+        existing = group["indices"][:]
+        if not np.array_equal(existing, np.asarray(indices, dtype=np.int64)):
+            raise ValueError(
+                "The existing group was written for a different index "
+                "selection. Use --overwrite or a different --outdir."
+            )
+        if group["ratio"].shape != (len(indices), n):
+            raise ValueError(
+                f"Existing datasets have shape {group['ratio'].shape}, "
+                f"expected {(len(indices), n)}. Use --overwrite."
+            )
+        return group
 
-    if path.exists() and not overwrite and not resume:
-        raise FileExistsError(
-            f"{path} already exists. Use --resume or --overwrite."
-        )
-
-    return np.lib.format.open_memmap(
-        path,
-        mode="w+",
-        dtype=dtype,
-        shape=shape,
-    )
-
-
-def finite_row(arr, row):
-    return bool(np.all(np.isfinite(arr[row, :])))
+    group = h5_file.create_group(GROUP)
+    for key, value in attrs.items():
+        group.attrs[key] = value
+    group.create_dataset("indices", data=np.asarray(indices, dtype=np.int64))
+    group.create_dataset("valid", shape=(len(indices),), dtype=bool,
+                         fillvalue=False)
+    group.create_dataset("nnz", shape=(len(indices),), dtype=np.int64,
+                         fillvalue=-1)
+    for name in MATRIX_DATASETS:
+        group.create_dataset(name, shape=(len(indices), n), dtype=np.float64,
+                             chunks=(1, n), compression="gzip",
+                             fillvalue=np.nan)
+    return group
 
 
-def save_csv(
-    csv_path,
-    indices,
-    ratio_matrix,
-    logcum_matrix,
-    singular_matrix,
-    eigmag_matrix,
-    valid_rows,
-):
-    print("[csv] writing CSV; this can be slow and large")
-
-    with open(csv_path, "w", newline="") as csv_file:
-        import csv
-
-        writer = csv.writer(csv_file)
-
-        writer.writerow(
-            [
-                "matrix_index",
-                "group_name",
-                "rank",
-                "singular_value",
-                "eigenvalue_magnitude",
-                "ratio_sigma_over_abs_lambda",
-                "log_cumulative_ratio",
-            ]
-        )
-
-        n = ratio_matrix.shape[1]
-
-        for row in valid_rows:
-            index = int(indices[row])
-
-            for rank in range(n):
-                writer.writerow(
-                    [
-                        index,
-                        f"E_{index}",
-                        rank + 1,
-                        singular_matrix[row, rank],
-                        eigmag_matrix[row, rank],
-                        ratio_matrix[row, rank],
-                        logcum_matrix[row, rank],
-                    ]
-                )
+def finite_row(dataset, row):
+    return bool(np.all(np.isfinite(dataset[row, :])))
 
 
 # ============================================================
@@ -347,41 +335,15 @@ def main():
         raise FileNotFoundError(f"HDF5 file not found: {h5_path}")
 
     material_name = args.material or h5_path.stem
-
-    out_root = Path(args.outdir)
-    out_dir = out_root / material_name
-
-    ratio_path = out_dir / "ratio_matrix.npy"
-    logcum_path = out_dir / "log_cumulative_ratio_matrix.npy"
-    singular_path = out_dir / "singular_value_matrix.npy"
-    eigmag_path = out_dir / "eigenvalue_magnitude_matrix.npy"
-    index_path = out_dir / "ratio_matrix_indices.npy"
-    nnz_path = out_dir / "nnz_by_index.npy"
-    valid_path = out_dir / "valid_rows.npy"
-    csv_path = out_dir / "singular_eigenvalue_ratios.csv"
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    if args.overwrite:
-        for path in [
-            ratio_path,
-            logcum_path,
-            singular_path,
-            eigmag_path,
-            index_path,
-            nnz_path,
-            valid_path,
-            csv_path,
-        ]:
-            if path.exists():
-                path.unlink()
+    out_path = cli.analysis_h5(args.outdir, material_name)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     print("=" * 72)
     print("Non-normal SVD pipeline")
     print("=" * 72)
     print(f"HDF5 path:       {h5_path}")
     print(f"Material name:   {material_name}")
-    print(f"Output folder:   {out_dir}")
+    print(f"Output file:     {out_path}:/{GROUP}")
     print(f"Threads:         {args.threads}")
 
     print(f"Resume:          {args.resume}")
@@ -431,75 +393,14 @@ def main():
     print(f"Last index:        {selected_indices[-1]}")
     print(f"Matrix size:       {n}")
 
-    # --------------------------------------------------------
-    # Create/load disk arrays
-    # --------------------------------------------------------
-
-    shape = (num_indices, n)
-
-    ratio_matrix = open_or_create_memmap(
-        ratio_path,
-        shape=shape,
-        dtype=np.float64,
-        resume=args.resume,
-        overwrite=args.overwrite,
+    group_attrs = dict(
+        material=material_name,
+        source=str(h5_path),
+        n_indices=num_indices,
+        matrix_size=n,
+        threads=args.threads,
+        **material_metadata(h5_path),
     )
-
-    logcum_matrix = open_or_create_memmap(
-        logcum_path,
-        shape=shape,
-        dtype=np.float64,
-        resume=args.resume,
-        overwrite=args.overwrite,
-    )
-
-    singular_matrix = open_or_create_memmap(
-        singular_path,
-        shape=shape,
-        dtype=np.float64,
-        resume=args.resume,
-        overwrite=args.overwrite,
-    )
-
-    eigmag_matrix = open_or_create_memmap(
-        eigmag_path,
-        shape=shape,
-        dtype=np.float64,
-        resume=args.resume,
-        overwrite=args.overwrite,
-    )
-
-    indices_array = np.asarray(selected_indices, dtype=np.int64)
-
-    if index_path.exists() and args.resume and not args.overwrite:
-        existing_indices = np.load(index_path)
-        if not np.array_equal(existing_indices, indices_array):
-            raise ValueError(
-                "Existing index file does not match selected indices. "
-                "Use --overwrite or a different output folder."
-            )
-    else:
-        np.save(index_path, indices_array)
-
-    if nnz_path.exists() and args.resume and not args.overwrite:
-        nnz_array = np.load(nnz_path)
-        if nnz_array.shape != (num_indices,):
-            raise ValueError(
-                f"Existing nnz array shape {nnz_array.shape}, "
-                f"expected {(num_indices,)}."
-            )
-    else:
-        nnz_array = np.full(num_indices, -1, dtype=np.int64)
-
-    if valid_path.exists() and args.resume and not args.overwrite:
-        valid_rows_bool = np.load(valid_path)
-        if valid_rows_bool.shape != (num_indices,):
-            raise ValueError(
-                f"Existing valid rows shape {valid_rows_bool.shape}, "
-                f"expected {(num_indices,)}."
-            )
-    else:
-        valid_rows_bool = np.zeros(num_indices, dtype=bool)
 
     # --------------------------------------------------------
     # Compute SVDs
@@ -507,17 +408,33 @@ def main():
 
     start_time = time.time()
 
-    with h5py.File(h5_path, "r") as h5_file:
+    with h5py.File(h5_path, "r") as h5_file, h5py.File(out_path, "a") as out_file:
+        group = open_group(
+            out_file,
+            indices=selected_indices,
+            n=n,
+            resume=args.resume,
+            overwrite=args.overwrite,
+            attrs=group_attrs,
+        )
+
+        ratio_matrix = group["ratio"]
+        logcum_matrix = group["log_cumulative_ratio"]
+        singular_matrix = group["singular_values"]
+        eigmag_matrix = group["eigenvalue_magnitudes"]
+        valid_dataset = group["valid"]
+        nnz_dataset = group["nnz"]
+
         for row, index in enumerate(selected_indices):
             group_name = f"E_{index}"
 
-            if args.resume and valid_rows_bool[row]:
+            if args.resume and valid_dataset[row]:
                 if finite_row(ratio_matrix, row):
                     print(f"[skip] {group_name}: already valid")
                     continue
                 else:
                     print(f"[resume warning] {group_name}: marked valid but row not finite; recomputing")
-                    valid_rows_bool[row] = False
+                    valid_dataset[row] = False
 
             M = None
             A = None
@@ -572,7 +489,7 @@ def main():
                             "Increase --max-estimated-svd-gb if your node has enough RAM."
                         )
 
-                nnz_array[row] = M.nnz
+                nnz_dataset[row] = M.nnz
 
                 print(
                     f"[{row + 1:>4}/{num_indices}] {group_name}: "
@@ -625,15 +542,8 @@ def main():
                 singular_matrix[row, :] = singular_values
                 eigmag_matrix[row, :] = eigmag
 
-                valid_rows_bool[row] = True
-
-                ratio_matrix.flush()
-                logcum_matrix.flush()
-                singular_matrix.flush()
-                eigmag_matrix.flush()
-
-                np.save(nnz_path, nnz_array)
-                np.save(valid_path, valid_rows_bool)
+                valid_dataset[row] = True
+                out_file.flush()
 
                 print(
                     f"      sigma_max={singular_values[0]:.6e}, "
@@ -649,15 +559,8 @@ def main():
                 logcum_matrix[row, :] = np.nan
                 singular_matrix[row, :] = np.nan
                 eigmag_matrix[row, :] = np.nan
-                valid_rows_bool[row] = False
-
-                ratio_matrix.flush()
-                logcum_matrix.flush()
-                singular_matrix.flush()
-                eigmag_matrix.flush()
-
-                np.save(nnz_path, nnz_array)
-                np.save(valid_path, valid_rows_bool)
+                valid_dataset[row] = False
+                out_file.flush()
 
             finally:
                 # Critical cleanup after each matrix.
@@ -670,60 +573,25 @@ def main():
                 del M
                 gc.collect()
 
-    elapsed = time.time() - start_time
+        num_valid = int(np.count_nonzero(valid_dataset[:]))
 
-    valid_rows = np.where(valid_rows_bool)[0]
+    elapsed = time.time() - start_time
 
     print("=" * 72)
     print(f"SVD pass complete in {elapsed / 3600:.2f} hours")
-    print(f"Valid rows: {len(valid_rows)} / {num_indices}")
+    print(f"Valid rows: {num_valid} / {num_indices}")
     print("=" * 72)
 
-    if len(valid_rows) == 0:
+    if num_valid == 0:
         raise RuntimeError("No valid rows were computed.")
 
-    # --------------------------------------------------------
-    # Optional CSV
-    # --------------------------------------------------------
-
-    if args.save_csv:
-        save_csv(
-            csv_path=csv_path,
-            indices=indices_array,
-            ratio_matrix=ratio_matrix,
-            logcum_matrix=logcum_matrix,
-            singular_matrix=singular_matrix,
-            eigmag_matrix=eigmag_matrix,
-            valid_rows=valid_rows,
-        )
-
-    # --------------------------------------------------------
-    # Final summary
-    # --------------------------------------------------------
-
     print()
-    print("Done.")
-    print()
-    print("Output folder:")
-    print(out_dir)
-    print()
-    print("Saved arrays:")
-    print(ratio_path)
-    print(logcum_path)
-    print(singular_path)
-    print(eigmag_path)
-    print(index_path)
-    print(nnz_path)
-    print(valid_path)
-
+    print(f"wrote {out_path}:/{GROUP}")
+    print("datasets: indices, valid, nnz, "
+          + ", ".join(MATRIX_DATASETS))
     print()
     print("Render the frames and the animation with:")
-    print(f"  python ../plotting/plot_non_normal.py {out_dir}")
-
-    if args.save_csv:
-        print()
-        print("Saved CSV:")
-        print(csv_path)
+    print(f"  python ../plotting/plot_non_normal.py {out_path}")
 
 
 if __name__ == "__main__":

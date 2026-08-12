@@ -44,7 +44,7 @@ run_benchmarks.MATERIAL_BLOCKS.
 
 Usage
 -----
-    python determine_custom_block_size.py /scratch/yimili/matrices/hdf5/graphene.h5
+    python determine_custom_block_size.py /scratch/yimili/matrices2/hdf5/graphene.h5
     python determine_custom_block_size.py .../graphene.h5 --idx 25
     python determine_custom_block_size.py .../M_E_0.npz
     python determine_custom_block_size.py .../graphene.h5 --compare-block-size 416

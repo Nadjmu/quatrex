@@ -2,8 +2,8 @@
 
 Post-hoc analysis. These scripts **read** factors that
 [`../run_bench/`](../run_bench/) has already written into the material HDF5
-files; none of them solves a system or modifies the file. They write CSV, never
-figures; the corresponding figures are produced by
+files; none of them solves a system or modifies that file. They write an
+analysis HDF5 file, never figures; the corresponding figures are produced by
 [`../plotting/`](../plotting/).
 
 | Script | Question addressed |
@@ -99,19 +99,23 @@ list, and both are indexed identically.
 ### 1.5 Usage
 
 ```bash
-python growth_factor.py /scratch/yimili/matrices/hdf5/graphene.h5 --idx 25
+python growth_factor.py /scratch/yimili/matrices2/hdf5/graphene.h5 --idx 25
 python growth_factor.py .../graphene.h5 --start 1 --end 400
 python growth_factor.py .../graphene.h5 --start 1 --end 400 \
     --solvers block-thomas superlu umfpack --dtypes complex128
 
 python ../plotting/plot_growth_factor.py \
-    /scratch/yimili/block-thomas/graphene_growth_factor.csv
+    /scratch/yimili/error-analysis-block-thomas/graphene.h5
 ```
 
-Writes `<material>_growth_factor.csv` to `--outdir`, default
-`/scratch/yimili/block-thomas`. `--no-csv` prints the per-index report only.
+Writes the `growth_factor` group of `<outdir>/<material>.h5`, with `--outdir`
+defaulting to `cli.BLOCK_THOMAS_DIR`. The file is opened in append mode and
+only that group is rewritten, so the `fp16_sweep` group written by
+[`../run_bench/sweep_fp16.py`](../run_bench/sweep_fp16.py) into the same file
+is preserved. `--no-save` prints the per-index report only.
+
 Solver names are the canonical ones; the stored HDF5 group is resolved
-internally, so the on-disk layout is unchanged.
+internally, so the on-disk layout of the material file is unchanged.
 
 Solvers and precisions absent from the file are reported and skipped, so
 running with the default `--solvers` on a file that contains only Block Thomas
@@ -143,7 +147,8 @@ cost that determines whether a custom partition is worthwhile — and
 **`offband_nnz`**, exiting with status 1 if that is nonzero.
 `--compare-block-size`
 reports the same figures for a uniform partition and their storage ratio.
-`--emit-python` prints a line to paste into `run_benchmarks.MATERIAL_BLOCKS`.
+`--emit-python` prints a line to paste into the `blocks` field of the material's
+entry in `cli.MATERIALS`.
 
 Two properties of the detector, both benign for QTBM matrices, must be kept in
 mind. It looks **forward only**, so its partition is guaranteed block

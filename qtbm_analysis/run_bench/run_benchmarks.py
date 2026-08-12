@@ -39,7 +39,7 @@ preserved. No figures are produced here; see plotting/plot_speedup.py.
 Usage
 -----
     python run_benchmarks.py
-    python ../plotting/plot_speedup.py /scratch/yimili/matrices/hdf5/graphene.h5
+    python ../plotting/plot_speedup.py /scratch/yimili/matrices2/hdf5/graphene.h5
 """
 
 import sys
@@ -53,24 +53,24 @@ import numpy as np
 import scipy.sparse as sp
 import h5py
 
+import cli
 from bench_all import bench, DEFAULT_SOLVERS
 from solver_classes import block_sizes_from_matrix, offband_nnz
 
-HDF5_DIR = Path("/scratch/yimili/matrices/hdf5")
+HDF5_DIR = cli.HDF5_DIR
 
-# Uniform block size per material, used when BLOCK_MODE == "uniform".
-MATERIAL_BS = {
-    "carbon-chain": 104,
-    "carbon-nanotube": 32,
-    "graphene": 416,
-    "si-bulk": 256,
-}
+# Materials to benchmark, and their block sizes. Both come from cli.MATERIALS,
+# which is the one place a per-material property is edited; only the materials
+# that declare a block size can be partitioned, so only those are listed.
+MATERIAL_BS = {name: mat.block_size for name, mat in cli.MATERIALS.items()
+               if mat.block_size is not None}
 
-# Custom non-uniform partitions per material, used when BLOCK_MODE == "custom".
-# Generate an entry with
+# Custom non-uniform partitions per material, used when BLOCK_MODE == "custom",
+# taken from the `blocks` field of cli.MATERIALS. Generate an entry with
 #     python ../block-thomas/determine_custom_block_size.py <material>.h5 --emit-python
-# and paste the printed line here.
-MATERIAL_BLOCKS = {}
+# and set it there.
+MATERIAL_BLOCKS = {name: mat.blocks for name, mat in cli.MATERIALS.items()
+                   if mat.blocks is not None}
 
 # Source of the Block Thomas partition:
 #   "uniform"  MATERIAL_BS

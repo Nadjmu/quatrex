@@ -1,5 +1,10 @@
 """
-HDF5 persistence of solver factors, solutions and metadata.
+HDF5 persistence of solver factors, solutions, metadata and analysis tables.
+
+Two kinds of file are written here. The savers write solver output into the
+material's own HDF5 file, described below. save_table and load_table write the
+result tables of the stage-4 analysis scripts into a separate file per material
+per analysis directory; see "Analysis tables" at the end of this docstring.
 
 Layout
 ------
@@ -60,8 +65,29 @@ Also recorded as a group attribute:
 
     superlu   Pr A Pc == L U                  Pr from argsort(perm_r)
     umfpack   Pr diag(1/R) A Pc == L U        Pr from argsort(perm_r)
+
+Analysis tables
+---------------
+Every stage-4 script records its results as a long-format table: one row per
+measurement, one column per recorded quantity. Such a table is stored as one
+group holding one 1-D dataset per column, all of the same length, with the run
+configuration attached to the group as attributes:
+
+    <analysis dir>/<material>.h5
+    └── <analysis>/          one group per script, e.g. growth_factor
+        ├── attrs            material, source, n_rows, columns, run parameters
+        ├── idx              int64
+        ├── solver, dtype    variable-length UTF-8
+        └── ...              float64
+
+The file is opened in append mode and only the named group is replaced, so
+several analyses of one material write into the same file without interfering.
+Read a table back with load_table, which returns one array per column.
 """
 
+from pathlib import Path
+
+import h5py
 import numpy as np
 import scipy.sparse as sp
 
@@ -414,6 +440,170 @@ def diagnose_lu_convention(A, L, U, perm_r, perm_c, R=None, do_recip=None):
     for residual, desc in results[:3]:
         print(f"    {residual:.3e}  {desc}")
     return best_desc, best_residual
+
+
+# ---------------------------------------------------------------------------
+# Analysis tables
+# ---------------------------------------------------------------------------
+STRING_DTYPE = h5py.string_dtype(encoding="utf-8")
+
+
+def _column_array(values):
+    """
+    One table column as a NumPy array, with the dtype implied by its values.
+
+    Strings become variable-length UTF-8, integers int64, everything else
+    float64 with None mapped to NaN. Booleans are stored as integers, since a
+    column of 0 and 1 is what the plotting scripts compare against.
+    """
+    present = [v for v in values if v is not None]
+    if present and all(isinstance(v, str) for v in present):
+        return np.array([("" if v is None else v) for v in values],
+                        dtype=object), STRING_DTYPE
+    if present and all(isinstance(v, (bool, np.bool_)) for v in present):
+        return np.array([(-1 if v is None else int(v)) for v in values],
+                        dtype=np.int64), None
+    if present and all(isinstance(v, (int, np.integer)) for v in present):
+        return np.array([(-1 if v is None else int(v)) for v in values],
+                        dtype=np.int64), None
+    return np.array([(np.nan if v is None else float(v)) for v in values],
+                    dtype=np.float64), None
+
+
+def material_metadata(h5path):
+    """
+    Band edge and grid metadata of a material file, as a dict of attributes.
+
+    Copied by every stage-4 script into the group it writes, so that a figure
+    can mark the band edges and convert an energy index to eV without opening
+    the material file. Returns an empty dict when the file has no metadata
+    group, which is the case for files written before the edges were recorded.
+
+    Only scalars are copied. The grid is described by `grid_energy_min` and
+    `resolution` rather than by the array of energies, which fixes the mapping
+    between an energy index and eV,
+
+        energy(i) = grid_energy_min + resolution * i,
+
+    without bounding what a finer grid may cost: an HDF5 attribute has a size
+    limit that an array of energies would eventually reach.
+    """
+    path = Path(h5path)
+    if not path.exists():
+        return {}
+    out = {}
+    with h5py.File(path, "r") as f:
+        meta = f.get("metadata")
+        if meta is None:
+            return {}
+        for key in ("valence_band_edge", "conduction_band_edge", "band_gap",
+                    "grid_points", "resolution", "grid_energy_min"):
+            if key in meta.attrs:
+                out[key] = meta.attrs[key]
+    return out
+
+
+def _attr_value(value):
+    """
+    One attribute in a form h5py accepts.
+
+    A list of strings is passed through as a list: HDF5 has no fixed-width
+    Unicode type, so the NumPy array such a list converts to cannot be stored,
+    while a list of str is written as variable-length UTF-8.
+    """
+    if isinstance(value, (str, bytes)):
+        return value
+    if isinstance(value, (list, tuple)) and value and \
+            all(isinstance(v, str) for v in value):
+        return list(value)
+    return np.asarray(value)
+
+
+def save_table(path, group, rows, columns=None, attrs=None):
+    """
+    Write one long-format result table into an analysis HDF5 file.
+
+    Parameters
+    ----------
+    path    : the analysis file, <analysis dir>/<material>.h5. Created if
+              absent, appended to otherwise; the parent directory is created.
+    group   : top-level group name, one per analysis script. It is deleted and
+              rewritten, so re-running a script overwrites its own results and
+              leaves every other group in the file untouched.
+    rows    : list of dicts, one per measurement.
+    columns : column order. Defaults to the keys of the first row.
+    attrs   : run configuration to attach to the group. Values that are not
+              scalars or strings are stored as arrays; None values are skipped.
+
+    Returns the path written.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    columns = list(columns) if columns is not None else (
+        list(rows[0]) if rows else [])
+
+    with h5py.File(path, "a") as f:
+        g = _fresh_group(f, group)
+        g.attrs["n_rows"] = len(rows)
+        g.attrs["columns"] = [str(c) for c in columns] if columns \
+            else np.empty(0, dtype=STRING_DTYPE)
+        for key, value in (attrs or {}).items():
+            if value is None:
+                continue
+            g.attrs[key] = _attr_value(value)
+        for name in columns:
+            data, dtype = _column_array([r.get(name) for r in rows])
+            if len(rows):
+                g.create_dataset(name, data=data, dtype=dtype,
+                                 compression="gzip")
+            else:
+                g.create_dataset(name, shape=(0,),
+                                 dtype=dtype or np.float64)
+    return path
+
+
+def load_table(path, group):
+    """
+    Read a table written by save_table.
+
+    Returns (columns, attrs) where columns maps each column name to a 1-D
+    array, strings decoded to str, and attrs is the group's attribute dict.
+    Raises SystemExit if the file or the group is absent, since that means the
+    analysis script that produces them has not been run.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise SystemExit(f"{path} does not exist; run the analysis script "
+                         f"that writes the '{group}' group first")
+    with h5py.File(path, "r") as f:
+        if group not in f:
+            raise SystemExit(f"{path} has no '{group}' group; run the analysis "
+                             f"script that writes it first")
+        g = f[group]
+        names = [str(c) for c in g.attrs["columns"]] if "columns" in g.attrs \
+            else sorted(g.keys())
+        columns = {}
+        for name in names:
+            values = g[name][:]
+            if h5py.check_string_dtype(g[name].dtype):
+                values = np.array([v.decode() if isinstance(v, bytes) else str(v)
+                                   for v in values])
+            columns[name] = values
+        attrs = {k: (v.decode() if isinstance(v, bytes) else v)
+                 for k, v in g.attrs.items()}
+    return columns, attrs
+
+
+def table_rows(columns):
+    """
+    A table returned by load_table as a list of per-row dicts.
+
+    Convenient where a script filters or groups rows rather than plotting
+    whole columns; the arrays themselves stay available for the latter.
+    """
+    names = list(columns)
+    length = len(columns[names[0]]) if names else 0
+    return [{name: columns[name][i] for name in names} for i in range(length)]
 
 
 def load_and_verify(h5group, A, solver="superlu"):

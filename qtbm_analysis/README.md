@@ -41,7 +41,12 @@ roundoff `u` cannot resolve the solution at all once `kappa_2 u >= 1`.
 Everything is organised around **one HDF5 file per material**. Solver results
 are appended into that same file rather than into a separate one, so a matrix
 and every factorization of it are stored together, and no analysis script ever
-has to correlate two files by index.
+has to correlate two files by index. The same convention is applied one level
+further out: each analysis directory holds one HDF5 file per material, into
+which every analysis of that material writes its own top-level group.
+
+**HDF5 is the only result format.** No script writes CSV, and none writes a
+`.npy` result array.
 
 ### 2.1 Stages
 
@@ -50,14 +55,16 @@ has to correlate two files by index.
            QTBM example directory       main3.py  /  main3_gpu.py
                     │
                     │  M(E), Sigma(E), rhs per energy index, as .npz / .npy
+                    │  into  matrices2/<material>/
                     ▼
   STAGE 2  CONSOLIDATE              make_hdf5.py
                     │
-                    │  one <material>.h5 per material
+                    │  one <material>.h5 into  matrices2/hdf5/
                     ▼
         ┌────────────────────────────────────────────────────┐
-        │  <material>.h5                                     │
+        │  matrices2/hdf5/<material>.h5                      │
         │    metadata/indices, metadata/energies             │
+        │    metadata attrs: band edges, grid resolution     │
         │    global/condition_full_svd, ...                  │
         │    E_<idx>/M, E_<idx>/Sigma, E_<idx>/rhs           │
         └────────────────────────────────────────────────────┘
@@ -73,29 +80,34 @@ has to correlate two files by index.
                     │    E_<idx>/blockthomas_inv/<dtype>/ inverses     │
                     │    E_<idx>/mumps|cudss|gmres*/<dtype>/  x, times │
                     ▼                                                  │
-  STAGE 4  ANALYSE (reads only, writes CSV)                            │
+  STAGE 4  ANALYSE (reads the material file, writes an analysis file)  │
                     │                                                  │
-    block-thomas/growth_factor.py ──────► <material>_growth_factor.csv │
-    run_bench/sweep_fp16.py ────────────► <material>_metrics.csv ◄─────┘
-    mixed_prec_ir/c32_gmres_ir.py ─────► <material>_fp16_gmres_ir.csv
-    non-normal/non-normal.py ──────────► ratio_matrix.npy, ...
+    block-thomas/growth_factor.py ─► error-analysis-block-thomas/      │
+                                       <material>.h5 :/growth_factor   │
+    run_bench/sweep_fp16.py ───────► error-analysis-block-thomas/ ◄────┘
+                                       <material>.h5 :/fp16_sweep
+    mixed_prec_ir/c32_gmres_ir.py ─► mixed-precision-IR/
+                                       <material>.h5 :/gmres_ir
+    non-normal/non-normal.py ──────► non-normal/
+                                       <material>.h5 :/non_normality
                     │
                     ▼
-  STAGE 5  PLOT (reads CSV / HDF5, writes figures only)
-                    plotting/plot_speedup.py
+  STAGE 5  PLOT (reads HDF5, writes figures only, into the same directory)
                     plotting/plot_growth_factor.py
                     plotting/plot_fp16_accuracy.py
+                    plotting/plot_speedup.py
                     plotting/plot_mixed_prec_ir.py
                     plotting/plot_non_normal.py
                     plotting/plot_qtbm_spectra.py
+                    plotting/bandstructure.py
 ```
 
 ### 2.2 The invariant
 
 **Computation and visualization are strictly separated.** No script that
 solves, factorizes or measures anything imports matplotlib. Every quantity a
-figure displays is first written to a CSV or an HDF5 dataset, and every figure
-is produced by a script in `plotting/` that reads that artefact and computes
+figure displays is first written to an HDF5 dataset, and every figure is
+produced by a script in `plotting/` that reads that dataset and computes
 nothing.
 
 This has three consequences worth stating explicitly. A sweep that takes hours
@@ -103,40 +115,133 @@ on the cluster is never repeated in order to change an axis label. The numbers
 behind every figure exist as a file that can be inspected, cited or replotted.
 And a plotting change cannot alter a measurement.
 
-### 2.3 Complete worked example
+Each figure is written to the directory holding the data it was drawn from, so
+a result and its figure are never separated.
+
+### 2.3 Directories on the cluster
+
+Every default path in the project is defined in `solvers/cli.py` and nowhere
+else. The analysis directories are named after the thesis chapter whose figures
+they hold, so the mapping from a result file to the text that uses it is direct.
+
+| Constant | Path | Holds |
+|---|---|---|
+| `cli.EXAMPLES_DIR` | `/scratch/yimili/examples` | QTBM/DFT inputs, the stage 1 source |
+| `cli.EXPORT_DIR` | `/scratch/yimili/matrices2` | stage 1 output, one directory per material |
+| `cli.HDF5_DIR` | `/scratch/yimili/matrices2/hdf5` | stage 2 and 3, `<material>.h5` |
+| `cli.BLOCK_THOMAS_DIR` | `/scratch/yimili/error-analysis-block-thomas` | growth factor, fp16 sweep, solver timings |
+| `cli.CONDITION_DIR` | `/scratch/yimili/condition-est` | conditioning and singular-value figures |
+| `cli.NON_NORMAL_DIR` | `/scratch/yimili/non-normal` | non-normality sweep, frames, animation |
+| `cli.MIXED_PREC_DIR` | `/scratch/yimili/mixed-precision-IR` | iterative refinement sweeps |
+| `cli.MATERIALS_DIR` | `/scratch/yimili/materials` | contact band structures, one directory per material |
+| `cli.RANDOM_DIR` | `/scratch/yimili/random` | synthetic test matrices |
+
+`cli.material_h5(material)` gives the stage-3 file and
+`cli.analysis_h5(outdir, material)` the stage-4 file. Setting the environment
+variable `QTBM_SCRATCH` relocates the whole tree, which is how the pipeline is
+exercised outside the cluster; every path above derives from it.
+
+Every script takes `--outdir` to override its own default.
+
+`EXPORT_DIR` points at `matrices2`, the current export. An earlier export under
+a different directory is read by passing it explicitly, for example
+`python make_hdf5.py /scratch/yimili/matrices --all`; nothing in the pipeline
+writes to it.
+
+### 2.4 Materials and the energy grid
+
+`cli.MATERIALS` is the one place a per-material property is edited. Each entry
+carries the band edges, the Block Thomas block size, the input directories and
+the contact band structure parameters, and every stage reads them from there:
+`main3.py` positions the energy sweep on the conduction edge, `make_hdf5.py`
+records both edges in the material file, `run_benchmarks.py` takes the block
+size, and `plotting/bandstructure.py` takes the inputs and the mid-gap energy.
+
+```python
+"graphene": Material(
+    inputs=EXAMPLES_DIR / "graphene/inputs",
+    block_size=416,
+    valence_band_edge=None,          # set once determined
+    conduction_band_edge=-2.4,
+    grid=EnergyGrid(start=-3.405, end=-1.400, resolution=0.005),
+    mid_gap_energy=0.5,
+),
+```
+
+A band edge left at `None` is not fatal: stage 1 falls back to the value in the
+QTBM configuration, and stage 2 records only the edges it has. Run
+`plotting/bandstructure.py <material>` to determine them; it reports both edges
+and the gap.
+
+**The energy sweep is a first energy, a last energy and a step, all in eV.** It
+is not derived from the band edges, and the number of energy indices is stated
+nowhere; it follows from the three numbers:
+
+| `grid` | Indices |
+|---|---|
+| `EnergyGrid(start=-3.405, end=-1.400, resolution=0.005)` | 402, the present setting |
+| `EnergyGrid(start=-3.405, end=-1.400, resolution=0.0025)` | 803 |
+| `EnergyGrid(start=-3.000, end=-2.000, resolution=0.005)` | 201 |
+
+Changing it is the only edit required: stage 1 exports that many matrices,
+stage 2 discovers how many were exported rather than assuming a count, and
+every later stage reads the index list from `metadata/indices`. `main3.py`
+additionally has `EXPORT_STRIDE`, which subsamples the grid for a quick pass
+without changing the grid itself.
+
+`end` is included only if it is an exact number of steps above `start`;
+otherwise the grid stops at the last sample below it, and `EnergyGrid.last`
+reports that sample. `EnergyGrid.around(centre, half_window, resolution)`
+constructs a grid centred on a band edge, for a sweep more naturally described
+that way; it stores the same three numbers.
+
+Stage 1 saves the grid it assembled the matrices from, and stage 2 reads that
+array back rather than recomputing it, so the energies recorded against an
+index cannot disagree with the matrix stored under it. The registry is
+consulted at stage 2 only for exports that predate that file.
+
+Note that a sweep positioned on the conduction edge will usually not contain
+the valence edge, which is then absent from the figures; widen `start` to
+include it.
+
+### 2.5 Complete worked example
 
 ```bash
 # Stage 1-2: export and consolidate. Cluster-side; needs the QTBM examples.
 python export_qtbm_systems.py <example> --mode full --energy-index 0
-python make_hdf5.py /scratch/yimili/matrices2 --material graphene
+python make_hdf5.py --all
 
 # Stage 3: solve every index with every solver, both precisions.
-#          MUTATES graphene.h5 in place.
+#          MUTATES matrices2/hdf5/graphene.h5 in place.
 cd run_bench && python run_benchmarks.py
 
-# Stage 4: analysis. Read-only with respect to the HDF5 file.
+# Stage 4: analysis. Read-only with respect to the material file.
 cd ../block-thomas
-python growth_factor.py /scratch/yimili/matrices/hdf5/graphene.h5 \
+python growth_factor.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
     --start 1 --end 400
 cd ../run_bench
-python sweep_fp16.py /scratch/yimili/matrices/hdf5/graphene.h5 \
+python sweep_fp16.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
     --start 0 --end 401 --block-size 416
 cd ../mixed_prec_ir
-python c32_gmres_ir.py /scratch/yimili/matrices/hdf5/graphene.h5 \
-    --start 0 --end 401 --block-size 416 --outdir plots
+python c32_gmres_ir.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
+    --start 0 --end 401 --block-size 416
+cd ../non-normal
+python non-normal.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
+    --start 0 --end 401
 
-# Stage 5: figures.
+# Stage 5: figures, each written beside the data it was drawn from.
 cd ../plotting
-python plot_speedup.py        /scratch/yimili/matrices/hdf5/graphene.h5
-python plot_growth_factor.py  /scratch/yimili/block-thomas/graphene_growth_factor.csv
-python plot_fp16_accuracy.py  ../run_bench/plots/graphene_metrics.csv
-python plot_mixed_prec_ir.py  ../mixed_prec_ir/plots/graphene_fp16_gmres_ir.csv
+python plot_speedup.py        /scratch/yimili/matrices2/hdf5/graphene.h5
+python plot_growth_factor.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
+python plot_fp16_accuracy.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
+python plot_mixed_prec_ir.py  /scratch/yimili/mixed-precision-IR/graphene.h5
+python plot_non_normal.py     /scratch/yimili/non-normal/graphene.h5
 
 # Tests: synthetic data only, no cluster files required.
 cd ../solvers && python test_pipeline.py
 ```
 
-### 2.4 Ordering constraints
+### 2.6 Ordering constraints
 
 | Stage | Requires | Reason |
 |---|---|---|
@@ -144,10 +249,32 @@ cd ../solvers && python test_pipeline.py
 | `growth_factor.py` | stage 3 complete | reads the stored factors |
 | `sweep_fp16.py` | stage 3 complete | reads `blockthomas/complex128/x` as its reference |
 | `plot_speedup.py` | stage 3 complete | reads the stored timings |
-| every other `plot_*.py` | its stage-4 CSV | reads that CSV only |
+| every other `plot_*.py` | its stage-4 group | reads that group only |
 
 `run_benchmarks.py` and `gpu_run_benchmarks.py` are the only scripts that
 modify a material file. Everything else opens it read-only.
+
+### 2.7 The analysis file
+
+An analysis directory holds one file per material. Each stage-4 script writes
+one top-level group into it, deleting and rewriting only its own group, so
+re-running one analysis leaves the others intact:
+
+```
+    /scratch/yimili/error-analysis-block-thomas/graphene.h5
+    ├── growth_factor/    idx, solver, dtype, norm, nA, nL, nU, ...
+    └── fp16_sweep/       idx, relres_fp16, ..., cond_full_svd
+```
+
+A group holds one 1-D dataset per column, all of the same length, and carries
+the run configuration as attributes: the source material file, the index range,
+the block partition, the tolerances, and the indices that failed or were
+skipped. `non_normality` is the exception in shape only: its per-rank
+quantities are `(P, n)` matrices chunked one row per index, which is what makes
+its sweep resumable.
+
+`factor_io.save_table` and `factor_io.load_table` are the only readers and
+writers of this format.
 
 ---
 
@@ -203,6 +330,7 @@ dtype and is spelled `float64`, `float32`, `float16`.
 | Concept | Option | Notes |
 |---|---|---|
 | material HDF5 file | positional `h5path` | never a flag |
+| analysis HDF5 file | positional `h5path` | the plotting scripts; same spelling |
 | matrix, right-hand side | positional `matrix`, `rhs` | `.npz` triplet, `.npy` |
 | explicit energy indices | `--idx N [N ...]` | mutually exclusive with `--start` |
 | index range | `--start S --end E` | inclusive at both ends |
@@ -221,7 +349,17 @@ Where a script takes no index selection it takes none; where it takes one, it
 takes exactly this one. `--idx` always accepts several values, so `--idx 25`
 and `--idx 0 25 50` are both valid.
 
-### 3.4 Renames from the previous interface
+### 3.4 Renames from the CSV interface
+
+| Was | Now | Where |
+|---|---|---|
+| positional `csv_path` | positional `h5path` | `plot_growth_factor`, `plot_fp16_accuracy`, `plot_mixed_prec_ir` |
+| positional `data_dir` | positional `h5path` | `plot_non_normal` |
+| `--no-csv` | `--no-save` | `growth_factor` |
+| `--save-csv` | removed | `non-normal`; the HDF5 group replaces it |
+| required positional `folder` | optional, defaults to `cli.EXPORT_DIR` | `make_hdf5` |
+
+### 3.5 Earlier renames
 
 | Was | Now | Where |
 |---|---|---|
@@ -255,7 +393,7 @@ solver.
 
 | Directory | Role | README |
 |---|---|---|
-| [`solvers/`](solvers/) | the solver library: every solver behind one interface, the canonical names and shared CLI, the block-partition utilities, HDF5 persistence, tests | [README](solvers/README.md) |
+| [`solvers/`](solvers/) | the solver library: every solver behind one interface, the canonical names, shared CLI and scratch paths, the block-partition utilities, HDF5 persistence, tests | [README](solvers/README.md) |
 | [`run_bench/`](run_bench/) | batch drivers: load, call `bench()`, write results back | [README](run_bench/README.md) |
 | [`block-thomas/`](block-thomas/) | post-hoc stability and spectral analysis, read-only | [README](block-thomas/README.md) |
 | [`mixed_prec_ir/`](mixed_prec_ir/) | mixed-precision iterative refinement, LU-IR and GMRES-IR | [README](mixed_prec_ir/README.md) |

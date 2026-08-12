@@ -67,8 +67,8 @@ from solver_classes import (
 # Solvers this script can drive: the CPU set, since it has no device handling.
 CPU_SOLVERS = ("superlu", "umfpack", "mumps", "gmres") + BLOCK_SOLVERS
 
-DEFAULT_M_PATH = "/scratch/yimili/matrices/dev_12_sorted_BENCH/M_E_0.npz"
-DEFAULT_RHS_PATH = "/scratch/yimili/matrices/dev_12_sorted_BENCH/rhs_E_0.npy"
+DEFAULT_M_PATH = str(cli.EXPORT_DIR / "dev_12_sorted_BENCH/M_E_0.npz")
+DEFAULT_RHS_PATH = str(cli.EXPORT_DIR / "dev_12_sorted_BENCH/rhs_E_0.npy")
 
 DTYPE = np.complex128
 

@@ -45,10 +45,13 @@ the path used for the large systems.
 
 Output
 ------
-Written to FOLDER/matrices/<example>/:
+Written to EXPORT_DIR/<material>/, which make_hdf5.py consolidates:
 
     energies.npy                 the energy grid, eV
-    band_edge.npy                the conduction band edge, eV
+    band_edge.npy                the conduction band edge, eV; kept under the
+                                 old name for the files already exported
+    conduction_band_edge.npy     the same value, under the current name
+    valence_band_edge.npy        the valence band edge, eV, where it is known
     spectrum_bare.npy            eigenvalues of the pencil (H, S)
     condition_bare.npy           kappa_2(H - E S) along the grid
     condition_full_svd.npy       kappa_2(M(E)) along the grid
@@ -64,9 +67,10 @@ arrays.
 Usage
 -----
     python main3.py
-    python plotting/plot_qtbm_spectra.py /scratch/yimili/matrices/dev_12_sorted_BENCH
+    python plotting/plot_qtbm_spectra.py /scratch/yimili/matrices2/dev_12_sorted_BENCH
 """
 
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -74,22 +78,23 @@ from scipy.linalg import eigh
 
 from export_qtbm_systems import export_system, _host_array, _save_csr_npz
 
-FOLDER = Path("/scratch/yimili")
+sys.path.append(str((Path(__file__).resolve().parent / "solvers").resolve()))
 
-EXAMPLES = [
-    Path("/scratch/yimili/examples/dev_12_sorted_BENCH/qtbm"),
-    Path("/scratch/yimili/examples/WS2-hBN-25_benchmark-QUATREX-DZ/qtbm"),
-]
+import cli
 
-# Energy grid: [band_edge - OFFSET - OFFSET_LOW, band_edge + OFFSET], with
-# POINTS + 1 samples. OFFSET_LOW shifts the lower endpoint slightly below the
-# symmetric window so that the grid does not sample the band edge exactly.
-OFFSET = 1.0
-OFFSET_LOW = 0.005
-POINTS = 401
+# Stage 1 writes one directory per example here; make_hdf5.py reads them.
+EXPORT_DIR = cli.EXPORT_DIR
 
-# Energy indices at which M(E) and Sigma(E) are exported.
-INSPECTION_INDICES = [0] + list(range(10, 400, 20))
+# Materials to process, as keys of cli.MATERIALS. The example directory, the
+# band edges and the block size are taken from that registry, which is the one
+# place they are edited.
+EXAMPLES = ["carbon-nanotube", "si-bulk", "carbon-chain", "graphene"]
+
+# Stride between exported energy indices. 1 exports M(E), Sigma(E) and the
+# right-hand side at every point of the grid, which is what stages 2 to 5
+# expect; a larger stride subsamples for a quick pass. The grid itself, and so
+# the number of indices, is the `grid` of the material in cli.MATERIALS.
+EXPORT_STRIDE = 100
 
 # Dense analyses, O(n^3) each. Feasible only for the small examples.
 RUN_SPECTRUM = False
@@ -120,21 +125,32 @@ def load_matrices(example):
     return -hamiltonian, -overlap, config
 
 
-def band_edge_of(config):
+def band_edges_of(config, material):
     """
-    Conduction band edge in eV.
+    Valence and conduction band edge in eV, either may be None.
 
-    Falls back to the left Fermi level when the configuration does not set a
-    band edge; for an equilibrium calculation the two coincide.
+    The registry in cli.MATERIALS takes precedence, since it holds the values
+    determined from the contact band structure; the QTBM configuration is the
+    fallback. If neither sets a conduction edge, the left Fermi level is used,
+    which coincides with it for an equilibrium calculation.
+
+    Returns (valence, conduction).
     """
-    edge = config.electron.conduction_band_edge
-    return config.electron.left_fermi_level if edge is None else edge
+    valence = material.valence_band_edge if material else None
+    conduction = material.conduction_band_edge if material else None
 
-
-def energy_grid(band_edge):
-    """Energy sweep around the band edge, POINTS + 1 samples."""
-    return np.linspace(band_edge - OFFSET - OFFSET_LOW, band_edge + OFFSET,
-                       POINTS + 1)
+    if valence is None:
+        valence = config.electron.valence_band_edge
+    if conduction is None:
+        conduction = config.electron.conduction_band_edge
+    if conduction is None:
+        conduction = config.electron.left_fermi_level
+        print("  [warn] no conduction band edge in cli.MATERIALS or the QTBM "
+              "configuration; using the left Fermi level")
+    if valence is None:
+        print("  [warn] no valence band edge in cli.MATERIALS or the QTBM "
+              "configuration; it will be absent from the material file")
+    return valence, conduction
 
 
 # ---------------------------------------------------------------------------
@@ -191,15 +207,20 @@ def sweep_condition_full_svd(example, energies):
             np.array(sigma_min))
 
 
+def export_indices(energies):
+    """Energy indices to export, every EXPORT_STRIDE-th point of the grid."""
+    return list(range(0, len(energies), EXPORT_STRIDE))
+
+
 def export_matrices(example, hamiltonian, overlap, energies, out_dir):
     """
-    Write M(E), Sigma(E) and the right-hand side at every inspection index.
+    Write M(E), Sigma(E) and the right-hand side at every exported index.
 
     Sigma(E) is recovered as Sigma = (E S - H) - M(E), i.e. from the definition
     of M, rather than exported separately. All arithmetic stays sparse, so this
     path is usable at sizes where a dense representation is not.
     """
-    for index in INSPECTION_INDICES:
+    for index in export_indices(energies):
         energy = energies[index]
         print(f"  inspection index {index}: E = {energy} eV")
 
@@ -222,21 +243,38 @@ def export_matrices(example, hamiltonian, overlap, energies, out_dir):
 # Driver
 # ---------------------------------------------------------------------------
 
-def process_example(example):
-    name = example.parent.name
+def process_example(name):
+    """Run every enabled analysis for one material of cli.MATERIALS."""
+    material = cli.material(name)
+    example = material.example
+    if example is None:
+        raise ValueError(f"cli.MATERIALS['{name}'] has no example directory")
     print(f"Example: {name}")
 
-    out_dir = FOLDER / "matrices" / name
+    out_dir = EXPORT_DIR / name
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    if material.grid is None:
+        raise ValueError(
+            f"cli.MATERIALS['{name}'] has no grid. Set "
+            f"grid=EnergyGrid(start=..., end=..., resolution=...) in eV.")
+
     hamiltonian, overlap, config = load_matrices(example)
-    band_edge = band_edge_of(config)
-    energies = energy_grid(band_edge)
-    print(f"  band edge = {band_edge} eV, "
-          f"grid resolution = {2 * OFFSET / POINTS:.3e} eV")
+    valence, band_edge = band_edges_of(config, material)
+    energies = material.grid.energies()
+    print(f"  conduction band edge = {band_edge} eV, "
+          f"valence band edge = {valence} eV")
+    print(f"  grid: {len(energies)} points, "
+          f"{energies[0]:.4f} .. {energies[-1]:.4f} eV, "
+          f"resolution {material.grid.resolution:.3e} eV")
+    print(f"  exporting every {EXPORT_STRIDE} index "
+          f"({len(export_indices(energies))} matrices)")
 
     np.save(out_dir / "energies.npy", energies)
     np.save(out_dir / "band_edge.npy", np.array(band_edge))
+    np.save(out_dir / "conduction_band_edge.npy", np.array(band_edge))
+    if valence is not None:
+        np.save(out_dir / "valence_band_edge.npy", np.array(valence))
 
     if RUN_SPECTRUM:
         eigenvalues, _ = bare_spectrum(hamiltonian, overlap, band_edge)

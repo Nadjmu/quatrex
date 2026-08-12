@@ -34,7 +34,9 @@ import os
 import numpy as np
 import scipy.sparse as sp
 
-OUTPUT_DIR = "/scratch/yimili/random"
+import cli
+
+OUTPUT_DIR = str(cli.RANDOM_DIR)
 
 
 def build_test_system(n=2000, density=0.002, seed=0, dtype=np.complex128):

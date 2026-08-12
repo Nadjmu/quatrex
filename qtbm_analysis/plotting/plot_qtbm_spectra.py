@@ -45,11 +45,15 @@ Output
 <outdir>/<material>_condition.png
 <outdir>/<material>_singular_values.png
 
+The default output directory is the conditioning analysis directory, since the
+two figures that carry content are the kappa_2 sweep and the extreme singular
+values.
+
 Usage
 -----
-    python plot_qtbm_spectra.py /scratch/yimili/matrices/dev_12_sorted_BENCH
+    python plot_qtbm_spectra.py /scratch/yimili/matrices2/dev_12_sorted_BENCH
     python plot_qtbm_spectra.py .../dev_12_sorted_BENCH --zoom 0.05 \
-        --outdir /scratch/yimili/plots/dev_12_sorted_BENCH
+        --outdir /scratch/yimili/condition-est
 """
 
 import argparse
@@ -149,13 +153,14 @@ def main():
     ap.add_argument("--zoom", type=float, default=0.1, metavar="EV",
                     help="half-width in eV of the band-edge window in the "
                          "spectrum figure")
-    cli.add_output(ap, outdir_help="output directory "
-                                   "(default: the input directory)")
+    cli.add_output(ap, outdir_default=str(cli.CONDITION_DIR),
+                   outdir_help=f"output directory "
+                               f"(default: {cli.CONDITION_DIR})")
     args = ap.parse_args()
 
     data_dir = args.data_dir.expanduser().resolve()
     material = args.material or data_dir.name
-    outdir = Path(args.outdir) if args.outdir else data_dir
+    outdir = Path(args.outdir)
 
     energies = load_optional(data_dir, "energies.npy")
     band_edge_arr = load_optional(data_dir, "band_edge.npy")

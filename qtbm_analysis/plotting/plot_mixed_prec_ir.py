@@ -4,8 +4,8 @@ Convergence and accuracy of mixed-precision iterative refinement over a sweep.
 
 Input
 -----
-The long-format CSV written by ``mixed_prec_ir/c32_gmres_ir.py``: one row per
-(energy index, variant), with the columns
+The ``gmres_ir`` group written by ``mixed_prec_ir/c32_gmres_ir.py`` into its
+analysis file: one row per (energy index, variant), with the columns
 
     idx, kappa, n, nnz           system identification and kappa_2(M)
     variant                      e.g. "fp16 direct", "fp16 + GMRES-IR"
@@ -19,7 +19,7 @@ The long-format CSV written by ``mixed_prec_ir/c32_gmres_ir.py``: one row per
     wall_s, factor_mb            wall time and reported factor memory
     note                         failure reason, empty on success
 
-Lines beginning with '#' carry the run configuration and are skipped.
+The group's attributes carry the run configuration and the skipped indices.
 
 Algorithm
 ---------
@@ -48,15 +48,17 @@ Output
 <outdir>/<material>_ir_iterations.png
 <outdir>/<material>_ir_error_vs_condition.png   (only if kappa is available)
 
+The default output directory is the analysis file's own directory, so the
+figures are written beside the data they were drawn from.
+
 Usage
 -----
-    python plot_mixed_prec_ir.py ../mixed_prec_ir/plots/carbon-nanotube_fp16_gmres_ir.csv
-    python plot_mixed_prec_ir.py .../carbon-nanotube_fp16_gmres_ir.csv \
+    python plot_mixed_prec_ir.py /scratch/yimili/mixed-precision-IR/carbon-nanotube.h5
+    python plot_mixed_prec_ir.py .../carbon-nanotube.h5 \
         --variants "fp16 direct" "fp16 + GMRES-IR"
 """
 
 import argparse
-import csv
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -69,10 +71,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import cli
-from style import save_figure
+from factor_io import load_table, table_rows
+from style import axis_label, energies_of, mark_band_edges, save_figure
 
-# Variant identity. Keys are matched case-sensitively against the CSV column;
-# unknown variants fall through to the matplotlib default cycle.
+GROUP = "gmres_ir"
+
+# Variant identity. Keys are matched case-sensitively against the variant
+# column; unknown variants fall through to the matplotlib default cycle.
 VARIANT_STYLE = {
     "fp16 direct":     ("#C0392B", "o", "--"),
     "fp16 + LU-IR":    ("#E67E22", "s", "-"),
@@ -87,23 +92,28 @@ INT_COLUMNS = ("idx", "n", "nnz", "outer_iters", "converged",
                "inner_gmres_total")
 
 
-def read_records(csv_path):
-    """Read the CSV, skipping '#' comment lines and casting numeric columns."""
-    with open(csv_path, newline="") as fh:
-        reader = csv.DictReader(row for row in fh if not row.startswith("#"))
-        records = []
-        for row in reader:
-            record = {"variant": row["variant"], "note": row.get("note", "")}
-            for name in INT_COLUMNS:
-                value = row.get(name, "")
-                record[name] = int(float(value)) if value else -1
-            for name in FLOAT_COLUMNS:
-                value = row.get(name, "")
-                record[name] = float(value) if value else np.nan
-            records.append(record)
+def read_records(h5path):
+    """
+    Read the gmres_ir group as a list of per-row dicts.
+
+    The stored dtypes are already integer or float per column; the casts here
+    only normalise a missing column to the same sentinel the writer uses, -1
+    for a count and NaN for a measurement.
+    """
+    columns, attrs = load_table(h5path, GROUP)
+    records = table_rows(columns)
     if not records:
-        raise SystemExit(f"{csv_path} contains no data rows")
-    return records
+        raise SystemExit(f"{h5path}:/{GROUP} contains no rows")
+    for record in records:
+        record["variant"] = str(record.get("variant", ""))
+        record["note"] = str(record.get("note", ""))
+        for name in INT_COLUMNS:
+            value = record.get(name)
+            record[name] = -1 if value is None else int(value)
+        for name in FLOAT_COLUMNS:
+            value = record.get(name)
+            record[name] = np.nan if value is None else float(value)
+    return records, attrs
 
 
 def group_by_variant(records, variants=None):
@@ -121,49 +131,62 @@ def _style(variant):
     return VARIANT_STYLE.get(variant, (None, ".", "-"))
 
 
-def plot_accuracy(series, material, out_path):
+def plot_accuracy(series, attrs, material, out_path):
     """Forward error (upper panel) and residual (lower panel) per variant."""
     fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    have_energy = energies_of(attrs, [0]) is not None
     for column, ax, ylabel in (
             ("true_err", axes[0], r"$\|x - x_{\mathrm{true}}\| / "
                                   r"\|x_{\mathrm{true}}\|$"),
             ("relres",   axes[1], r"$\|Ax - b\| / \|b\|$")):
         for variant, rows in series:
             colour, marker, ls = _style(variant)
-            ax.semilogy([r["idx"] for r in rows], [r[column] for r in rows],
+            indices = [r["idx"] for r in rows]
+            x = energies_of(attrs, indices)
+            if x is None:
+                x = indices
+            ax.semilogy(x, [r[column] for r in rows],
                         color=colour, marker=marker, ls=ls, ms=3, lw=0.9,
                         label=variant)
         ax.set_ylabel(ylabel)
         ax.grid(True, which="both", alpha=0.3)
+        if have_energy:
+            mark_band_edges(ax, attrs, label=ax is axes[0])
     axes[0].set_title(f"Mixed-precision iterative refinement: forward error "
                       f"and residual — {material}")
     axes[0].legend(fontsize=8, ncol=2)
-    axes[1].set_xlabel("energy index")
+    axes[1].set_xlabel(axis_label(have_energy))
     fig.tight_layout()
     save_figure(fig, out_path)
 
 
-def plot_iterations(series, material, out_path):
+def plot_iterations(series, attrs, material, out_path):
     """Outer refinement iterations and mean inner GMRES iterations."""
     fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    have_energy = energies_of(attrs, [0]) is not None
 
     for variant, rows in series:
         colour, marker, ls = _style(variant)
         indices = [r["idx"] for r in rows]
-        axes[0].plot(indices, [r["outer_iters"] for r in rows], color=colour,
+        x = energies_of(attrs, indices)
+        if x is None:
+            x = indices
+        axes[0].plot(x, [r["outer_iters"] for r in rows], color=colour,
                      marker=marker, ls=ls, ms=3, lw=0.9, label=variant)
         inner = [r["inner_gmres_mean"] for r in rows]
         if np.isfinite(inner).any():
-            axes[1].plot(indices, inner, color=colour, marker=marker, ls=ls,
+            axes[1].plot(x, inner, color=colour, marker=marker, ls=ls,
                          ms=3, lw=0.9, label=variant)
 
     axes[0].set_ylabel("outer refinement iterations")
     axes[0].set_title(f"Iteration counts — {material}")
     axes[0].legend(fontsize=8, ncol=2)
     axes[1].set_ylabel("mean inner GMRES iterations\nper outer step")
-    axes[1].set_xlabel("energy index")
+    axes[1].set_xlabel(axis_label(have_energy))
     for ax in axes:
         ax.grid(True, alpha=0.3)
+        if have_energy:
+            mark_band_edges(ax, attrs, label=ax is axes[0])
     fig.tight_layout()
     save_figure(fig, out_path)
 
@@ -201,24 +224,28 @@ def plot_error_vs_condition(series, material, out_path):
 
 def main():
     ap = cli.new_parser(__doc__)
-    ap.add_argument("csv_path", type=Path,
-                    help="CSV written by mixed_prec_ir/c32_gmres_ir.py")
+    cli.add_h5_input(ap, help=f"analysis file written by "
+                              f"mixed_prec_ir/c32_gmres_ir.py, group {GROUP}")
     ap.add_argument("--variants", nargs="+", default=None,
                     help="restrict to these variants, in this order "
                          "(default: all present)")
     cli.add_output(ap, outdir_help="output directory "
-                                   "(default: the CSV's directory)")
+                                   "(default: the analysis file's directory)")
     args = ap.parse_args()
 
-    material = args.material or args.csv_path.stem.replace("_fp16_gmres_ir", "")
-    outdir = Path(args.outdir) if args.outdir else args.csv_path.parent
+    h5path = Path(args.h5path)
+    material = args.material or h5path.stem
+    outdir = Path(args.outdir) if args.outdir else h5path.parent
 
-    series = group_by_variant(read_records(args.csv_path), args.variants)
+    records, attrs = read_records(h5path)
+    series = group_by_variant(records, args.variants)
     if not series:
         raise SystemExit("no rows remain after filtering by --variants")
 
-    plot_accuracy(series, material, outdir / f"{material}_ir_accuracy.png")
-    plot_iterations(series, material, outdir / f"{material}_ir_iterations.png")
+    plot_accuracy(series, attrs, material,
+                  outdir / f"{material}_ir_accuracy.png")
+    plot_iterations(series, attrs, material,
+                    outdir / f"{material}_ir_iterations.png")
     if not plot_error_vs_condition(
             series, material, outdir / f"{material}_ir_error_vs_condition.png"):
         print("no finite kappa recorded; the error-against-conditioning "

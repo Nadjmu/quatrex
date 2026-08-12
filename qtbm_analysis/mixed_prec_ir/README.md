@@ -14,8 +14,8 @@ All scripts here take the canonical option names; see
 | `sparse.py` | the earlier standalone study: fp32 SuperLU with fp64 refinement |
 | `dense.py` | the earlier standalone study: fp32 LAPACK with fp64 refinement |
 
-No figures are produced here. `c32_gmres_ir.py` writes a CSV, which
-[`../plotting/plot_mixed_prec_ir.py`](../plotting/) renders.
+No figures are produced here. `c32_gmres_ir.py` writes an analysis HDF5 file,
+which [`../plotting/plot_mixed_prec_ir.py`](../plotting/) renders.
 
 ---
 
@@ -148,8 +148,9 @@ an energy range.
 ```bash
 python c32_gmres_ir.py .../carbon-nanotube.h5 --idx 84 --block-size 32
 python c32_gmres_ir.py .../carbon-nanotube.h5 --start 0 --end 401 \
-    --block-size 32 --outdir plots
-python ../plotting/plot_mixed_prec_ir.py plots/carbon-nanotube_fp16_gmres_ir.csv
+    --block-size 32
+python ../plotting/plot_mixed_prec_ir.py \
+    /scratch/yimili/mixed-precision-IR/carbon-nanotube.h5
 ```
 
 The refinement drivers are not reimplemented. This script imports `mpir` and
@@ -187,10 +188,11 @@ misattribute its effect.
 
 ### Output
 
-`<outdir>/<material>_fp16_gmres_ir.csv`, in long format, one row per
-`(index, variant)`, with the run configuration in the header lines. A verbose
-per-index log goes to stdout. The convergence history and the inner iteration
-counts, rather than any single final number, are the evidence for whether
+The `gmres_ir` group of `<outdir>/<material>.h5`, with `--outdir` defaulting to
+`cli.MIXED_PREC_DIR`, in long format, one row per `(index, variant)`. The run
+configuration and the skipped indices are group attributes. A verbose per-index
+log goes to stdout. The convergence history and the inner iteration counts,
+rather than any single final number, are the evidence for whether
 half-precision preconditioning works.
 
 ---
