@@ -93,8 +93,10 @@ MATERIALS = {
         # Run once with both unset to get the blocksize and gap reports.
         input_dir=EXAMPLES_DIR
         / "WS2-hBN-25_benchmark-QUATREX-DZ/qtbm/inputs",
-        blocksize=13052,
+        blocksize=3263,
         mid_gap_energy=None,
+        # The blocks are large enough that each eigensolve is expensive.
+        num_k_points=21,
     ),
 }
 
@@ -286,6 +288,10 @@ def check_overlap(s_blocks: tuple) -> None:
                 f"Cholesky factorization will fail."
             )
 
+        del s_k
+        if xp.__name__ == "cupy":
+            xp.get_default_memory_pool().free_all_blocks()
+
 
 def plot_hamiltonian(
     hamiltonian: sps.spmatrix, blocksize: int, out_dir: Path
@@ -403,8 +409,10 @@ def run(name: str, material: Material) -> None:
     s_blocks = None
     if overlap is not None:
         overlap_matrix = assemble_device(overlap, material.transverse_k)
+        report_blocksize(overlap_matrix)
         check_lead_blocks(overlap_matrix, blocksize, label="s")
         s_blocks = lead_blocks(overlap_matrix, blocksize)
+        del overlap_matrix, overlap
         check_overlap(s_blocks)
 
     num_k_points = material.num_k_points
