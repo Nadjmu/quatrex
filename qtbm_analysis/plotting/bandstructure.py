@@ -93,7 +93,7 @@ MATERIALS = {
         # Run once with both unset to get the blocksize and gap reports.
         input_dir=EXAMPLES_DIR
         / "WS2-hBN-25_benchmark-QUATREX-DZ/qtbm/inputs",
-        blocksize=3263,
+        blocksize=13052,
         mid_gap_energy=None,
     ),
 }
@@ -239,27 +239,52 @@ def report_blocksize(matrix: np.ndarray, tol: float = 1e-10) -> None:
     )
 
 
-def check_lead_blocks(hamiltonian: sps.spmatrix, blocksize: int) -> None:
+def check_lead_blocks(matrix: sps.spmatrix, blocksize: int, label: str = "h") -> None:
     """Checks the assumptions the contact band structure relies on.
 
-    The band structure only uses h_00, h_01 and h_10, which is exact
-    only if the Hamiltonian is block-tridiagonal. Wannier Hamiltonians
-    have long-range tails, so check that they were truncated.
+    The band structure only uses the (0,0), (0,1) and (1,0) blocks, which
+    is exact only if the matrix is block-tridiagonal. Wannier and
+    Gaussian bases have long-range tails, so check they were truncated.
 
     """
-    h_01 = block(hamiltonian, blocksize, 0, 1)
-    h_01_norm = np.abs(h_01).max()
-    h_02_norm = np.abs(block(hamiltonian, blocksize, 0, 2)).max()
-    print(f"  max|h_01| = {h_01_norm:.3e}, max|h_02| = {h_02_norm:.3e}")
-    if h_02_norm > 1e-3 * h_01_norm:
+    m_01 = block(matrix, blocksize, 0, 1)
+    m_01_norm = np.abs(m_01).max()
+    m_02_norm = np.abs(block(matrix, blocksize, 0, 2)).max()
+    print(f"  max|{label}_01| = {m_01_norm:.3e}, max|{label}_02| = {m_02_norm:.3e}")
+    if m_02_norm > 1e-3 * m_01_norm:
         print(
-            "  WARNING: Hamiltonian is not block-tridiagonal at this block "
-            "size. The three-block band structure neglects the "
-            "second-neighbor coupling and will be too flat away from Gamma."
+            f"  WARNING: matrix is not block-tridiagonal at this block size. "
+            f"The three-block band structure neglects the second-neighbor "
+            f"coupling of '{label}'."
         )
 
-    hermiticity = np.abs(block(hamiltonian, blocksize, 1, 0) - h_01.conj().T).max()
+    hermiticity = np.abs(block(matrix, blocksize, 1, 0) - m_01.conj().T).max()
     print(f"  hermiticity error = {hermiticity:.3e}")
+
+
+def check_overlap(s_blocks: tuple) -> None:
+    """Reports the spectrum of S(k) at the edges of the Brillouin zone.
+
+    The generalized eigensolve factorizes S(k) with a Cholesky
+    decomposition, which requires S(k) to be positive definite. A
+    non-positive smallest eigenvalue means the three-block truncation of
+    the overlap is invalid; a tiny positive one means the basis is close
+    to linearly dependent.
+
+    """
+    s_00, s_01, s_10 = s_blocks
+    for name, phase in (("0", 1.0), ("pi", -1.0)):
+        s_k = phase * s_01 + s_00 + phase * s_10
+        w = eigvalsh(s_k, compute_module=xp.__name__, output_module="numpy")
+        print(
+            f"  S(k={name}) eigenvalues: {w.min():.3e} .. {w.max():.3e}"
+            f"  (condition {w.max() / abs(w.min()):.2e})"
+        )
+        if w.min() <= 0:
+            print(
+                f"  WARNING: S(k={name}) is not positive definite; the "
+                f"Cholesky factorization will fail."
+            )
 
 
 def plot_hamiltonian(
@@ -374,11 +399,13 @@ def run(name: str, material: Material) -> None:
     plot_hamiltonian(matrix, blocksize, out_dir)
 
     h_00, h_01, h_10 = lead_blocks(matrix, blocksize)
-    s_blocks = (
-        lead_blocks(assemble_device(overlap, material.transverse_k), blocksize)
-        if overlap is not None
-        else None
-    )
+
+    s_blocks = None
+    if overlap is not None:
+        overlap_matrix = assemble_device(overlap, material.transverse_k)
+        check_lead_blocks(overlap_matrix, blocksize, label="s")
+        s_blocks = lead_blocks(overlap_matrix, blocksize)
+        check_overlap(s_blocks)
 
     num_k_points = material.num_k_points
     e_k = band_structure(h_00, h_01, h_10, s_blocks, num_k_points)
