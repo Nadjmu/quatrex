@@ -20,6 +20,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.io
+import scipy.sparse as sps
 
 from qttools import xp
 from qttools.kernels.linalg import eigvalsh
@@ -88,35 +89,61 @@ MATERIALS = {
         blocksize=416,
         mid_gap_energy=0.5,
     ),
+    "ws2-hbn": Material(
+        # Run once with both unset to get the blocksize and gap reports.
+        input_dir=EXAMPLES_DIR
+        / "WS2-hBN-25_benchmark-QUATREX-DZ/qtbm/inputs",
+        blocksize=None,
+        mid_gap_energy=None,
+    ),
 }
 
 
-def load_matrices(path: Path) -> dict[str, np.ndarray]:
-    """Loads all matrices from a MATLAB file, keyed by neighbor cell."""
+def load_matrices(path: Path) -> dict[str, sps.csr_matrix]:
+    """Loads all matrices from a MATLAB file, keyed by neighbor cell.
+
+    The matrices are kept sparse: the device Hamiltonians are far too
+    large to densify, only their lead blocks are.
+
+    """
     mat = scipy.io.loadmat(path)
-    return {k: v.toarray() for k, v in mat.items() if not k.startswith("__")}
+    return {
+        k: (v.tocsr() if sps.issparse(v) else sps.csr_matrix(v))
+        for k, v in mat.items()
+        if not k.startswith("__")
+    }
 
 
-def lead_blocks(matrix: np.ndarray, blocksize: int) -> tuple:
+def block(matrix: sps.spmatrix, blocksize: int, row: int, col: int) -> np.ndarray:
+    """Extracts one dense block of a sparse matrix."""
+    return matrix[
+        row * blocksize : (row + 1) * blocksize,
+        col * blocksize : (col + 1) * blocksize,
+    ].toarray()
+
+
+def lead_blocks(matrix: sps.spmatrix, blocksize: int) -> tuple:
     """Extracts the (0,0), (0,1) and (1,0) blocks of a device matrix."""
     return (
-        xp.asarray(matrix[:blocksize, :blocksize]),
-        xp.asarray(matrix[:blocksize, blocksize : 2 * blocksize]),
-        xp.asarray(matrix[blocksize : 2 * blocksize, :blocksize]),
+        xp.asarray(block(matrix, blocksize, 0, 0)),
+        xp.asarray(block(matrix, blocksize, 0, 1)),
+        xp.asarray(block(matrix, blocksize, 1, 0)),
     )
 
 
-def report_hopping_grid(matrices: dict[str, np.ndarray]) -> None:
+def report_hopping_grid(matrices: dict[str, sps.spmatrix]) -> None:
     """Reports the magnitude of each neighbor-cell matrix.
 
     The direction along which the couplings are strongest is a good
     indication of the transport direction.
 
     """
-    keys = sorted(matrices, key=lambda k: tuple(int(i) for i in k.strip("[]").split(",")))
+    keys = sorted(
+        matrices, key=lambda k: tuple(int(i) for i in k.strip("[]").split(","))
+    )
     print("  neighbor cells:")
     for key in keys:
-        print(f"    {key:>14}  max|H| = {np.abs(matrices[key]).max():.4e}")
+        print(f"    {key:>14}  max|H| = {abs(matrices[key]).max():.4e}")
 
 
 def assemble_device(
@@ -199,8 +226,9 @@ def report_blocksize(matrix: np.ndarray, tol: float = 1e-10) -> None:
     block. Any multiple of it is also valid but folds the bands.
 
     """
-    rows, cols = np.nonzero(np.abs(matrix) > tol * np.abs(matrix).max())
-    bandwidth = int(np.abs(rows - cols).max())
+    coo = matrix.tocoo()
+    keep = np.abs(coo.data) > tol * np.abs(coo.data).max()
+    bandwidth = int(np.abs(coo.row[keep] - coo.col[keep]).max())
     minimal = -(-(bandwidth + 1) // 2)
 
     n = matrix.shape[0]
@@ -211,7 +239,7 @@ def report_blocksize(matrix: np.ndarray, tol: float = 1e-10) -> None:
     )
 
 
-def check_lead_blocks(hamiltonian: np.ndarray, blocksize: int) -> None:
+def check_lead_blocks(hamiltonian: sps.spmatrix, blocksize: int) -> None:
     """Checks the assumptions the contact band structure relies on.
 
     The band structure only uses h_00, h_01 and h_10, which is exact
@@ -219,8 +247,9 @@ def check_lead_blocks(hamiltonian: np.ndarray, blocksize: int) -> None:
     have long-range tails, so check that they were truncated.
 
     """
-    h_01_norm = np.abs(hamiltonian[:blocksize, blocksize : 2 * blocksize]).max()
-    h_02_norm = np.abs(hamiltonian[:blocksize, 2 * blocksize : 3 * blocksize]).max()
+    h_01 = block(hamiltonian, blocksize, 0, 1)
+    h_01_norm = np.abs(h_01).max()
+    h_02_norm = np.abs(block(hamiltonian, blocksize, 0, 2)).max()
     print(f"  max|h_01| = {h_01_norm:.3e}, max|h_02| = {h_02_norm:.3e}")
     if h_02_norm > 1e-3 * h_01_norm:
         print(
@@ -229,19 +258,26 @@ def check_lead_blocks(hamiltonian: np.ndarray, blocksize: int) -> None:
             "second-neighbor coupling and will be too flat away from Gamma."
         )
 
-    hermiticity = np.abs(
-        hamiltonian[blocksize : 2 * blocksize, :blocksize]
-        - hamiltonian[:blocksize, blocksize : 2 * blocksize].conj().T
-    ).max()
+    hermiticity = np.abs(block(hamiltonian, blocksize, 1, 0) - h_01.conj().T).max()
     print(f"  hermiticity error = {hermiticity:.3e}")
 
 
-def plot_hamiltonian(hamiltonian: np.ndarray, out_dir: Path) -> None:
-    """Plots the sparsity structure of the device Hamiltonian."""
+def plot_hamiltonian(
+    hamiltonian: sps.spmatrix, blocksize: int, out_dir: Path
+) -> None:
+    """Plots the magnitude of the leading blocks of the Hamiltonian.
+
+    Only the first three blocks are shown: a full device matrix can have
+    O(1e5) rows and cannot be densified.
+
+    """
+    size = min(hamiltonian.shape[0], 3 * blocksize)
+    leading = hamiltonian[:size, :size].toarray()
+
     fig, ax = plt.subplots(figsize=(8, 6))
-    image = ax.matshow(np.log10(np.abs(hamiltonian) + 1e-16), cmap="viridis")
+    image = ax.matshow(np.log10(np.abs(leading) + 1e-16), cmap="viridis")
     fig.colorbar(image, ax=ax, label=r"$\log_{10}|H_{ij}|$")
-    ax.set_title("Hamiltonian Matrix")
+    ax.set_title(f"Hamiltonian Matrix (first {size} of {hamiltonian.shape[0]})")
     fig.tight_layout()
     fig.savefig(out_dir / "hamiltonian_matrix.png", dpi=300)
     plt.close(fig)
@@ -324,6 +360,10 @@ def run(name: str, material: Material) -> None:
     print(f"  {matrix.shape=}, {blocksize=}")
     report_blocksize(matrix)
 
+    if blocksize is None:
+        print("  STOPPED: set blocksize from the report above.")
+        return
+
     if matrix.shape[0] < 3 * blocksize:
         raise ValueError(
             f"Hamiltonian of shape {matrix.shape} is too small for "
@@ -331,7 +371,7 @@ def run(name: str, material: Material) -> None:
         )
 
     check_lead_blocks(matrix, blocksize)
-    plot_hamiltonian(matrix, out_dir)
+    plot_hamiltonian(matrix, blocksize, out_dir)
 
     h_00, h_01, h_10 = lead_blocks(matrix, blocksize)
     s_blocks = (
@@ -346,6 +386,10 @@ def run(name: str, material: Material) -> None:
 
     print(f"  eigenvalue range: {e_k.min():.4f} .. {e_k.max():.4f}")
     report_gaps(e_k)
+
+    if material.mid_gap_energy is None:
+        print("  STOPPED: set mid_gap_energy from the report above.")
+        return
 
     # `find_band_edges` takes a max/min over the two sides of the mid-gap
     # energy, which raises on an empty slice if it lies outside the
@@ -390,10 +434,6 @@ def main() -> None:
     for name in args.materials:
         material = MATERIALS[name]
         print(f"--- {name} ---")
-
-        if material.mid_gap_energy is None:
-            print("  SKIPPED: mid_gap_energy is not set.")
-            continue
 
         try:
             run(name, material)
