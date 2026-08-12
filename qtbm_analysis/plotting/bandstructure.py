@@ -93,7 +93,9 @@ MATERIALS = {
         # Run once with both unset to get the blocksize and gap reports.
         input_dir=EXAMPLES_DIR
         / "WS2-hBN-25_benchmark-QUATREX-DZ/qtbm/inputs",
-        blocksize=3263,
+        # Bandwidth 6303 -> 6526 is the smallest divisor that guarantees
+        # block tridiagonality.
+        blocksize=6526,
         mid_gap_energy=None,
         # The blocks are large enough that each eigensolve is expensive.
         num_k_points=21,
@@ -231,13 +233,50 @@ def report_blocksize(matrix: np.ndarray, tol: float = 1e-10) -> None:
     coo = matrix.tocoo()
     keep = np.abs(coo.data) > tol * np.abs(coo.data).max()
     bandwidth = int(np.abs(coo.row[keep] - coo.col[keep]).max())
-    minimal = -(-(bandwidth + 1) // 2)
+
+    # A block size of b puts block (0, 2) at separations b + 1 and above,
+    # so b >= bandwidth guarantees block tridiagonality. Bandwidth <= 2b
+    # - 1 is only necessary, not sufficient: it is the largest separation
+    # a block-tridiagonal matrix can have, but a matrix with that
+    # bandwidth may still reach into block (0, 2).
+    necessary = -(-(bandwidth + 1) // 2)
 
     n = matrix.shape[0]
-    divisors = [b for b in range(minimal, n + 1) if n % b == 0]
+    divisors = [b for b in range(necessary, n + 1) if n % b == 0]
+    sufficient = [b for b in divisors if b >= bandwidth]
     print(
-        f"  bandwidth = {bandwidth} -> smallest blocksize = {minimal}"
-        f", admissible divisors of {n}: {divisors[:5]}"
+        f"  bandwidth = {bandwidth} -> blocksize >= {necessary} (necessary), "
+        f">= {bandwidth} (sufficient)"
+    )
+    print(
+        f"    divisors of {n}: {divisors[:5]}, "
+        f"guaranteed: {sufficient[:3]}"
+    )
+
+
+def check_block_tridiagonal(
+    matrix: sps.spmatrix, blocksize: int, label: str = "h", tol: float = 1e-10
+) -> None:
+    """Checks block tridiagonality over the whole matrix.
+
+    Inspecting only block (0, 2) is not enough: the leading blocks of a
+    device are the contact region and can be cleaner than the bulk.
+
+    """
+    coo = matrix.tocoo()
+    keep = np.abs(coo.data) > tol * np.abs(coo.data).max()
+    distance = np.abs(coo.row[keep] // blocksize - coo.col[keep] // blocksize)
+
+    outside = distance > 1
+    if not outside.any():
+        print(f"  {label} is block-tridiagonal at blocksize={blocksize}")
+        return
+
+    print(
+        f"  WARNING: {int(outside.sum())} entries of '{label}' lie outside the "
+        f"block-tridiagonal structure, up to {int(distance.max())} blocks away, "
+        f"max magnitude {np.abs(coo.data[keep][outside]).max():.3e}. The lead "
+        f"blocks are not a valid periodic lead at this block size."
     )
 
 
@@ -402,6 +441,7 @@ def run(name: str, material: Material) -> None:
         )
 
     check_lead_blocks(matrix, blocksize)
+    check_block_tridiagonal(matrix, blocksize, label="h")
     plot_hamiltonian(matrix, blocksize, out_dir)
 
     h_00, h_01, h_10 = lead_blocks(matrix, blocksize)
@@ -411,6 +451,7 @@ def run(name: str, material: Material) -> None:
         overlap_matrix = assemble_device(overlap, material.transverse_k)
         report_blocksize(overlap_matrix)
         check_lead_blocks(overlap_matrix, blocksize, label="s")
+        check_block_tridiagonal(overlap_matrix, blocksize, label="s")
         s_blocks = lead_blocks(overlap_matrix, blocksize)
         del overlap_matrix, overlap
         check_overlap(s_blocks)
