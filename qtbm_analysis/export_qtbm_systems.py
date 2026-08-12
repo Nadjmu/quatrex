@@ -41,7 +41,6 @@ from qttools.utils.inplace_utils import compute_update_indices_dense, compute_up
 from quatrex.core.config import parse_config, setup_context
 from quatrex.core.qtbm import QTBM, allocate_system_matrix
 from quatrex.device import Device
-import cupy as cp
 
 MatrixMode = Literal[
     "overlap",
