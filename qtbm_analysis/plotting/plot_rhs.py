@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Right-hand side magnitude of the QTBM system along the energy sweep.
+Number of injected modes of the QTBM right-hand side along the energy sweep.
 
 Input
 -----
@@ -10,22 +10,21 @@ One material HDF5 file per material, as written by make_hdf5.py:
                           grid_energy_min, resolution
     E_<idx>/rhs           right-hand side of M(E) x = b, (n, nmodes)
 
-The right-hand side is present only at indices where the number of injected
-modes is nonzero; main3.py already skips writing it otherwise, and those
-indices are simply absent from the sweep drawn here.
+main3.py writes rhs at every exported index, including those with nmodes = 0
+where no contact mode is open, so the band gap shows up as a run of zeros
+rather than a gap in the sweep.
 
 Algorithm
 ---------
-The right-hand side is matrix-valued at every energy, (n, nmodes) with nmodes
-the number of open-channel modes injected by the contacts, so it cannot be
-overlaid directly across a sweep. Its Frobenius norm reduces it to one number
-per energy, the same reduction plot_qtbm_spectra.py applies to the extreme
-singular values of M(E).
+nmodes = rhs.shape[-1] at every exported index. No other reduction of the
+right-hand side is taken: nmodes is the quantity of interest, since it counts
+the open-channel modes injected by the contacts and is expected to vanish
+inside the band gap and step up outside it.
 
 Output
 ------
-One figure per material, ||b(E)||_F on a logarithmic axis against energy, with
-the valence and conduction band edges marked.
+One figure per material, nmodes on a linear axis against energy, with the
+valence and conduction band edges marked.
 
     <outdir>/<material>_rhs.png
 
@@ -59,11 +58,13 @@ DEFAULT_MATERIALS = ["carbon-nanotube", "si-bulk", "carbon-chain", "graphene"]
 
 def load_rhs_sweep(h5path):
     """
-    Frobenius norm of the right-hand side at every energy index that has one.
+    Number of columns of the right-hand side at every exported energy index.
 
-    Returns (indices, norms) as parallel arrays, sorted by index.
+    Returns (indices, nmodes) as parallel arrays, sorted by index. Indices
+    with zero open modes are kept, not dropped, since nmodes = 0 inside the
+    band gap is the point of the figure.
     """
-    indices, norms = [], []
+    indices, nmodes = [], []
     with h5py.File(h5path, "r") as f:
         for key in f:
             if not key.startswith("E_"):
@@ -71,29 +72,27 @@ def load_rhs_sweep(h5path):
             g = f[key]
             if "rhs" not in g:
                 continue
-            rhs = g["rhs"][:]
-            if rhs.size == 0:
-                continue
             indices.append(int(key[2:]))
-            norms.append(float(np.linalg.norm(rhs)))
+            nmodes.append(g["rhs"].shape[-1])
     order = np.argsort(indices)
-    return np.array(indices)[order], np.array(norms)[order]
+    return np.array(indices)[order], np.array(nmodes)[order]
 
 
-def plot_rhs(indices, norms, attrs, material, out_path):
-    """||b(E)||_F along the sweep, with the band edges marked."""
+def plot_rhs(indices, nmodes, attrs, material, out_path):
+    """nmodes along the sweep, with the band edges marked."""
     have_energy = energies_of(attrs, [0]) is not None
     xs = energies_of(attrs, indices) if have_energy else indices
 
     fig, ax = plt.subplots(figsize=(9, 5))
-    ax.semilogy(xs, norms, marker="o", ms=3, lw=0.9, color="tab:purple",
-               label=r"$\|b(E)\|_F$")
+    ax.step(xs, nmodes, where="mid", lw=1.2, color="tab:purple",
+           label="open modes")
     mark_band_edges(ax, attrs)
     ax.set_xlabel(axis_label(have_energy))
-    ax.set_ylabel(r"$\|b(E)\|_F$")
-    ax.set_title(f"Right-hand side norm along the energy sweep — {material}")
+    ax.set_ylabel("number of injected modes")
+    ax.set_ylim(bottom=0)
+    ax.set_title(f"Right-hand side width along the energy sweep — {material}")
     ax.legend(fontsize=8)
-    ax.grid(True, which="both", alpha=0.3)
+    ax.grid(True, alpha=0.3)
     fig.tight_layout()
     save_figure(fig, out_path, dpi=300)
 
@@ -120,14 +119,14 @@ def main():
             print(f"[skip] {material}: {h5path} not found")
             continue
 
-        indices, norms = load_rhs_sweep(h5path)
+        indices, nmodes = load_rhs_sweep(h5path)
         if len(indices) == 0:
             print(f"[skip] {material}: no right-hand side found in {h5path}")
             continue
 
         attrs = material_metadata(h5path)
         out_path = outdir / f"{material}_rhs.png"
-        plot_rhs(indices, norms, attrs, material, out_path)
+        plot_rhs(indices, nmodes, attrs, material, out_path)
         produced += 1
 
     if produced == 0:
