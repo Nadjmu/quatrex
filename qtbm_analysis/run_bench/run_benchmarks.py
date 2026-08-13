@@ -78,7 +78,7 @@ MATERIAL_BLOCKS = {name: mat.blocks for name, mat in cli.MATERIALS.items()
 #   "uniform"  MATERIAL_BS
 #   "custom"   MATERIAL_BLOCKS, an error if the material has no entry
 #   "auto"     detected from the sparsity pattern of the first matrix
-BLOCK_MODE = "uniform"
+BLOCK_MODE = "auto"
 
 # The first entry defines the baseline that speedups and "vs base" errors in
 # bench() refer to.
