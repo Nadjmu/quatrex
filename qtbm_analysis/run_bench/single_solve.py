@@ -7,7 +7,11 @@ Input
     matrix    a CSR .npz triplet holding data, indices, indptr and shape
     rhs       a .npy right-hand side
     --solvers which solvers to run, canonical names from solvers/cli.py
-    --block-size / --auto-blocks   the partition, required by the block solvers
+
+The block solvers take no partition argument: it is always detected from the
+sparsity pattern (block_sizes_from_matrix), since the exported matrices are
+generally non-uniform block-tridiagonal and a fixed block size would either
+misdetect that structure or require the caller to already know it.
 
 Purpose
 -------
@@ -37,10 +41,8 @@ A per-solver report on stdout. Nothing is written to disk.
 Usage
 -----
     python single_solve.py --solvers superlu mumps
-    python single_solve.py --solvers block-thomas block-thomas-inv --block-size 104
-    python single_solve.py --solvers block-thomas --auto-blocks
-    python single_solve.py --solvers block-thomas-inv-fp16 --block-size 32 \
-        --inv-dtype float16
+    python single_solve.py --solvers block-thomas block-thomas-inv
+    python single_solve.py --solvers block-thomas-inv-fp16 --inv-dtype float16
     python single_solve.py /path/M.npz /path/rhs.npy --solvers superlu umfpack
 """
 
@@ -122,7 +124,6 @@ def main():
     ap.add_argument("rhs", nargs="?", default=DEFAULT_RHS_PATH,
                     help=".npy right-hand side")
     cli.add_solver_selection(ap, choices=CPU_SOLVERS, default=("superlu",))
-    cli.add_block_partition(ap)
     cli.add_inv_dtype(ap)
     args = ap.parse_args()
 
@@ -172,52 +173,47 @@ def main():
 
     wanted_blocks = [s for s in args.solvers if s in BLOCK_SOLVERS]
     if wanted_blocks:
-        if args.auto_blocks:
-            print("[prep] detecting block partition from the sparsity pattern ...",
-                  flush=True)
-            partition = block_sizes_from_matrix(A)
-            print(f"[prep] {len(partition)} blocks, "
-                  f"sizes {min(partition)}..{max(partition)}", flush=True)
-        elif args.block_size is not None:
-            partition = args.block_size
-        else:
-            partition = None
-            print(f"\n--- {', '.join(wanted_blocks)} ---\n"
-                  f"  skipped (pass --block-size M or --auto-blocks)")
+        # Always auto-detected: the exported matrices generally have a
+        # non-uniform block-tridiagonal structure, so a fixed --block-size
+        # would either misdetect it or require the caller to already know it.
+        print("[prep] detecting block partition from the sparsity pattern ...",
+              flush=True)
+        partition = block_sizes_from_matrix(A)
+        print(f"[prep] {len(partition)} blocks, "
+              f"sizes {min(partition)}..{max(partition)}", flush=True)
 
-        if partition is not None:
-            # A partition that cuts a real coupling yields a wrong solution
-            # without raising, so it is verified before any solve.
-            bad = offband_nnz(A, partition)
-            print(f"[prep] off-band nnz = {bad}", flush=True)
-            if bad:
-                raise SystemExit(
-                    f"partition leaves {bad} nonzeros outside the "
-                    f"block-tridiagonal band -- refusing to solve with it")
-            print("[prep] extracting blocks ...", flush=True)
-            D, L, U = extract_blocks_sparse(A, partition)
-            print(f"[prep] done -- {len(D)} blocks", flush=True)
+        # A partition that cuts a real coupling yields a wrong solution
+        # without raising, so it is verified before any solve.
+        bad = offband_nnz(A, partition)
+        print(f"[prep] off-band nnz = {bad}", flush=True)
+        if bad:
+            raise SystemExit(
+                f"partition leaves {bad} nonzeros outside the "
+                f"block-tridiagonal band -- refusing to solve with it")
+        print("[prep] extracting blocks ...", flush=True)
+        D, L, U = extract_blocks_sparse(A, partition)
+        print(f"[prep] done -- {len(D)} blocks", flush=True)
 
-            inv_dtype = getattr(np, args.inv_dtype)
-            variants = [
-                ("block-thomas",          "Block Thomas (LU)",
-                 lambda: BlockThomas(D, L, U, DTYPE)),
-                ("block-thomas-inv",      "Block Thomas (explicit inv)",
-                 lambda: BlockThomasExplicitInv(D, L, U, DTYPE)),
-                ("block-thomas-fp16",     "Block Thomas fp16 (LU)",
-                 lambda: BlockThomasFP16(D, L, U)),
-                ("block-thomas-inv-fp16", f"Block Thomas fp16 (inv in {args.inv_dtype})",
-                 lambda: BlockThomasExplicitInvFP16(D, L, U, inv_dtype=inv_dtype)),
-            ]
-            for key, label, ctor in variants:
-                if key not in args.solvers:
-                    continue
-                cpu_before = cpu_peak_mb()
-                bt, t_f = timed(f"{label} factor", ctor)
-                x, t_s = timed(f"{label} solve", bt.solve, b)
-                cpu_after = cpu_peak_mb()
-                report(label, x, A, b, t_f, t_s, bt.factor_nbytes(),
-                       cpu_before, cpu_after)
+        inv_dtype = getattr(np, args.inv_dtype)
+        variants = [
+            ("block-thomas",          "Block Thomas (LU)",
+             lambda: BlockThomas(D, L, U, DTYPE)),
+            ("block-thomas-inv",      "Block Thomas (explicit inv)",
+             lambda: BlockThomasExplicitInv(D, L, U, DTYPE)),
+            ("block-thomas-fp16",     "Block Thomas fp16 (LU)",
+             lambda: BlockThomasFP16(D, L, U)),
+            ("block-thomas-inv-fp16", f"Block Thomas fp16 (inv in {args.inv_dtype})",
+             lambda: BlockThomasExplicitInvFP16(D, L, U, inv_dtype=inv_dtype)),
+        ]
+        for key, label, ctor in variants:
+            if key not in args.solvers:
+                continue
+            cpu_before = cpu_peak_mb()
+            bt, t_f = timed(f"{label} factor", ctor)
+            x, t_s = timed(f"{label} solve", bt.solve, b)
+            cpu_after = cpu_peak_mb()
+            report(label, x, A, b, t_f, t_s, bt.factor_nbytes(),
+                   cpu_before, cpu_after)
 
 
 if __name__ == "__main__":

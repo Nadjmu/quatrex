@@ -28,12 +28,23 @@ factorization and is what the reported factorization time measures, and is then
 applied to B, which is what the solve time measures. For each combination the
 following are recorded:
 
-    factor    factorization wall time, seconds
-    solve     solve wall time, seconds
-    res       ||As x - B|| / ||B||, the relative residual
-    mem       solver-reported factor footprint, bytes
-    vs_base   ||x - x_base|| / ||x_base||, where x_base is the SuperLU
-              solution at the first requested precision
+    factor                        factorization wall time, seconds
+    solve                         solve wall time, seconds
+    res                           ||As x - B|| / ||B||, the relative residual
+    mem                           solver-reported factor footprint, bytes
+    vs_base                       ||x - x_base|| / ||x_base||, where x_base is
+                                  the SuperLU solution at the first requested
+                                  precision
+    backward_error_normwise       eta, Rigal-Gaches normwise backward error
+    backward_error_componentwise  omega, Oettli-Prager componentwise backward
+                                  error
+
+eta and omega are computed by backward_errors() from the same residual As x - B
+that res is; see its docstring for the formulas. Both, along with the residual
+vector itself, are also written into every saved HDF5 group, since they are
+cheap to compute once per solve and answer a different question than res: they
+report the perturbation of the problem (As, B) that x solves exactly, not the
+size of the raw residual.
 
 Result keys are "<solver>_<suffix>" in the canonical solver spelling defined by
 cli.SOLVERS: superlu_c128, umfpack_c128, block-thomas-inv_c64.
@@ -72,6 +83,7 @@ treated as dtypes=(np.complex128,).
 
 import time
 import numpy as np
+import scipy.sparse.linalg as splinalg
 
 from solver_classes import (
     SparseLU, GMRES, extract_blocks_sparse, offband_nnz,
@@ -107,6 +119,104 @@ def _line(label, t_f, t_s, res, mem, extra=""):
     """One line of the per-index report."""
     print(f"  {label:20s}: factor {t_f*1e3:8.2f} ms  solve {t_s*1e3:8.3f} ms"
           f"  res {res:.1e}  mem {mem/1e6:7.1f} MB{extra}")
+
+
+NORMWISE_ORDS = (1, 2, np.inf)
+
+
+def _matrix_norm(A, ord):
+    """
+    ||A||_p of a sparse matrix, the operator norm induced by the vector
+    p-norm, for p in {1, 2, inf}.
+
+    p = 1 and p = inf are the maximum absolute column and row sum
+    respectively, exact and O(nnz). p = 2 is the spectral norm, the largest
+    singular value, gotten from a sparse SVD (ARPACK via scipy.sparse.linalg
+    .svds) rather than a dense one, since As is never densified elsewhere in
+    this module. The Frobenius norm is deliberately not offered here: it is
+    not the operator norm induced by any vector p-norm, so it does not appear
+    in the Rigal-Gaches theorem and would silently give a non-tight, formally
+    incorrect backward error.
+
+    Returns None for p = 2 when ARPACK's Lanczos iteration fails to converge,
+    which happens on matrices whose top singular value is poorly separated
+    from its neighbours -- expected near a band edge, where the system is
+    close to singular. The caller skips eta_2 for that index rather than
+    treating the failure as fatal.
+    """
+    if ord == 1:
+        Ac = A.tocsc(copy=True)
+        Ac.data = np.abs(Ac.data)
+        return float(np.asarray(Ac.sum(axis=0)).ravel().max())
+    if ord == np.inf:
+        Ac = A.tocsr(copy=True)
+        Ac.data = np.abs(Ac.data)
+        return float(np.asarray(Ac.sum(axis=1)).ravel().max())
+    if ord == 2:
+        try:
+            sigma_max = splinalg.svds(A, k=1, return_singular_vectors=False)
+            return float(sigma_max[0])
+        except splinalg.ArpackNoConvergence:
+            return None
+    raise ValueError(f"unsupported norm order {ord!r}; use 1, 2 or np.inf")
+
+
+def _abs_matvec(A, X):
+    """|A| @ |X|, the absolute value taken before the product."""
+    Ac = A.tocsr(copy=True)
+    Ac.data = np.abs(Ac.data)
+    return Ac @ np.abs(X)
+
+
+def backward_errors(As, X, B, normA, R=None):
+    """
+    Residual and backward errors of a computed solution X of As X = B.
+
+        eta_p(X)  = ||R||_p / (||As||_p ||X||_p + ||B||_p),   p in {1, 2, inf}
+        omega(X)  = max_ij |R_ij| / (|As| |X| + |B|)_ij       (0/0 -> 0)
+
+    eta_p is the normwise backward error of Rigal and Gaches: the smallest
+    relative perturbation of As and B, measured in the p-norm, that makes X
+    an exact solution. It is computed at p = 1, 2 and inf, since the theorem
+    holds for any operator norm and the three differ in which entries of As
+    they weight most. omega is the componentwise backward error of Oettli and
+    Prager, the same statement with entrywise rather than normwise
+    perturbation bounds; unlike eta it has no p-norm family, since the
+    entrywise max is already the tightest such bound. See Higham, Accuracy
+    and Stability of Numerical Algorithms, Theorems 7.1 and 7.3.
+
+    For several right-hand sides (X, B two-dimensional), every quantity is the
+    worst case over the columns. normA is a dict {1: ..., 2: ..., inf: ...},
+    passed in rather than recomputed here, since it does not depend on the
+    solver, the precision or the column.
+
+    Returns (R, etas, omega): R = As @ X - B, etas a dict keyed like normA,
+    omega a float.
+    """
+    if R is None:
+        R = As @ X - B
+    X2 = X if X.ndim == 2 else X[:, None]
+    B2 = B if B.ndim == 2 else B[:, None]
+    R2 = R if R.ndim == 2 else R[:, None]
+
+    etas = {}
+    for p in NORMWISE_ORDS:
+        if normA[p] is None:                    # svds(p=2) failed to converge
+            etas[p] = None
+            continue
+        normX = np.linalg.norm(X2, ord=p, axis=0)
+        normB = np.linalg.norm(B2, ord=p, axis=0)
+        normR = np.linalg.norm(R2, ord=p, axis=0)
+        denom = normA[p] * normX + normB
+        etas[p] = float(np.max(np.divide(normR, denom,
+                                         out=np.zeros_like(normR),
+                                         where=denom > 0)))
+
+    comp_denom = _abs_matvec(As, X2) + np.abs(B2)
+    omega = float(np.max(np.divide(np.abs(R2), comp_denom,
+                                   out=np.zeros_like(comp_denom),
+                                   where=comp_denom > 0)))
+    return R, etas, omega
 
 
 def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
@@ -149,6 +259,13 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
 
     n = As.shape[0]
     nb = np.linalg.norm(B)
+    # Matrix-only, so computed once per index and reused for every solver and
+    # precision. The p=2 case is a sparse SVD and is the expensive one of the
+    # three; it still costs one such call per index rather than per solve.
+    normA = {p: _matrix_norm(As, p) for p in NORMWISE_ORDS}
+    if normA[2] is None:
+        print(f"idx={idx}: svds did not converge for ||As||_2; "
+              f"eta_2 is skipped for every solver at this index")
     results = {"idx": idx, "dtypes": [np.dtype(d).name for d in dtypes]}
     x_base = None                              # SuperLU solution at dtypes[0]
                                                # against which vs_base is taken
@@ -159,16 +276,24 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
 
     def _finish(key, label, solver, x, t_f, t_s, extra="", saver=None):
         """Record one (solver, dtype) result, report it, and persist it."""
-        res = np.linalg.norm(As @ x - B) / nb
+        r, etas, omega = backward_errors(As, x, B, normA)
+        res = np.linalg.norm(r) / nb
         mem = solver.factor_nbytes()
-        entry = {"factor": t_f, "solve": t_s, "res": res, "mem": mem}
+        entry = {"factor": t_f, "solve": t_s, "res": res, "mem": mem,
+                 "backward_error_normwise_1": etas[1],
+                 "backward_error_normwise_2": etas[2],
+                 "backward_error_normwise_inf": etas[np.inf],
+                 "backward_error_componentwise": omega}
         if x_base is not None and x is not x_base:
             entry["vs_base"] = np.linalg.norm(x - x_base) / np.linalg.norm(x_base)
             extra += f"  vs base {entry['vs_base']:.1e}"
+        eta2_str = f"{etas[2]:.1e}" if etas[2] is not None else "n/a"
+        extra += (f"  eta1 {etas[1]:.1e}  eta2 {eta2_str}  "
+                  f"etaInf {etas[np.inf]:.1e}  omega {omega:.1e}")
         _line(label, t_f, t_s, res, mem, extra)
         results[key] = entry
         if save and h5file is not None and saver is not None:
-            saver(x, t_f, t_s, mem)
+            saver(x, t_f, t_s, mem, r, etas, omega)
         return entry
 
     # The blocks depend on As alone, not on the precision, so they are
@@ -197,8 +322,10 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
             if x_base is None:
                 x_base = xs
             _finish(f"superlu_{sfx}", f"superlu {sfx}", slu, xs, t_f, t_s,
-                    saver=lambda x, tf, ts, mem: fio.save_superlu(
-                        h5file, dt, idx, slu, x, tf, ts, mem=mem))
+                    saver=lambda x, tf, ts, mem, r, etas, omega: fio.save_superlu(
+                        h5file, dt, idx, slu, x, tf, ts, mem=mem,
+                        residual=r, eta1=etas[1], eta2=etas[2],
+                        eta_inf=etas[np.inf], omega=omega))
 
         # ---- UMFPACK: double precision only ------------------------------
         if "umfpack" in solvers and not _excluded("umfpack", dt):
@@ -206,8 +333,10 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
                 umf, t_f = _timed(UMFPACK, As, dt)
                 xu,  t_s = _timed(umf.solve, B)
                 _finish(f"umfpack_{sfx}", f"umfpack {sfx}", umf, xu, t_f, t_s,
-                        saver=lambda x, tf, ts, mem: fio.save_umfpack(
-                            h5file, dt, idx, umf, x, tf, ts, mem=mem))
+                        saver=lambda x, tf, ts, mem, r, etas, omega: fio.save_umfpack(
+                            h5file, dt, idx, umf, x, tf, ts, mem=mem,
+                            residual=r, eta1=etas[1], eta2=etas[2],
+                            eta_inf=etas[np.inf], omega=omega))
             except (ImportError, TypeError) as e:
                 print(f"  umfpack {sfx:12s}: skipped ({e})")
         elif "umfpack" in solvers:
@@ -220,8 +349,10 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
                 xm,  t_s = _timed(mmp.solve, B)
                 _finish(f"mumps_{sfx}", f"mumps {sfx}", mmp, xm, t_f, t_s,
                         extra="  (no L/U exposed)",
-                        saver=lambda x, tf, ts, mem: fio.save_metadata(
-                            h5file, h5_group("mumps"), dt, idx, x, tf, ts, mem=mem))
+                        saver=lambda x, tf, ts, mem, r, etas, omega: fio.save_metadata(
+                            h5file, h5_group("mumps"), dt, idx, x, tf, ts, mem=mem,
+                            residual=r, eta1=etas[1], eta2=etas[2],
+                            eta_inf=etas[np.inf], omega=omega))
             except ImportError as e:
                 print(f"  mumps {sfx:14s}: skipped ({e})")
         elif "mumps" in solvers:
@@ -233,10 +364,11 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
             xg, t_s = _timed(gm.solve, B)
             _finish(f"gmres_{sfx}", f"gmres (scipy) {sfx}", gm, xg, t_f, t_s,
                     extra=f"  (it~{gm.last_iters})",
-                    saver=lambda x, tf, ts, mem: fio.save_metadata(
+                    saver=lambda x, tf, ts, mem, r, etas, omega: fio.save_metadata(
                         h5file, h5_group("gmres"), dt, idx, x, tf, ts,
                         metadata={"iters": gm.last_iters, "info": gm.last_info},
-                        mem=mem))
+                        mem=mem, residual=r, eta1=etas[1], eta2=etas[2],
+                        eta_inf=etas[np.inf], omega=omega))
         elif "gmres" in solvers:
             print(f"  gmres (scipy) {sfx:7s}: skipped (excluded)")
 
@@ -251,11 +383,12 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
                     xgc, t_s = _timed(gmc.solve, B)
                     _finish(f"gmres-cupy_{sfx}", f"gmres (cupy) {sfx}", gmc,
                             xgc, t_f, t_s, extra=f"  (it~{gmc.last_iters})",
-                            saver=lambda x, tf, ts, mem: fio.save_metadata(
+                            saver=lambda x, tf, ts, mem, r, etas, omega: fio.save_metadata(
                                 h5file, "gmres-cupy", dt, idx, x, tf, ts,
                                 metadata={"iters": gmc.last_iters,
                                           "info": gmc.last_info},
-                                mem=mem))
+                                mem=mem, residual=r, eta1=etas[1], eta2=etas[2],
+                                eta_inf=etas[np.inf], omega=omega))
                 except Exception as e:
                     print(f"  gmres (cupy) {sfx:7s}: FAILED ({type(e).__name__}: {e})")
         elif "gmres-cupy" in solvers:
@@ -272,9 +405,11 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
                     xc,  t_s = _timed(cud.solve, B)
                     _finish(f"cudss_{sfx}", f"cudss {sfx}", cud, xc, t_f, t_s,
                             extra="  (no L/U values exposed)",
-                            saver=lambda x, tf, ts, mem: fio.save_metadata(
+                            saver=lambda x, tf, ts, mem, r, etas, omega: fio.save_metadata(
                                 h5file, h5_group("cudss"), dt, idx, x, tf, ts,
-                                metadata=cud.get_metadata(), mem=mem))
+                                metadata=cud.get_metadata(), mem=mem,
+                                residual=r, eta1=etas[1], eta2=etas[2],
+                                eta_inf=etas[np.inf], omega=omega))
                     cud.free()
                 except Exception as e:
                     print(f"  cudss {sfx:14s}: FAILED ({type(e).__name__}: {e})")
@@ -287,8 +422,10 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
             xbt, t_s = _timed(bt.solve, B)
             _finish(f"block-thomas_{sfx}", f"block Thomas {sfx}", bt, xbt,
                     t_f, t_s,
-                    saver=lambda x, tf, ts, mem: fio.save_blockthomas(
-                        h5file, dt, idx, bt, x, tf, ts, mem=mem))
+                    saver=lambda x, tf, ts, mem, r, etas, omega: fio.save_blockthomas(
+                        h5file, dt, idx, bt, x, tf, ts, mem=mem,
+                        residual=r, eta1=etas[1], eta2=etas[2],
+                        eta_inf=etas[np.inf], omega=omega))
         elif "block-thomas" in solvers:
             print(f"  block Thomas {sfx:7s}: skipped (excluded)")
 
@@ -298,8 +435,10 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
             xbti, t_s = _timed(bti.solve, B)
             _finish(f"block-thomas-inv_{sfx}", f"block Thomas inv {sfx}", bti,
                     xbti, t_f, t_s, extra="  (explicit inverses)",
-                    saver=lambda x, tf, ts, mem: fio.save_blockthomas_inv(
-                        h5file, dt, idx, bti, x, tf, ts, mem=mem))
+                    saver=lambda x, tf, ts, mem, r, etas, omega: fio.save_blockthomas_inv(
+                        h5file, dt, idx, bti, x, tf, ts, mem=mem,
+                        residual=r, eta1=etas[1], eta2=etas[2],
+                        eta_inf=etas[np.inf], omega=omega))
         elif "block-thomas-inv" in solvers:
             print(f"  block Thomas inv {sfx:3s}: skipped (excluded)")
 
@@ -314,9 +453,10 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
             xbt16, t_s = _timed(bt16.solve, B)
             _finish("block-thomas-fp16", "block Thomas fp16", bt16, xbt16,
                     t_f, t_s, extra="  (embedded real)",
-                    saver=lambda x, tf, ts, mem: fio.save_blockthomas(
+                    saver=lambda x, tf, ts, mem, r, etas, omega: fio.save_blockthomas(
                         h5file, None, idx, bt16, x, tf, ts, mem=mem,
-                        dname=FP16_LABEL))
+                        dname=FP16_LABEL, residual=r, eta1=etas[1], eta2=etas[2],
+                        eta_inf=etas[np.inf], omega=omega))
         except (FloatingPointError, ZeroDivisionError) as e:
             print(f"  block Thomas fp16   : FAILED ({type(e).__name__}: {e})")
 
@@ -328,9 +468,10 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
             _finish("block-thomas-inv-fp16", "block Thomas inv fp16", bti16,
                     xbti16, t_f, t_s,
                     extra=f"  (inv in {np.dtype(fp16_inv_dtype).name})",
-                    saver=lambda x, tf, ts, mem: fio.save_blockthomas_inv(
+                    saver=lambda x, tf, ts, mem, r, etas, omega: fio.save_blockthomas_inv(
                         h5file, None, idx, bti16, x, tf, ts, mem=mem,
-                        dname=FP16_LABEL))
+                        dname=FP16_LABEL, residual=r, eta1=etas[1], eta2=etas[2],
+                        eta_inf=etas[np.inf], omega=omega))
         except (FloatingPointError, ZeroDivisionError) as e:
             print(f"  block Thomas inv fp16: FAILED ({type(e).__name__}: {e})")
 

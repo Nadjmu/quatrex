@@ -26,6 +26,19 @@ together:
     E_<idx>/gmres*/<dtype>/           x, times, iters, info; iterative, so no
                                       factors
 
+Every group additionally carries, whenever the caller supplies them:
+
+    residual    As @ x - b
+    nbe_1       eta_1,   normwise backward error (Rigal-Gaches), 1-norm
+    nbe_2       eta_2,   normwise backward error (Rigal-Gaches), 2-norm (spectral)
+    nbe_inf     eta_inf, normwise backward error (Rigal-Gaches), infinity norm
+    cbe         omega,   componentwise backward error (Oettli-Prager)
+
+See bench_all.backward_errors for the formulas; bench() computes and passes
+all of these to every saver, so they are present on every result bench()
+writes. The componentwise error has no p-norm family, unlike the normwise
+one, so there is only the one dataset for it; see backward_errors for why.
+
 Attributes
 ----------
 Both Block Thomas groups carry: implementation (1 for LU with substitution, 2
@@ -203,18 +216,37 @@ def _tag_partition(g, bt):
                 compress=False)
 
 
-def _save_common(g, x, t_fact, t_solve=None):
+def _save_common(g, x, t_fact, t_solve=None, residual=None, eta1=None,
+                 eta2=None, eta_inf=None, omega=None):
+    """
+    x, the two timings, and, when supplied, the residual As @ x - b and its
+    backward errors: eta1/eta2/eta_inf (normwise, Rigal-Gaches, at p = 1, 2,
+    inf) and omega (componentwise, Oettli-Prager, which has no p-norm family).
+    See bench_all.backward_errors for the formulas.
+    """
     _save_dense(g, "x", x)
     _save_dense(g, "time_fact", t_fact, compress=False)
     if t_solve is not None:
         _save_dense(g, "time_solve", t_solve, compress=False)
+    if residual is not None:
+        _save_dense(g, "residual", residual)
+    if eta1 is not None:
+        _save_dense(g, "nbe_1", eta1, compress=False)
+    if eta2 is not None:
+        _save_dense(g, "nbe_2", eta2, compress=False)
+    if eta_inf is not None:
+        _save_dense(g, "nbe_inf", eta_inf, compress=False)
+    if omega is not None:
+        _save_dense(g, "cbe", omega, compress=False)
 
 
 # ---------------------------------------------------------------------------
 # Per-solver savers. root is an open h5py.File in mode "a" or "r+", dtype is a
 # NumPy dtype, and idx is the energy index.
 # ---------------------------------------------------------------------------
-def save_superlu(root, dtype, idx, slu, x, t_fact, t_solve=None, mem=None):
+def save_superlu(root, dtype, idx, slu, x, t_fact, t_solve=None, mem=None,
+                 residual=None, eta1=None, eta2=None,
+                 eta_inf=None, omega=None):
     dname = np.dtype(dtype).name
     g = _fresh_group(root, _solver_group_path(idx, "superlu", dname))
     L, U, perm_r, perm_c = slu.get_LUP()
@@ -226,10 +258,12 @@ def save_superlu(root, dtype, idx, slu, x, t_fact, t_solve=None, mem=None):
     g.attrs["convention"] = "Pr @ A @ Pc == L @ U  (Pr from argsort(perm_r))"
     if mem is not None:
         g.attrs["factor_nbytes"] = mem
-    _save_common(g, x, t_fact, t_solve)
+    _save_common(g, x, t_fact, t_solve, residual, eta1, eta2, eta_inf, omega)
 
 
-def save_umfpack(root, dtype, idx, umf, x, t_fact, t_solve=None, mem=None):
+def save_umfpack(root, dtype, idx, umf, x, t_fact, t_solve=None, mem=None,
+                 residual=None, eta1=None, eta2=None,
+                 eta_inf=None, omega=None):
     """Write a UMFPACK result, including the row scaling R it applies."""
     dname = np.dtype(dtype).name
     g = _fresh_group(root, _solver_group_path(idx, "umfpack", dname))
@@ -248,11 +282,13 @@ def save_umfpack(root, dtype, idx, umf, x, t_fact, t_solve=None, mem=None):
                              "(Pr from argsort(perm_r))")
     if mem is not None:
         g.attrs["factor_nbytes"] = mem
-    _save_common(g, x, t_fact, t_solve)
+    _save_common(g, x, t_fact, t_solve, residual, eta1, eta2, eta_inf, omega)
 
 
 def save_blockthomas(root, dtype, idx, bt, x, t_fact, t_solve=None, mem=None,
-                     dname=None, group="blockthomas"):
+                     dname=None, group="blockthomas",
+                     residual=None, eta1=None, eta2=None,
+                 eta_inf=None, omega=None):
     """
     Write an implementation 1 factorization: L, U, the packed LU of each
     modified diagonal block, and its pivots.
@@ -276,11 +312,13 @@ def save_blockthomas(root, dtype, idx, bt, x, t_fact, t_solve=None, mem=None,
         g.attrs["embedded_real"] = True
     if mem is not None:
         g.attrs["factor_nbytes"] = mem
-    _save_common(g, x, t_fact, t_solve)
+    _save_common(g, x, t_fact, t_solve, residual, eta1, eta2, eta_inf, omega)
 
 
 def save_blockthomas_inv(root, dtype, idx, bt, x, t_fact, t_solve=None, mem=None,
-                         dname=None, group="blockthomas_inv"):
+                         dname=None, group="blockthomas_inv",
+                         residual=None, eta1=None, eta2=None,
+                 eta_inf=None, omega=None):
     """
     Write an implementation 2 factorization: the explicit block inverses, plus
     D_mod, which the growth-factor analysis requires in order to assemble the
@@ -312,11 +350,12 @@ def save_blockthomas_inv(root, dtype, idx, bt, x, t_fact, t_solve=None, mem=None
         g.attrs["inv_dtype"] = np.dtype(bt.inv_dtype).name
     if mem is not None:
         g.attrs["factor_nbytes"] = mem
-    _save_common(g, x, t_fact, t_solve)
+    _save_common(g, x, t_fact, t_solve, residual, eta1, eta2, eta_inf, omega)
 
 
 def save_metadata(root, solver_name, dtype, idx, x, t_fact, t_solve=None,
-                  metadata=None, mem=None):
+                  metadata=None, mem=None, residual=None, eta1=None,
+                  eta2=None, eta_inf=None, omega=None):
     """
     Write a result for a solver that exposes no factors: MUMPS, cuDSS, and the
     iterative solvers. Stores x, the two timings, and any auxiliary arrays or
@@ -332,7 +371,7 @@ def save_metadata(root, solver_name, dtype, idx, x, t_fact, t_solve=None,
             if val is None:
                 continue
             _save_dense(g, key, np.asarray(val))
-    _save_common(g, x, t_fact, t_solve)
+    _save_common(g, x, t_fact, t_solve, residual, eta1, eta2, eta_inf, omega)
 
 
 # ---------------------------------------------------------------------------

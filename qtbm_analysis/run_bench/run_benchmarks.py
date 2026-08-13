@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Batch benchmark driver: every material, the direct solvers plus the fp16
-Block Thomas variants, both working precisions.
+Batch benchmark driver: every material, the direct solvers, both working
+precisions.
 
 Input
 -----
@@ -56,7 +56,6 @@ import h5py
 
 import cli
 from bench_all import bench, DEFAULT_SOLVERS
-from cli import FP16_SOLVERS
 from solver_classes import block_sizes_from_matrix, offband_nnz
 
 HDF5_DIR = cli.HDF5_DIR
@@ -85,11 +84,11 @@ BLOCK_MODE = "auto"
 DTYPES = (np.complex128, np.complex64)
 
 # GMRES (both backends) and cuDSS are dropped: this sweep only covers the
-# direct solvers. The two fp16 Block Thomas variants are added on top of
-# DEFAULT_SOLVERS, since bench() otherwise only runs them when named
-# explicitly.
+# direct solvers, at complex128 and complex64. The fp16 Block Thomas variants
+# are excluded, same as DEFAULT_SOLVERS: their NumPy kernels made a full sweep
+# impractically slow, confirmed with single_solve.py --auto-blocks.
 SOLVERS = tuple(s for s in DEFAULT_SOLVERS
-                if s not in {"gmres", "gmres-cupy", "cudss"}) + FP16_SOLVERS
+                if s not in {"gmres", "gmres-cupy", "cudss"})
 
 EXCLUDE = {}
 
