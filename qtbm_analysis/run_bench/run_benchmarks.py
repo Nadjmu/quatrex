@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Batch benchmark driver: every material, every solver, both working precisions.
+Batch benchmark driver: every material, the direct solvers plus the fp16
+Block Thomas variants, both working precisions.
 
 Input
 -----
@@ -55,6 +56,7 @@ import h5py
 
 import cli
 from bench_all import bench, DEFAULT_SOLVERS
+from cli import FP16_SOLVERS
 from solver_classes import block_sizes_from_matrix, offband_nnz
 
 HDF5_DIR = cli.HDF5_DIR
@@ -82,11 +84,14 @@ BLOCK_MODE = "uniform"
 # bench() refer to.
 DTYPES = (np.complex128, np.complex64)
 
-# (solver, dtype) combinations dropped deliberately. GMRES at single precision
-# does not reach a useful tolerance on these systems, so it is excluded rather
-# than recorded as a failure.
-EXCLUDE = {"gmres": {"complex64"},
-           "gmres-cupy": {"complex64"}}
+# GMRES (both backends) and cuDSS are dropped: this sweep only covers the
+# direct solvers. The two fp16 Block Thomas variants are added on top of
+# DEFAULT_SOLVERS, since bench() otherwise only runs them when named
+# explicitly.
+SOLVERS = tuple(s for s in DEFAULT_SOLVERS
+                if s not in {"gmres", "gmres-cupy", "cudss"}) + FP16_SOLVERS
+
+EXCLUDE = {}
 
 
 def resolve_partition(material, M_first):
@@ -167,7 +172,7 @@ def run_material(material, h5path):
             if rhs[idx].shape[-1] == 0:
                 continue
             bench(M[idx], rhs[idx], idx, bs, dtypes=DTYPES, h5file=f,
-                  save=True, solvers=DEFAULT_SOLVERS, exclude=EXCLUDE)
+                  save=True, solvers=SOLVERS, exclude=EXCLUDE)
             benchmarked += 1
     return benchmarked
 
