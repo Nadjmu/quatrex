@@ -20,10 +20,9 @@ Output
     <outdir>/<material>.h5, cli.HDF5_DIR by default
     ├── global/          H, S, singular values, condition numbers,
     │                    spectrum_bare
-    │                    attrs: valence_band_edge, conduction_band_edge,
-    │                           band_gap
     ├── metadata/        indices, energies
-    │                    attrs: grid resolution and window
+    │                    attrs: valence_band_edge, conduction_band_edge,
+    │                           band_gap, grid resolution and window
     └── E_<idx>/         one group per energy point
         ├── M/           system matrix, CSC triplet
         ├── Sigma/       contact self-energy, CSC triplet
@@ -244,6 +243,15 @@ def build_material(folder: Path, material: str, out_dir: Path,
         meta.create_dataset("indices", data=idx_arr)
         meta.create_dataset("energies", data=energies)
 
+        # Band edges, in eV. Recorded here rather than derived downstream, so
+        # that a figure can mark them without consulting the registry, and so
+        # that a file stays interpretable if the registry is later edited.
+        if valence is not None:
+            meta.attrs["valence_band_edge"] = float(valence)
+        if conduction is not None:
+            meta.attrs["conduction_band_edge"] = float(conduction)
+        if valence is not None and conduction is not None:
+            meta.attrs["band_gap"] = float(conduction - valence)
         # The grid, as the two numbers that define it. energy(i) is
         # grid_energy_min + resolution * i for any index i of the full grid,
         # which is what lets a figure with an index axis be labelled in eV.
@@ -253,17 +261,6 @@ def build_material(folder: Path, material: str, out_dir: Path,
 
         # ---- global arrays ----
         glob = f.create_group("global")
-
-        # Band edges, in eV. Recorded here rather than derived downstream, so
-        # that a figure can mark them without consulting the registry, and so
-        # that a file stays interpretable if the registry is later edited.
-        if valence is not None:
-            glob.attrs["valence_band_edge"] = float(valence)
-        if conduction is not None:
-            glob.attrs["conduction_band_edge"] = float(conduction)
-        if valence is not None and conduction is not None:
-            glob.attrs["band_gap"] = float(conduction - valence)
-
         global_sparse_files = {
             "H": "H.npz",
             "S": "S.npz",
