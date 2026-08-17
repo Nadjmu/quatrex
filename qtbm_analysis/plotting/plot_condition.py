@@ -63,12 +63,17 @@ GROUP = "condition"
 
 # The three estimates: dataset name -> (legend label, colour, line style).
 # Colours are distinct from those of SOLVER_STYLE, since no curve here belongs
-# to a solver.
+# to a solver, and deliberately away from the blue and red of BAND_EDGE_STYLE:
+# a red dashed curve beside a red dashed band edge is not separable at a
+# glance. Saturated to full strength, since three curves that track one another
+# closely are told apart by colour alone.
 ESTIMATE_STYLE = {
-    "cond_1": (r"$\kappa_1$ (estimated)", "#1F77B4", "-"),
-    "cond_2": (r"$\kappa_2 = \sigma_{\max}/\sigma_{\min}$", "#000000", "-"),
-    "cond_inf": (r"$\kappa_\infty$ (estimated)", "#D62728", "--"),
+    "cond_1": (r"$\kappa_1$ (estimated)", "#FF6D00", "-"),
+    "cond_2": (r"$\kappa_2 = \sigma_{\max}/\sigma_{\min}$", "#111111", "-"),
+    "cond_inf": (r"$\kappa_\infty$ (estimated)", "#8E24AA", "--"),
 }
+
+LINE_WIDTH = 1.8
 
 DEFAULT_MATERIALS = ("carbon-nanotube", "carbon-chain", "si-bulk", "graphene")
 
@@ -114,8 +119,8 @@ def draw(ax, x, curves, attrs, have_energy, title):
         finite = np.isfinite(y) & (y > 0)
         if not np.any(finite):
             continue
-        ax.plot(x[finite], y[finite], color=colour, ls=linestyle, lw=1.2,
-                label=label)
+        ax.plot(x[finite], y[finite], color=colour, ls=linestyle,
+                lw=LINE_WIDTH, label=label)
 
     ax.set_yscale("log")
     ax.set_xlabel(axis_label(have_energy))
