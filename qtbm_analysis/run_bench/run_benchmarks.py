@@ -147,17 +147,22 @@ def run_material(material, h5path):
     """
     Benchmark every energy index of one material and append the results into
     its HDF5 file. Returns the number of indices benchmarked.
+
+    M and rhs are loaded one index at a time, inside the loop, rather than for
+    every index up front: a material's matrices held all at once can run into
+    the tens of GB (e.g. si-bulk, n=3840 at ~9% density, over ~2800 indices),
+    which is what was silently killing the process partway through a sweep
+    before this was per-index.
     """
     with h5py.File(h5path, "r") as f:
         indices = f["metadata/indices"][:].tolist()
         energies = f["metadata/energies"][:]
-        M = {idx: load_sparse(f[f"E_{idx}/M"]) for idx in indices}
-        rhs = {idx: f[f"E_{idx}/rhs"][:] for idx in indices}
+        first_M = load_sparse(f[f"E_{indices[0]}/M"])
 
     idx_arr = np.array(indices)
     print(f"{material} | n_energies = {len(indices)} | E[-1] = {energies[-1]}")
 
-    bs = resolve_partition(material, M[indices[0]])
+    bs = resolve_partition(material, first_M)
     if isinstance(bs, (list, tuple)):
         print(f"Partition: {len(bs)} custom blocks, "
               f"sizes {min(bs)}..{max(bs)} (BLOCK_MODE={BLOCK_MODE})")
@@ -168,9 +173,11 @@ def run_material(material, h5path):
     benchmarked = 0
     with h5py.File(h5path, "a") as f:
         for idx in idx_arr:
-            if rhs[idx].shape[-1] == 0:
+            rhs_idx = f[f"E_{idx}/rhs"][:]
+            if rhs_idx.shape[-1] == 0:
                 continue
-            bench(M[idx], rhs[idx], idx, bs, dtypes=DTYPES, h5file=f,
+            M_idx = load_sparse(f[f"E_{idx}/M"])
+            bench(M_idx, rhs_idx, idx, bs, dtypes=DTYPES, h5file=f,
                   save=True, solvers=SOLVERS, exclude=EXCLUDE)
             benchmarked += 1
     return benchmarked

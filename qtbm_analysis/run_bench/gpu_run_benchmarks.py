@@ -57,20 +57,27 @@ GPU_EXCLUDE = {}
 
 
 def run_material(material, h5path):
-    """Benchmark the GPU solvers over one material. Returns the index count."""
+    """
+    Benchmark the GPU solvers over one material. Returns the index count.
+
+    M and rhs are loaded one index at a time inside the loop rather than for
+    every index up front; see run_benchmarks.run_material for why (a whole
+    material's matrices held at once can run into tens of GB).
+    """
     with h5py.File(h5path, "r") as f:
         indices = f["metadata/indices"][:].tolist()
-        M = {idx: load_sparse(f[f"E_{idx}/M"]) for idx in indices}
-        rhs = {idx: f[f"E_{idx}/rhs"][:] for idx in indices}
+        first_M = load_sparse(f[f"E_{indices[0]}/M"])
 
-    bs = resolve_partition(material, M[indices[0]])
+    bs = resolve_partition(material, first_M)
 
     benchmarked = 0
     with h5py.File(h5path, "a") as f:
         for idx in indices:
-            if rhs[idx].shape[-1] == 0:
+            rhs_idx = f[f"E_{idx}/rhs"][:]
+            if rhs_idx.shape[-1] == 0:
                 continue
-            bench(M[idx], rhs[idx], idx, bs, dtypes=GPU_DTYPES, h5file=f,
+            M_idx = load_sparse(f[f"E_{idx}/M"])
+            bench(M_idx, rhs_idx, idx, bs, dtypes=GPU_DTYPES, h5file=f,
                   save=True, solvers=GPU_SOLVERS, exclude=GPU_EXCLUDE)
             benchmarked += 1
     return benchmarked
