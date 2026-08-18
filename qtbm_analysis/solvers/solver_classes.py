@@ -78,10 +78,8 @@ N. J. Higham, Accuracy and Stability of Numerical Algorithms, 2nd ed., SIAM
 of explicit inversion.
 """
 
-import time
 import numpy as np
 import scipy.linalg as sla
-import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
 
@@ -92,6 +90,7 @@ def gpu_available():
     """True if CuPy is importable and at least one CUDA device is visible."""
     try:
         import cupy as cp
+
         return cp.cuda.runtime.getDeviceCount() > 0
     except Exception:
         return False
@@ -115,6 +114,36 @@ def _solve_columns(solve_one, b):
     return np.column_stack(
         [solve_one(np.ascontiguousarray(b[:, j])) for j in range(b.shape[1])]
     )
+
+
+def _mask_from_bits(bits: int = 52) -> np.uint64:
+    assert 0 < bits <= 52, f"bits must be in (0, 52], got {bits}"
+    total_bits = bits + 11 + 1  # mantissa + exponent + sign
+    return np.uint64(((1 << total_bits) - 1) << (64 - total_bits))
+
+
+def _mask_real_precision(x, mask):
+    assert x.dtype == np.float64, f"x must be float64, got {x.dtype}"
+    if mask == 52:  # fp64 mantissa bits
+        pass
+    else:
+        mask = _mask_from_bits(mask)
+        x = (x.view(np.uint64) & mask).view(np.float64)
+    return x
+
+
+def _mask_complex_precision(x, mask_real, mask_imag):
+    x_real = _mask_real_precision(np.real(x), mask_real)
+    x_imag = _mask_real_precision(np.imag(x), mask_imag)
+    return x_real + 1j * x_imag
+
+
+def _mask_precision(x, mask):
+    if x.dtype != np.complex128:
+        return x
+    if np.iscomplexobj(x):
+        return _mask_complex_precision(x, mask, mask)
+    return _mask_real_precision(x, mask)
 
 
 # ===========================================================================
@@ -143,9 +172,16 @@ class SparseLU:
 
     def factor_nbytes(self):
         L, U = self.lu.L, self.lu.U
-        return int(L.data.nbytes + L.indices.nbytes + L.indptr.nbytes +
-                   U.data.nbytes + U.indices.nbytes + U.indptr.nbytes +
-                   self.lu.perm_r.nbytes + self.lu.perm_c.nbytes)
+        return int(
+            L.data.nbytes
+            + L.indices.nbytes
+            + L.indptr.nbytes
+            + U.data.nbytes
+            + U.indices.nbytes
+            + U.indptr.nbytes
+            + self.lu.perm_r.nbytes
+            + self.lu.perm_c.nbytes
+        )
 
 
 # ===========================================================================
@@ -164,8 +200,9 @@ class GMRES:
     precision cannot be met and would only exhaust maxiter.
     """
 
-    def __init__(self, A_csc, dtype=None, rtol=None, restart=50, maxiter=1000,
-                 use_ilu=True):
+    def __init__(
+        self, A_csc, dtype=None, rtol=None, restart=50, maxiter=1000, use_ilu=True
+    ):
         self.dtype = np.dtype(dtype) if dtype is not None else A_csc.dtype
         self.A = A_csc.astype(self.dtype).tocsc()
         if rtol is None:
@@ -181,11 +218,20 @@ class GMRES:
 
     def _solve_one(self, b):
         iters = [0]
-        def cb(x): iters[0] += 1
-        x, info = spla.gmres(self.A, b.astype(self.dtype), M=self.M,
-                             rtol=self.rtol, restart=self.restart,
-                             maxiter=self.maxiter, callback=cb,
-                             callback_type='legacy')
+
+        def cb(x):
+            iters[0] += 1
+
+        x, info = spla.gmres(
+            self.A,
+            b.astype(self.dtype),
+            M=self.M,
+            rtol=self.rtol,
+            restart=self.restart,
+            maxiter=self.maxiter,
+            callback=cb,
+            callback_type="legacy",
+        )
         self.last_iters, self.last_info = iters[0], info
         return x
 
@@ -200,8 +246,14 @@ class GMRES:
         if self._ilu is None:
             return 0
         L, U = self._ilu.L, self._ilu.U
-        return int(L.data.nbytes + U.data.nbytes + L.indices.nbytes +
-                   U.indices.nbytes + L.indptr.nbytes + U.indptr.nbytes)
+        return int(
+            L.data.nbytes
+            + U.data.nbytes
+            + L.indices.nbytes
+            + U.indices.nbytes
+            + L.indptr.nbytes
+            + U.indptr.nbytes
+        )
 
 
 # ===========================================================================
@@ -301,8 +353,10 @@ def normalize_block_sizes(n, block_sizes):
     if np.isscalar(block_sizes):
         bs = int(block_sizes)
         if n % bs:
-            raise ValueError(f"n={n} is not divisible by block size {bs}; "
-                             f"pass an explicit list of block sizes instead")
+            raise ValueError(
+                f"n={n} is not divisible by block size {bs}; "
+                f"pass an explicit list of block sizes instead"
+            )
         return (bs,) * (n // bs)
     sizes = tuple(int(s) for s in block_sizes)
     if any(s <= 0 for s in sizes):
@@ -353,12 +407,18 @@ def extract_blocks_sparse(As, block_sizes):
     off = block_offsets(sizes)
     N = len(sizes)
     Ac = As.tocsr()
-    D = [np.asarray(Ac[off[k]:off[k + 1], off[k]:off[k + 1]].todense())
-         for k in range(N)]
-    L = [np.asarray(Ac[off[k + 1]:off[k + 2], off[k]:off[k + 1]].todense())
-         for k in range(N - 1)]
-    U = [np.asarray(Ac[off[k]:off[k + 1], off[k + 1]:off[k + 2]].todense())
-         for k in range(N - 1)]
+    D = [
+        np.asarray(Ac[off[k] : off[k + 1], off[k] : off[k + 1]].todense())
+        for k in range(N)
+    ]
+    L = [
+        np.asarray(Ac[off[k + 1] : off[k + 2], off[k] : off[k + 1]].todense())
+        for k in range(N - 1)
+    ]
+    U = [
+        np.asarray(Ac[off[k] : off[k + 1], off[k + 1] : off[k + 2]].todense())
+        for k in range(N - 1)
+    ]
     return D, L, U
 
 
@@ -381,8 +441,10 @@ class _BlockThomasBase:
         an off-diagonal block whose shape is inconsistent with its neighbours.
         """
         if len(L) != len(D) - 1 or len(U) != len(D) - 1:
-            raise ValueError(f"expected {len(D) - 1} off-diagonal blocks, "
-                             f"got len(L)={len(L)}, len(U)={len(U)}")
+            raise ValueError(
+                f"expected {len(D) - 1} off-diagonal blocks, "
+                f"got len(L)={len(L)}, len(U)={len(U)}"
+            )
         self.N = len(D)
         self.block_sizes = tuple(int(d.shape[0]) for d in D)
         for k, d in enumerate(D):
@@ -405,7 +467,7 @@ class _BlockThomasBase:
     def _split(self, b):
         """Split a flat (n,) or (n, nrhs) right-hand side into per-block views."""
         off = self.offsets
-        return [b[off[k]:off[k + 1]] for k in range(self.N)]
+        return [b[off[k] : off[k + 1]] for k in range(self.N)]
 
     def _stack(self, blocks, dtype):
         """
@@ -482,17 +544,47 @@ class BlockThomas(_BlockThomasBase):
 
     def __init__(self, D, L, U, dtype=None):
         self._init_blocks(D, L, U)
-        self.dtype = np.dtype(dtype) if dtype is not None else D[0].dtype
-        D = [d.astype(self.dtype) for d in D]
-        self.L = [l.astype(self.dtype) for l in L]
+
+        self.dtype = (
+            np.dtype(dtype)
+            if dtype is not None and type(dtype) is not int
+            else D[0].dtype
+        )
+        self.D = [d.astype(self.dtype) for d in D]
+        self.L = [lb.astype(self.dtype) for lb in L]
         self.U = [u.astype(self.dtype) for u in U]
-        self.D_mod  = [None] * self.N
+
+        if dtype is not None and type(dtype) is int:
+            self.bits = dtype
+            print(
+                f"BlockThomas: using {self.bits}-bit mantissa for factorization and solve"
+            )
+            self.D = [_mask_precision(d, self.bits) for d in D]
+            self.L = [_mask_precision(lb, self.bits) for lb in self.L]
+            self.U = [_mask_precision(u, self.bits) for u in self.U]
+        else:
+            self.bits = 52
+
+        self.D_mod = [None] * self.N
         self.lu_piv = [None] * self.N
-        self.D_mod[0]  = D[0]
-        self.lu_piv[0] = sla.lu_factor(D[0])
+        self.D_mod[0] = self.D[0]
+        self.lu_piv[0] = sla.lu_factor(self.D[0])
+        self.lu_piv[0] = (
+            _mask_precision(self.lu_piv[0][0], self.bits),
+            self.lu_piv[0][1],
+        )
         for k in range(1, self.N):
-            self.D_mod[k]  = D[k] - self.L[k-1] @ sla.lu_solve(self.lu_piv[k-1], self.U[k-1])
+            tmp = _mask_precision(
+                sla.lu_solve(self.lu_piv[k - 1], self.U[k - 1]), self.bits
+            )
+            tmp = _mask_precision(self.L[k - 1] @ tmp, self.bits)
+            self.D_mod[k] = _mask_precision(self.D[k] - tmp, self.bits)
+            # self.D_mod[k] = self.D[k] - self.L[k-1] @ sla.lu_solve(self.lu_piv[k-1], self.U[k-1])
             self.lu_piv[k] = sla.lu_factor(self.D_mod[k])
+            self.lu_piv[k] = (
+                _mask_precision(self.lu_piv[k][0], self.bits),
+                self.lu_piv[k][1],
+            )
 
     def solve(self, b):
         """
@@ -502,12 +594,22 @@ class BlockThomas(_BlockThomasBase):
         was_array = not isinstance(b, list)
         bb = self._split(b) if was_array else [bk.copy() for bk in b]
         bb = [bk.astype(self.dtype) for bk in bb]
-        for k in range(1, self.N):                       # forward sweep
-            bb[k] = bb[k] - self.L[k-1] @ sla.lu_solve(self.lu_piv[k-1], bb[k-1])
+        bb = [_mask_precision(bk, self.bits) for bk in bb]
+        for k in range(1, self.N):  # forward sweep
+            tmp = _mask_precision(
+                sla.lu_solve(self.lu_piv[k - 1], bb[k - 1]), self.bits
+            )
+            tmp = _mask_precision(self.L[k - 1] @ tmp, self.bits)
+            bb[k] = _mask_precision(bb[k] - tmp, self.bits)
+            # bb[k] = bb[k] - self.L[k-1] @ sla.lu_solve(self.lu_piv[k-1], bb[k-1])
         x = [None] * self.N
         x[-1] = sla.lu_solve(self.lu_piv[-1], bb[-1])
-        for k in range(self.N-2, -1, -1):                # backward sweep
-            x[k] = sla.lu_solve(self.lu_piv[k], bb[k] - self.U[k] @ x[k+1])
+        x[-1] = _mask_precision(x[-1], self.bits)
+        for k in range(self.N - 2, -1, -1):  # backward sweep
+            tmp = _mask_precision(self.U[k] @ x[k + 1], self.bits)
+            tmp = _mask_precision(bb[k] - tmp, self.bits)
+            x[k] = _mask_precision(sla.lu_solve(self.lu_piv[k], tmp), self.bits)
+            # x[k] = sla.lu_solve(self.lu_piv[k], bb[k] - self.U[k] @ x[k+1])
         return np.concatenate(x, axis=0) if was_array else x
 
     def get_LUP(self):
@@ -515,9 +617,9 @@ class BlockThomas(_BlockThomasBase):
         (L, U, Dmod_lu, Dmod_piv), stacked (N, bs, bs) arrays for a uniform
         partition and lists of per-block arrays for a custom one.
         """
-        Lb   = self._stack(self.L, self.dtype)
-        Ub   = self._stack(self.U, self.dtype)
-        Dlu  = self._stack([lu  for lu, piv in self.lu_piv], self.dtype)
+        Lb = self._stack(self.L, self.dtype)
+        Ub = self._stack(self.U, self.dtype)
+        Dlu = self._stack([lu for lu, piv in self.lu_piv], self.dtype)
         Dpiv = self._stack([piv for lu, piv in self.lu_piv], np.int32)
         return Lb, Ub, Dlu, Dpiv
 
@@ -579,14 +681,14 @@ class BlockThomasExplicitInv(_BlockThomasBase):
         self._init_blocks(D, L, U)
         self.dtype = np.dtype(dtype) if dtype is not None else D[0].dtype
         D = [d.astype(self.dtype) for d in D]
-        self.L = [l.astype(self.dtype) for l in L]
+        self.L = [lb.astype(self.dtype) for lb in L]
         self.U = [u.astype(self.dtype) for u in U]
-        self.D_mod     = [None] * self.N
+        self.D_mod = [None] * self.N
         self.D_mod_inv = [None] * self.N
-        self.D_mod[0]     = D[0]
+        self.D_mod[0] = D[0]
         self.D_mod_inv[0] = sla.inv(D[0])
         for k in range(1, self.N):
-            self.D_mod[k]     = D[k] - self.L[k-1] @ self.D_mod_inv[k-1] @ self.U[k-1]
+            self.D_mod[k] = D[k] - self.L[k - 1] @ self.D_mod_inv[k - 1] @ self.U[k - 1]
             self.D_mod_inv[k] = sla.inv(self.D_mod[k])
 
     def solve(self, b):
@@ -600,12 +702,12 @@ class BlockThomasExplicitInv(_BlockThomasBase):
         bb = [bk.astype(self.dtype) for bk in bb]
         # Forward sweep: substitution replaced by multiplication by D_mod_inv.
         for k in range(1, self.N):
-            bb[k] = bb[k] - self.L[k-1] @ (self.D_mod_inv[k-1] @ bb[k-1])
+            bb[k] = bb[k] - self.L[k - 1] @ (self.D_mod_inv[k - 1] @ bb[k - 1])
         # Backward sweep: also entirely matrix-vector products.
         x = [None] * self.N
         x[-1] = self.D_mod_inv[-1] @ bb[-1]
-        for k in range(self.N-2, -1, -1):
-            x[k] = self.D_mod_inv[k] @ (bb[k] - self.U[k] @ x[k+1])
+        for k in range(self.N - 2, -1, -1):
+            x[k] = self.D_mod_inv[k] @ (bb[k] - self.U[k] @ x[k + 1])
         return np.concatenate(x, axis=0) if was_array else x
 
     def get_LUP(self):
@@ -625,9 +727,9 @@ class BlockThomasExplicitInv(_BlockThomasBase):
         the global U.
         """
         Db_inv = self._stack(self.D_mod_inv, self.dtype)
-        Db     = self._stack(self.D_mod, self.dtype)
-        Lb     = self._stack(self.L, self.dtype)
-        Ub     = self._stack(self.U, self.dtype)
+        Db = self._stack(self.D_mod, self.dtype)
+        Lb = self._stack(self.L, self.dtype)
+        Ub = self._stack(self.U, self.dtype)
         return Db_inv, Db, Lb, Ub
 
     def factor_nbytes(self):
@@ -881,9 +983,10 @@ def lu_fp16(Dm):
             piv[[j, p]] = piv[[p, j]].copy()
         if LU[j, j] == 0:
             raise ZeroDivisionError(f"zero fp16 pivot at column {j}")
-        LU[j + 1:, j] = (LU[j + 1:, j] / LU[j, j]).astype(H)
-        LU[j + 1:, j + 1:] = (LU[j + 1:, j + 1:]
-                              - np.outer(LU[j + 1:, j], LU[j, j + 1:])).astype(H)
+        LU[j + 1 :, j] = (LU[j + 1 :, j] / LU[j, j]).astype(H)
+        LU[j + 1 :, j + 1 :] = (
+            LU[j + 1 :, j + 1 :] - np.outer(LU[j + 1 :, j], LU[j, j + 1 :])
+        ).astype(H)
     return LU, piv
 
 
@@ -900,9 +1003,9 @@ def lu_solve_fp16(LU, piv, Rhs):
     if one_d:
         X = X[:, None]
     k = LU.shape[0]
-    for j in range(k):                       # unit lower triangle, forward
-        X[j + 1:] = (X[j + 1:] - np.outer(LU[j + 1:, j], X[j])).astype(H)
-    for j in range(k - 1, -1, -1):           # upper triangle, backward
+    for j in range(k):  # unit lower triangle, forward
+        X[j + 1 :] = (X[j + 1 :] - np.outer(LU[j + 1 :, j], X[j])).astype(H)
+    for j in range(k - 1, -1, -1):  # upper triangle, backward
         X[j] = (X[j] / LU[j, j]).astype(H)
         X[:j] = (X[:j] - np.outer(LU[:j, j], X[j])).astype(H)
     return X[:, 0] if one_d else X
@@ -950,16 +1053,23 @@ class _BlockThomasFP16Base(_BlockThomasBase):
         """
         self._init_blocks(D, L, U)
         self.dtype = H
-        amax = max(max(float(np.abs(b).max()) for b in D),
-                   max((float(np.abs(b).max()) for b in L), default=0.0),
-                   max((float(np.abs(b).max()) for b in U), default=0.0))
+        amax = max(
+            max(float(np.abs(b).max()) for b in D),
+            max((float(np.abs(b).max()) for b in L), default=0.0),
+            max((float(np.abs(b).max()) for b in U), default=0.0),
+        )
         self.s = _pow2_scale(amax)
-        to16 = lambda X: (embed_block(X) * self.s).astype(H)
-        self.L = [to16(l) for l in L]
+
+        def to16(X):
+            """Embed and scale a complex block to float16."""
+            return (embed_block(X) * self.s).astype(H)
+
+        # to16 = lambda X: (embed_block(X) * self.s).astype(H)
+        self.L = [to16(lb) for lb in L]
         self.U = [to16(u) for u in U]
         # Row-sum norms for the overflow guard in _matmul16, computed once per
         # stored block rather than at every application.
-        self.L_inf = [_inf_norm(l) for l in self.L]
+        self.L_inf = [_inf_norm(lb) for lb in self.L]
         self.U_inf = [_inf_norm(u) for u in self.U]
         return to16
 
@@ -978,8 +1088,9 @@ class _BlockThomasFP16Base(_BlockThomasBase):
         b = np.asarray(b)
         if b.ndim == 1:
             return self._solve_one(b)
-        return np.column_stack([self._solve_one(np.ascontiguousarray(b[:, j]))
-                                for j in range(b.shape[1])])
+        return np.column_stack(
+            [self._solve_one(np.ascontiguousarray(b[:, j])) for j in range(b.shape[1])]
+        )
 
     def _rhs_scale(self, b):
         """
@@ -1061,15 +1172,16 @@ class BlockThomasFP16(_BlockThomasFP16Base):
         if rs is None:
             return np.zeros_like(b)
         bb = self._split_embed(b, rs)
-        for k in range(1, self.N):                       # forward sweep
+        for k in range(1, self.N):  # forward sweep
             w = lu_solve_fp16(*self.lu_piv[k - 1], bb[k - 1])
             bb[k] = (bb[k] - _matmul16(self.L[k - 1], self.L_inf[k - 1], w)).astype(H)
         x = [None] * self.N
         x[-1] = lu_solve_fp16(*self.lu_piv[-1], bb[-1])
-        for k in range(self.N - 2, -1, -1):              # backward sweep
+        for k in range(self.N - 2, -1, -1):  # backward sweep
             x[k] = lu_solve_fp16(
                 *self.lu_piv[k],
-                (bb[k] - _matmul16(self.U[k], self.U_inf[k], x[k + 1])).astype(H))
+                (bb[k] - _matmul16(self.U[k], self.U_inf[k], x[k + 1])).astype(H),
+            )
         return self._finish(x, rs)
 
     def get_LUP(self):
@@ -1079,9 +1191,9 @@ class BlockThomasFP16(_BlockThomasFP16Base):
         These are factors of s * embed(A), not of A. Reconstruction requires
         self.s and the recorded partition; see block-thomas/growth_factor.py.
         """
-        Lb   = self._stack(self.L, H)
-        Ub   = self._stack(self.U, H)
-        Dlu  = self._stack([lu  for lu, piv in self.lu_piv], H)
+        Lb = self._stack(self.L, H)
+        Ub = self._stack(self.U, H)
+        Dlu = self._stack([lu for lu, piv in self.lu_piv], H)
         Dpiv = self._stack([piv for lu, piv in self.lu_piv], np.int32)
         return Lb, Ub, Dlu, Dpiv
 
@@ -1164,14 +1276,17 @@ class BlockThomasExplicitInvFP16(_BlockThomasFP16Base):
     def __init__(self, D, L, U, dtype=None, inv_dtype=np.float32):
         to16 = self._init_fp16(D, L, U)
         self.inv_dtype = np.dtype(inv_dtype)
-        if self.inv_dtype not in (np.dtype(np.float16), np.dtype(np.float32),
-                                  np.dtype(np.float64)):
+        if self.inv_dtype not in (
+            np.dtype(np.float16),
+            np.dtype(np.float32),
+            np.dtype(np.float64),
+        ):
             raise ValueError(f"inv_dtype must be float16/32/64, got {self.inv_dtype}")
 
-        self.G = [None] * self.N           # scaled explicit inverses, float16
-        self.t = np.ones(self.N)           # their power-of-two scales
-        self.G_inf = [0.0] * self.N        # row-sum norms for the matmul guard
-        self.D_mod = [None] * self.N       # retained for the growth-factor analysis
+        self.G = [None] * self.N  # scaled explicit inverses, float16
+        self.t = np.ones(self.N)  # their power-of-two scales
+        self.G_inf = [0.0] * self.N  # row-sum norms for the matmul guard
+        self.D_mod = [None] * self.N  # retained for the growth-factor analysis
 
         Dm = to16(D[0])
         self.D_mod[0] = Dm
@@ -1202,7 +1317,8 @@ class BlockThomasExplicitInvFP16(_BlockThomasFP16Base):
         if not np.all(np.isfinite(Y)):
             raise FloatingPointError(
                 f"non-finite explicit inverse at block {k}: the modified "
-                f"diagonal block is singular to working precision")
+                f"diagonal block is singular to working precision"
+            )
         t = _pow2_scale(float(np.abs(Y).max()))
         G = (Y * t).astype(H)
         if not np.all(np.isfinite(G)):
@@ -1241,7 +1357,8 @@ class BlockThomasExplicitInvFP16(_BlockThomasFP16Base):
         x[-1] = self._apply_ginv(self.N - 1, bb[-1])
         for k in range(self.N - 2, -1, -1):
             x[k] = self._apply_ginv(
-                k, (bb[k] - _matmul16(self.U[k], self.U_inf[k], x[k + 1])).astype(H))
+                k, (bb[k] - _matmul16(self.U[k], self.U_inf[k], x[k + 1])).astype(H)
+            )
         return self._finish(x, rs)
 
     def get_LUP(self):
@@ -1256,9 +1373,13 @@ class BlockThomasExplicitInvFP16(_BlockThomasFP16Base):
         G[k] / t[k] is the inverse of the s-scaled embedded D_mod[k], so
         reconstruction requires both self.s and t.
         """
-        return (self._stack(self.G, H), self.t.copy(),
-                self._stack(self.D_mod, H),
-                self._stack(self.L, H), self._stack(self.U, H))
+        return (
+            self._stack(self.G, H),
+            self.t.copy(),
+            self._stack(self.D_mod, H),
+            self._stack(self.L, H),
+            self._stack(self.U, H),
+        )
 
     def factor_nbytes(self):
         # D_mod is excluded, as in BlockThomasExplicitInv: it is retained for
@@ -1300,6 +1421,7 @@ class UMFPACK:
 
     def __init__(self, A_csc, dtype=None):
         import scikits.umfpack as um
+
         self.dtype = np.dtype(dtype) if dtype is not None else A_csc.dtype
         if self.dtype not in self._DOUBLE:
             raise TypeError(
@@ -1326,10 +1448,16 @@ class UMFPACK:
 
     def factor_nbytes(self):
         L, U = self.lu.L, self.lu.U
-        nbytes = int(L.data.nbytes + L.indices.nbytes + L.indptr.nbytes +
-                     U.data.nbytes + U.indices.nbytes + U.indptr.nbytes +
-                     np.asarray(self.lu.perm_r).nbytes +
-                     np.asarray(self.lu.perm_c).nbytes)
+        nbytes = int(
+            L.data.nbytes
+            + L.indices.nbytes
+            + L.indptr.nbytes
+            + U.data.nbytes
+            + U.indices.nbytes
+            + U.indptr.nbytes
+            + np.asarray(self.lu.perm_r).nbytes
+            + np.asarray(self.lu.perm_c).nbytes
+        )
         R, _ = self.get_scaling()
         if R is not None:
             nbytes += np.asarray(R).nbytes
@@ -1360,6 +1488,7 @@ class MUMPS:
 
     def __init__(self, A, dtype=None, symmetric=False):
         import mumps  # python-mumps
+
         self.dtype = np.dtype(dtype) if dtype is not None else A.dtype
         A = A.astype(self.dtype).tocsc()
         self.ctx = mumps.Context()
@@ -1369,7 +1498,7 @@ class MUMPS:
     def solve(self, b):
         b = np.asarray(b, dtype=self.dtype)
         try:
-            return self.ctx.solve(b)               # some versions accept 2-D b
+            return self.ctx.solve(b)  # some versions accept 2-D b
         except Exception:
             return _solve_columns(self.ctx.solve, b)
 
@@ -1384,7 +1513,7 @@ class MUMPS:
         # rather than raising.
         try:
             infog = self.ctx.mumps_instance.infog
-            n_entries = int(infog[2])              # INFOG(3), zero-based index 2
+            n_entries = int(infog[2])  # INFOG(3), zero-based index 2
             if n_entries < 0:
                 n_entries = -n_entries * 1_000_000
             return int(n_entries * self.dtype.itemsize)
@@ -1416,6 +1545,7 @@ class GMRESCuPy:
             raise RuntimeError("GMRESCuPy requires CuPy and a visible CUDA GPU.")
         import cupy as cp
         import cupyx.scipy.sparse as cusp
+
         self._cp = cp
         self.dtype = np.dtype(dtype) if dtype is not None else A.dtype
         if rtol is None:
@@ -1431,12 +1561,22 @@ class GMRESCuPy:
 
     def _solve_one_gpu(self, b_gpu):
         from cupyx.scipy.sparse.linalg import gmres
+
         iters = [0]
-        def cb(x): iters[0] += 1
-        x_gpu, info = gmres(self.A_gpu, b_gpu, rtol=self.rtol,
-                            atol=0.0, restart=self.restart,
-                            maxiter=self.maxiter, callback=cb,
-                            callback_type="pr_norm")
+
+        def cb(x):
+            iters[0] += 1
+
+        x_gpu, info = gmres(
+            self.A_gpu,
+            b_gpu,
+            rtol=self.rtol,
+            atol=0.0,
+            restart=self.restart,
+            maxiter=self.maxiter,
+            callback=cb,
+            callback_type="pr_norm",
+        )
         self.last_iters, self.last_info = iters[0], int(info)
         return x_gpu
 
@@ -1500,8 +1640,11 @@ class CuDSS:
 
     def __init__(self, A, dtype=None, nrhs=1):
         if not gpu_available():
-            raise RuntimeError("CuDSS requires an NVIDIA GPU with a working CUDA install.")
+            raise RuntimeError(
+                "CuDSS requires an NVIDIA GPU with a working CUDA install."
+            )
         import nvmath
+
         self.dtype = np.dtype(dtype) if dtype is not None else A.dtype
         # DirectSolver requires CSR; the shared matrices are stored CSC.
         self.A_csr = A.astype(self.dtype).tocsr()
@@ -1510,8 +1653,8 @@ class CuDSS:
 
         b0 = np.zeros((self.n, self.nrhs), dtype=self.dtype, order="F")
         self.solver = nvmath.sparse.advanced.DirectSolver(self.A_csr, b0)
-        self.plan_info = self.solver.plan()        # reordering and symbolic phase
-        self.fac_info = self.solver.factorize()    # numerical factorization
+        self.plan_info = self.solver.plan()  # reordering and symbolic phase
+        self.fac_info = self.solver.factorize()  # numerical factorization
 
     def solve(self, b):
         b = np.asarray(b, dtype=self.dtype, order="F")
@@ -1519,10 +1662,13 @@ class CuDSS:
             self.solver.reset_operands(b=b)
             return np.asarray(self.solver.solve())
         except (AttributeError, TypeError) as e:
-            print(f"CuDSS: reset_operands unavailable ({e}); rebuilding the "
-                  f"solver with the new right-hand side. The separation of "
-                  f"factorization and solve time is lost for this call.")
+            print(
+                f"CuDSS: reset_operands unavailable ({e}); rebuilding the "
+                f"solver with the new right-hand side. The separation of "
+                f"factorization and solve time is lost for this call."
+            )
             import nvmath
+
             self.free()
             self.solver = nvmath.sparse.advanced.DirectSolver(self.A_csr, b)
             self.plan_info = self.solver.plan()
@@ -1538,7 +1684,7 @@ class CuDSS:
         md = {
             "col_permutation": getattr(self.plan_info, "col_permutation", None),
             "row_permutation": getattr(self.plan_info, "row_permutation", None),
-            "lu_nnz":          getattr(self.fac_info, "lu_nnz", None),
+            "lu_nnz": getattr(self.fac_info, "lu_nnz", None),
         }
         return {k: v for k, v in md.items() if v is not None}
 

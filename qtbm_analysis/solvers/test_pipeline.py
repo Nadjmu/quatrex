@@ -36,15 +36,18 @@ import sys
 import tempfile
 from pathlib import Path
 
+import cli
 import numpy as np
 import scipy.sparse as sp
-
-import cli
 from solver_classes import (
-    BlockThomas, BlockThomasExplicitInv,
-    BlockThomasFP16, BlockThomasExplicitInvFP16,
-    extract_blocks_sparse, find_block_slices, block_sizes_from_matrix,
-    normalize_block_sizes, offband_nnz,
+    BlockThomas,
+    BlockThomasExplicitInv,
+    BlockThomasExplicitInvFP16,
+    BlockThomasFP16,
+    block_sizes_from_matrix,
+    extract_blocks_sparse,
+    normalize_block_sizes,
+    offband_nnz,
 )
 
 FAILURES = []
@@ -72,8 +75,8 @@ def build_system(block_sizes, seed=0, diag_boost=3.0):
         return rng.standard_normal((p, q)) + 1j * rng.standard_normal((p, q))
 
     D = [rc(m, m) + diag_boost * max(sizes) * np.eye(m) for m in sizes]
-    L = [rc(sizes[k + 1], sizes[k]) for k in range(N - 1)]   # sub-diagonal
-    U = [rc(sizes[k], sizes[k + 1]) for k in range(N - 1)]   # super-diagonal
+    L = [rc(sizes[k + 1], sizes[k]) for k in range(N - 1)]  # sub-diagonal
+    U = [rc(sizes[k], sizes[k + 1]) for k in range(N - 1)]  # super-diagonal
 
     grid = [[None] * N for _ in range(N)]
     for k in range(N):
@@ -109,23 +112,36 @@ def test_variants(label, block_sizes, tol_c128, tol_c64, tol_fp16):
     for k in range(N - 1):
         grid[k + 1][k] = sp.csr_matrix(L[k])
         grid[k][k + 1] = sp.csr_matrix(U[k])
-    diff = (A - sp.bmat(grid, format="csc"))
+    diff = A - sp.bmat(grid, format="csc")
     diff.eliminate_zeros()
-    check("extract_blocks_sparse is lossless",
-          diff.nnz == 0 or np.abs(diff.data).max() == 0.0)
+    check(
+        "extract_blocks_sparse is lossless",
+        diff.nnz == 0 or np.abs(diff.data).max() == 0.0,
+    )
 
     # -- Implementation 1, complex128 / complex64 ---------------------------
-    for dt, tol in ((np.complex128, tol_c128), (np.complex64, tol_c64)):
+    for dt, tol in (
+        (np.complex128, tol_c128),
+        (np.complex64, tol_c64),
+        (52, tol_c128),
+        (40, 1e-10),
+        (32, 1e-8),
+        (23, tol_c64),
+        (16, 1e-4),
+    ):
         bt = BlockThomas(D, L, U, dt)
         r = relres(A, bt.solve(b), b)
-        check(f"BlockThomas {np.dtype(dt).name}", r < tol, f"relres={r:.2e}")
+        if type(dt) is int:
+            dt_name = f"mantissa={dt}"
+        else:
+            dt_name = np.dtype(dt).name
+        check(f"BlockThomas {dt_name}", r < tol, f"relres={r:.2e}")
 
     # -- Implementation 2, complex128 / complex64 ---------------------------
     for dt, tol in ((np.complex128, tol_c128), (np.complex64, tol_c64)):
         bt = BlockThomasExplicitInv(D, L, U, dt)
         r = relres(A, bt.solve(b), b)
-        check(f"BlockThomasExplicitInv {np.dtype(dt).name}", r < tol,
-              f"relres={r:.2e}")
+        check(f"BlockThomasExplicitInv {np.dtype(dt).name}", r < tol, f"relres={r:.2e}")
 
     # -- Implementation 1, fp16 ---------------------------------------------
     bt16 = BlockThomasFP16(D, L, U)
@@ -138,35 +154,49 @@ def test_variants(label, block_sizes, tol_c128, tol_c64, tol_fp16):
         bti = BlockThomasExplicitInvFP16(D, L, U, inv_dtype=inv_dt)
         r = relres(A, bti.solve(b), b)
         results[np.dtype(inv_dt).name] = r
-        check(f"BlockThomasExplicitInvFP16 (inv={np.dtype(inv_dt).name})",
-              r < tol_fp16, f"relres={r:.2e}")
-    print(f"        fp32-inverse buys {results['float16'] / results['float32']:.2f}x "
-          f"over the pure-fp16 inverse")
+        check(
+            f"BlockThomasExplicitInvFP16 (inv={np.dtype(inv_dt).name})",
+            r < tol_fp16,
+            f"relres={r:.2e}",
+        )
+    print(
+        f"        fp32-inverse buys {results['float16'] / results['float32']:.2f}x "
+        f"over the pure-fp16 inverse"
+    )
 
     # -- multi-RHS ----------------------------------------------------------
     B = np.column_stack([b, 2 * b, -0.5 * b])
-    for cls, tol in ((BlockThomas, tol_c128),
-                     (BlockThomasExplicitInv, tol_c128),
-                     (BlockThomasFP16, tol_fp16),
-                     (BlockThomasExplicitInvFP16, tol_fp16)):
+    for cls, tol in (
+        (BlockThomas, tol_c128),
+        (BlockThomasExplicitInv, tol_c128),
+        (BlockThomasFP16, tol_fp16),
+        (BlockThomasExplicitInvFP16, tol_fp16),
+    ):
         X = cls(D, L, U).solve(B)
         worst = max(relres(A, X[:, j], B[:, j]) for j in range(B.shape[1]))
-        check(f"{cls.__name__} multi-RHS", X.shape == B.shape and worst < tol,
-              f"worst relres={worst:.2e}")
+        check(
+            f"{cls.__name__} multi-RHS",
+            X.shape == B.shape and worst < tol,
+            f"worst relres={worst:.2e}",
+        )
 
     # -- factor layout: stacked iff uniform ---------------------------------
     uniform = len(set(sizes)) == 1
     bt = BlockThomas(D, L, U, np.complex128)
     Lb, Ub, Dlu, Dpiv = bt.get_LUP()
-    check("get_LUP layout matches partition",
-          all(isinstance(p, np.ndarray) == uniform for p in (Lb, Ub, Dlu, Dpiv)),
-          "stacked" if uniform else "ragged lists")
+    check(
+        "get_LUP layout matches partition",
+        all(isinstance(p, np.ndarray) == uniform for p in (Lb, Ub, Dlu, Dpiv)),
+        "stacked" if uniform else "ragged lists",
+    )
     check("factor_nbytes > 0", bt.factor_nbytes() > 0)
 
     bti = BlockThomasExplicitInv(D, L, U, np.complex128)
     Dinv, Dmod, Lb2, Ub2 = bti.get_inverses()
-    check("get_inverses returns D_mod for the growth-factor analysis",
-          len(Dmod) == N and bti.get_LUP() is None)
+    check(
+        "get_inverses returns D_mod for the growth-factor analysis",
+        len(Dmod) == N and bti.get_LUP() is None,
+    )
     check("ExplicitInv factor_nbytes > 0", bti.factor_nbytes() > 0)
 
 
@@ -181,16 +211,18 @@ def test_block_detection():
     # is absorbed into the first real block), so the leading block is coarser
     # than the true partition: [5,11,...] comes back as [16,...]. Everything
     # after the first block must match exactly.
-    check("find_block_slices recovers the trailing partition",
-          found[1:] == sizes[2:], f"found={found}")
+    check(
+        "find_block_slices recovers the trailing partition",
+        found[1:] == sizes[2:],
+        f"found={found}",
+    )
     check("detected partition tiles A", sum(found) == A.shape[0])
     check("detected partition is off-band clean", offband_nnz(A, found) == 0)
     # a coarser partition is still a correct one: solving with it must work
     Dd, Ld, Ud = extract_blocks_sparse(A, found)
     _, bdet, _ = build_system(sizes, seed=3)
     xdet = BlockThomas(Dd, Ld, Ud, np.complex128).solve(bdet)
-    check("detected partition solves correctly",
-          relres(A, xdet, bdet) < 1e-12)
+    check("detected partition solves correctly", relres(A, xdet, bdet) < 1e-12)
 
     # a partition that does NOT tile the matrix must be rejected outright
     try:
@@ -201,16 +233,20 @@ def test_block_detection():
 
     # a matrix with a coupling outside the band must be caught
     A2 = A.tolil()
-    A2[0, A.shape[0] - 1] = 1.0 + 1j          # corner entry, far off band
-    check("offband_nnz catches an out-of-band coupling",
-          offband_nnz(A2.tocsr(), sizes) == 1)
+    A2[0, A.shape[0] - 1] = 1.0 + 1j  # corner entry, far off band
+    check(
+        "offband_nnz catches an out-of-band coupling",
+        offband_nnz(A2.tocsr(), sizes) == 1,
+    )
 
     # uniform int path still works and matches the explicit list
     A3, _, _ = build_system([8] * 6, seed=4)
     D1, L1, U1 = extract_blocks_sparse(A3, 8)
     D2, L2, U2 = extract_blocks_sparse(A3, [8] * 6)
-    check("int and list partitions agree",
-          all(np.array_equal(a, b) for a, b in zip(D1, D2)))
+    check(
+        "int and list partitions agree",
+        all(np.array_equal(a, b) for a, b in zip(D1, D2)),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -225,8 +261,8 @@ def test_h5_roundtrip(label, block_sizes):
         return
 
     sys.path.insert(0, str((Path(__file__).parent / ".." / "block-thomas").resolve()))
-    from bench_all import bench
     import growth_factor as gf
+    from bench_all import bench
 
     A, b, _ = build_system(block_sizes, seed=7)
     idx = 0
@@ -241,21 +277,35 @@ def test_h5_roundtrip(label, block_sizes):
             g.create_dataset("indptr", data=Ac.indptr)
 
         with h5py.File(h5path, "a") as f:
-            bench(A, b, idx, block_sizes,
-                  dtypes=(np.complex128,), h5file=f, save=True,
-                  solvers=("superlu", "block-thomas", "block-thomas-inv",
-                           "block-thomas-fp16", "block-thomas-inv-fp16"))
+            bench(
+                A,
+                b,
+                idx,
+                block_sizes,
+                dtypes=(np.complex128,),
+                h5file=f,
+                save=True,
+                solvers=(
+                    "superlu",
+                    "block-thomas",
+                    "block-thomas-inv",
+                    "block-thomas-fp16",
+                    "block-thomas-inv-fp16",
+                ),
+            )
 
         # every stored factorization must still reproduce the matrix it
         # factored, after a full write/read cycle
         with h5py.File(h5path, "r") as f:
             # Canonical solver names; the stored group is resolved through
             # cli.h5_group, exactly as the analysis scripts do.
-            for solver, dt in (("block-thomas", "complex128"),
-                               ("block-thomas-inv", "complex128"),
-                               ("block-thomas-fp16", "complex32"),
-                               ("block-thomas-inv-fp16", "complex32"),
-                               ("superlu", "complex128")):
+            for solver, dt in (
+                ("block-thomas", "complex128"),
+                ("block-thomas-inv", "complex128"),
+                ("block-thomas-fp16", "complex32"),
+                ("block-thomas-inv-fp16", "complex32"),
+                ("superlu", "complex128"),
+            ):
                 path = f"E_{idx}/{cli.h5_group(solver)}/{dt}"
                 if path not in f:
                     check(f"{solver}/{dt} present", False)
@@ -267,32 +317,46 @@ def test_h5_roundtrip(label, block_sizes):
                 r = res["1-norm"]["resid_rel"]
                 # fp16 factors only reproduce A to fp16 accuracy, by definition
                 tol = 1e-1 if dt == "complex32" else 1e-10
-                check(f"{solver}/{dt} reloaded factors reproduce A_eff",
-                      r < tol, f"resid={r:.2e}  rho={res['1-norm']['rho']:.2e}")
+                check(
+                    f"{solver}/{dt} reloaded factors reproduce A_eff",
+                    r < tol,
+                    f"resid={r:.2e}  rho={res['1-norm']['rho']:.2e}",
+                )
 
             # ragged partitions must survive the flatten/reshape round trip
             import factor_io as fio
+
             g = f[f"E_{idx}/{cli.h5_group('block-thomas')}/complex128"]
             blocks = fio.load_blocks(g, "L")
             sizes = normalize_block_sizes(A.shape[0], block_sizes)
             uniform = len(set(sizes)) == 1
-            check("stored block layout matches partition",
-                  isinstance(blocks, np.ndarray) == uniform,
-                  "stacked" if uniform else "ragged")
-            check("block_sizes recorded in the file",
-                  list(g["block_sizes"][:]) == list(sizes))
+            check(
+                "stored block layout matches partition",
+                isinstance(blocks, np.ndarray) == uniform,
+                "stacked" if uniform else "ragged",
+            )
+            check(
+                "block_sizes recorded in the file",
+                list(g["block_sizes"][:]) == list(sizes),
+            )
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 if __name__ == "__main__":
-    test_variants("uniform", [8] * 30, tol_c128=1e-12, tol_c64=1e-4,
-                  tol_fp16=5e-2)
-    test_variants("custom / non-uniform", [6, 13, 9, 4, 11, 7, 15, 5, 10, 8],
-                  tol_c128=1e-12, tol_c64=1e-4, tol_fp16=5e-2)
+    test_variants("uniform", [8] * 30, tol_c128=1e-12, tol_c64=1e-4, tol_fp16=5e-2)
+    test_variants(
+        "custom / non-uniform",
+        [6, 13, 9, 4, 11, 7, 15, 5, 10, 8],
+        tol_c128=1e-12,
+        tol_c64=1e-4,
+        tol_fp16=5e-2,
+    )
     test_block_detection()
     test_h5_roundtrip("uniform", [8] * 12)
     test_h5_roundtrip("custom / non-uniform", [6, 13, 9, 4, 11, 7])
 
-    print(f"\n{'ALL TESTS PASSED' if not FAILURES else 'FAILURES: ' + ', '.join(FAILURES)}")
+    print(
+        f"\n{'ALL TESTS PASSED' if not FAILURES else 'FAILURES: ' + ', '.join(FAILURES)}"
+    )
     raise SystemExit(1 if FAILURES else 0)
