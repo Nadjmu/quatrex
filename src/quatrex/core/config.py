@@ -1947,6 +1947,15 @@ class BandEdgeConfig(BaseModel):
     """The number of block sections to use when computing the band
     edges."""
 
+    num_ref_iterations: PositiveInt = 2
+    """The number of refinement iterations to use when computing the
+    band edges.
+
+    The location of the band edges need to be refined iteratively, since
+    the self-energy depends on the energy.
+
+    """
+
     @field_validator("use_eigvalsh", mode="after")
     @classmethod
     def check_use_eigvalsh(cls, value) -> bool:

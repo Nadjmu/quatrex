@@ -364,12 +364,22 @@ def find_renormalized_eigenvalues(
     potential: NDArray,
     sigma_retarded_hermitian: DSDBSparse,
     energies: NDArray,
-    conduction_band_guesses: tuple[float, float],
-    mid_gap_energies: tuple[float, float],
-    num_ref_iterations: int = 2,
+    conduction_band_guess: float,
+    mid_gap_energy: float,
+    diagonal_inds: tuple[int, int],
+    upper_inds: tuple[int, int],
+    order: str | None = None,
     band_edge_config: BandEdgeConfig = BandEdgeConfig(),
-) -> tuple[NDArray, NDArray]:
-    """Computes renormalized eigenvalues for left and right contacts.
+) -> NDArray:
+    """Computes renormalized eigenvalues for a specific contact.
+    The contact is defined by the diagonal and upper block indices. The
+    eigenvalues are computed at the Gamma point (k=0) and are used to
+    determine the band edges.
+
+    Note
+    ----
+    Only the block comm ranks holding the specific contact should call
+    this function. Otherwise, there will be unexpected behavior.
 
     Parameters
     ----------
@@ -384,181 +394,113 @@ def find_renormalized_eigenvalues(
         The hermitian part of the retarded self-energy.
     energies : NDArray
         The energies.
-    conduction_band_guesses : tuple[float, float]
-        Initial guesses for the conduction band edges of the left and
-        right contacts. These should be as close as possible to the
-        actual band edges to ensure convergence of the non-linear
-        eigenvalue problem.
-    num_ref_iterations : int, optional
-        The number of refinement iterations, by default 2.
+    conduction_band_guess : float
+        A guess for the conduction band edge.
+    mid_gap_energy : float
+        An energy in the band gap. This is used to separate conduction
+        from valence bands.
+    diagonal_inds : tuple[int, int]
+        The indices of the diagonal blocks corresponding to the contact.
+    upper_inds : tuple[int, int]
+        The indices of the upper off-diagonal blocks corresponding to
+        the contact.
+    order : str | None, optional
+        The permutation of the blocks to achieve the same order as the
+        canonical left contact. If None, the left contact order is
+        assumed. Instead of an explicit permutation, the string
+        "reverse" can be passed to reverse the order of the blocks,
+        which is equivalent to the right contact order.
     band_edge_config : BandEdgeConfig, optional
         The configuration for the band edge computation, by default
         BandEdgeConfig().
 
     Returns
     -------
-    left_band_edges : NDArray
-        The left band edges.
-    right_band_edges : NDArray
-        The right band edges.
+    band_edges : NDArray
+        The band edges.
 
     """
 
     # Find the rank that holds the energies corresponding to the initial
     # energy guess.
-    left_conduction_band_guess, right_conduction_band_guess = conduction_band_guesses
-    left_mid_gap_energy, right_mid_gap_energy = mid_gap_energies
-
     section_sizes, __ = get_section_sizes(energies.size, comm.stack.size)
     section_sizes = xp.array(section_sizes)
     section_offsets = xp.hstack(([0], xp.cumsum(section_sizes)))
 
-    left_band_edges = xp.empty(2, dtype=float)
-    right_band_edges = xp.empty(2, dtype=float)
+    band_edges = xp.empty(2, dtype=float)
 
-    if comm.block.rank == 0:
-        for __ in range(num_ref_iterations):
-            ind_left = xp.argmin(xp.abs(energies - left_conduction_band_guess))
+    for __ in range(band_edge_config.num_ref_iterations):
+        ind = xp.argmin(xp.abs(energies - conduction_band_guess))
 
-            if energies[ind_left] < left_conduction_band_guess:
-                ind_left_lower = ind_left
-                ind_left_upper = ind_left + 1
-            else:
-                ind_left_lower = ind_left - 1
-                ind_left_upper = ind_left
+        if energies[ind] < conduction_band_guess:
+            ind_lower = ind
+            ind_upper = ind + 1
+        else:
+            ind_lower = ind - 1
+            ind_upper = ind
 
-            # Sanity checks when the energy grid is unphysical,
-            # but one still wants to benchmark
-            if ind_left_upper >= len(energies):
-                ind_left_upper = len(energies) - 1
-                if comm.rank == 0:
-                    warnings.warn(
-                        "The initial guess for the conduction band edge is above the maximum energy. "
-                        "Using the maximum energy for the upper index."
-                    )
-
-            if ind_left_lower < 0:
-                ind_left_lower = 0
-                if comm.rank == 0:
-                    warnings.warn(
-                        "The initial guess for the conduction band edge is below the minimum energy. "
-                        "Using the minimum energy for the lower index."
-                    )
-
-            rank_left_lower = xp.digitize(ind_left_lower, section_offsets) - 1
-            rank_left_upper = xp.digitize(ind_left_upper, section_offsets) - 1
-
-            if comm.stack.rank in [rank_left_lower, rank_left_upper]:
-                # NOTE: This assumes that each rank has all k-points and that the band edge
-                # is at the Gamma point.
-                # TODO: Generalize this to arbitrary k-points (and maybe change gamma point index).
-                e_0_left = _compute_eigenvalues(
-                    target_energy=left_conduction_band_guess,
-                    energies=energies,
-                    hamiltonian=hamiltonian,
-                    overlap=overlap,
-                    potential=potential,
-                    sigma_retarded_hermitian=sigma_retarded_hermitian,
-                    ind_lower=ind_left_lower,
-                    ind_upper=ind_left_upper,
-                    rank_lower=rank_left_lower,
-                    rank_upper=rank_left_upper,
-                    section_offsets=section_offsets,
-                    diagonal_inds=(0, 0),
-                    upper_inds=(0, 1),
-                    block_sections=band_edge_config.block_sections,
-                    use_eigvalsh=band_edge_config.use_eigvalsh,
-                    eigvalsh_compute_location=band_edge_config.eigvalsh_compute_location,
-                    use_pinned_memory=band_edge_config.use_pinned_memory,
+        # Sanity checks when the energy grid is unphysical,
+        # but one still wants to benchmark
+        if ind_upper >= len(energies):
+            ind_upper = len(energies) - 1
+            if comm.stack.rank == 0:
+                warnings.warn(
+                    "The initial guess for the conduction band edge is above the maximum energy. "
+                    "Using the maximum energy for the upper index."
                 )
 
-                # NOTE: Only the lower rank broadcasts and overwrites the guess of
-                # the upper rank (which should be identical).
-                left_band_edges = find_band_edges(e_0_left, left_mid_gap_energy)
-                left_mid_gap_energy = xp.mean(left_band_edges)
-                __, left_conduction_band_guess = left_band_edges
+        if ind_lower < 0:
+            ind_lower = 0
+            if comm.stack.rank == 0:
+                warnings.warn(
+                    "The initial guess for the conduction band edge is below the minimum energy. "
+                    "Using the minimum energy for the lower index."
+                )
 
-            left_packed = xp.array([left_conduction_band_guess, left_mid_gap_energy])
-            comm.stack.bcast(
-                left_packed,
-                root=rank_left_lower,
+        rank_lower = xp.digitize(ind_lower, section_offsets) - 1
+        rank_upper = xp.digitize(ind_upper, section_offsets) - 1
+
+        if comm.stack.rank in [rank_lower, rank_upper]:
+            # NOTE: This assumes that each rank has all k-points and that the band edge
+            # is at the Gamma point.
+            # TODO: Generalize this to arbitrary k-points (and maybe change gamma point index).
+            e_0 = _compute_eigenvalues(
+                target_energy=conduction_band_guess,
+                energies=energies,
+                hamiltonian=hamiltonian,
+                overlap=overlap,
+                potential=potential,
+                sigma_retarded_hermitian=sigma_retarded_hermitian,
+                ind_lower=ind_lower,
+                ind_upper=ind_upper,
+                rank_lower=rank_lower,
+                rank_upper=rank_upper,
+                section_offsets=section_offsets,
+                diagonal_inds=diagonal_inds,
+                upper_inds=upper_inds,
+                order=order,
+                block_sections=band_edge_config.block_sections,
+                use_eigvalsh=band_edge_config.use_eigvalsh,
+                eigvalsh_compute_location=band_edge_config.eigvalsh_compute_location,
+                use_pinned_memory=band_edge_config.use_pinned_memory,
             )
-            left_conduction_band_guess, left_mid_gap_energy = left_packed
 
-        comm.stack.bcast(left_band_edges, root=rank_left_lower)
+            # NOTE: Only the lower rank broadcasts and overwrites the guess of
+            # the upper rank (which should be identical).
+            band_edges = find_band_edges(e_0, mid_gap_energy)
+            mid_gap_energy = xp.mean(band_edges)
+            __, conduction_band_guess = band_edges
 
-    if comm.block.rank == comm.block.size - 1:
-        for __ in range(num_ref_iterations):
-            ind_right = xp.argmin(xp.abs(energies - right_conduction_band_guess))
+        packed = xp.array([conduction_band_guess, mid_gap_energy])
+        comm.stack.bcast(
+            packed,
+            root=rank_lower,
+        )
+        conduction_band_guess, mid_gap_energy = packed
 
-            if energies[ind_right] < right_conduction_band_guess:
-                ind_right_lower = ind_right
-                ind_right_upper = ind_right + 1
-            else:
-                ind_right_lower = ind_right - 1
-                ind_right_upper = ind_right
+    comm.stack.bcast(band_edges, root=rank_lower)
 
-            if ind_right_upper >= len(energies):
-                ind_right_upper = len(energies) - 1
-                if comm.rank == comm.block.rank:
-                    warnings.warn(
-                        "The initial guess for the conduction band edge is above the maximum energy. "
-                        "Using the maximum energy for the upper index."
-                    )
-            if ind_right_lower < 0:
-                ind_right_lower = 0
-                if comm.rank == comm.block.rank:
-                    warnings.warn(
-                        "The initial guess for the conduction band edge is below the minimum energy. "
-                        "Using the minimum energy for the lower index."
-                    )
-
-            rank_right_lower = xp.digitize(ind_right_lower, section_offsets) - 1
-            rank_right_upper = xp.digitize(ind_right_upper, section_offsets) - 1
-
-            if comm.stack.rank in [rank_right_lower, rank_right_upper]:
-                # NOTE: This assumes that each rank has all k-points and that the band edge
-                # is at the Gamma point.
-                # TODO: Generalize this to arbitrary k-points (and maybe change gamma point index).
-                n = hamiltonian.num_local_blocks - 1
-                m = n - 1
-                e_0_right = _compute_eigenvalues(
-                    target_energy=right_conduction_band_guess,
-                    energies=energies,
-                    hamiltonian=hamiltonian,
-                    overlap=overlap,
-                    potential=potential,
-                    sigma_retarded_hermitian=sigma_retarded_hermitian,
-                    ind_lower=ind_right_lower,
-                    ind_upper=ind_right_upper,
-                    rank_lower=rank_right_lower,
-                    rank_upper=rank_right_upper,
-                    section_offsets=section_offsets,
-                    diagonal_inds=(n, n),
-                    upper_inds=(n, m),
-                    order="reverse",
-                    block_sections=band_edge_config.block_sections,
-                    use_eigvalsh=band_edge_config.use_eigvalsh,
-                    eigvalsh_compute_location=band_edge_config.eigvalsh_compute_location,
-                    use_pinned_memory=band_edge_config.use_pinned_memory,
-                )
-
-                # NOTE: Only the lower rank broadcasts and overwrites the guess of
-                # the upper rank (which should be identical).
-                right_band_edges = find_band_edges(e_0_right, right_mid_gap_energy)
-                right_mid_gap_energy = xp.mean(right_band_edges)
-                __, right_conduction_band_guess = right_band_edges
-
-            right_packed = xp.array([right_conduction_band_guess, right_mid_gap_energy])
-            comm.stack.bcast(right_packed, root=rank_right_lower)
-            right_conduction_band_guess, right_mid_gap_energy = right_packed
-
-        comm.stack.bcast(right_band_edges, root=rank_right_lower)
-
-    comm.block.bcast(left_band_edges, root=0)
-    comm.block.bcast(right_band_edges, root=comm.block.size - 1)
-
-    return left_band_edges, right_band_edges
+    return band_edges
 
 
 def find_band_edges(e_0: NDArray, mid_gap_energy: float) -> NDArray:
