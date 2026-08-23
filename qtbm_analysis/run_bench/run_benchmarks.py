@@ -39,10 +39,18 @@ preserved. No figures are produced here; see plotting/plot_speedup.py.
 
 Usage
 -----
-    python run_benchmarks.py
+    python run_benchmarks.py                  # all materials, one process
+    python run_benchmarks.py --material si-bulk  # one material only
+
+Run each material as its own process (e.g. one `nohup ... &` per material) to
+keep them independent: a crash or OOM kill in one no longer takes the others
+down with it, and does not corrupt their HDF5 files (a killed process can
+corrupt whichever file it was writing to when it died).
+
     python ../plotting/plot_speedup.py /scratch/yimili/matrices2/hdf5/graphene.h5
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -184,7 +192,14 @@ def run_material(material, h5path):
 
 
 def main():
-    for material in MATERIAL_BS:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--material", choices=sorted(MATERIAL_BS),
+                        help="benchmark only this material, as its own "
+                             "process (default: all, in one process)")
+    args = parser.parse_args()
+    materials = [args.material] if args.material else MATERIAL_BS
+
+    for material in materials:
         print("=" * 80)
         print(f"Processing material: {material}")
         print("=" * 80)
