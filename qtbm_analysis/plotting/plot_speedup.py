@@ -31,10 +31,11 @@ Algorithm
 
 Output
 ------
-One two-panel figure, factorization time and solve time, on a logarithmic
-speedup axis with the unit line marked. Values above unity are faster than the
-baseline. It is written to the Block Thomas analysis directory, beside the
-stability and accuracy figures drawn from the same solver runs.
+One figure, factorization time and solve time as columns and each requested
+dtype as a row, on a logarithmic speedup axis with the unit line marked.
+Values above unity are faster than the baseline. It is written to the Block
+Thomas analysis directory, beside the stability and accuracy figures drawn
+from the same solver runs.
 
 Usage
 -----
@@ -58,7 +59,7 @@ import matplotlib.pyplot as plt
 
 import cli
 from factor_io import material_metadata
-from style import (BAND_EDGE_STYLE, SOLVER_STYLE, DTYPE_STYLE, axis_label,
+from style import (BAND_EDGE_STYLE, SOLVER_STYLE, axis_label, dtype_label,
                    energies_of, legend_handles, mark_band_edges,
                    save_figure)
 
@@ -119,8 +120,15 @@ def speedup_series(times, key, field):
     return list(xs), list(ys)
 
 
-def plot(times, indices, attrs, material, out_path):
-    """Two-panel speedup figure; returns False if no series could be drawn."""
+def plot(times, indices, dtypes, attrs, material, out_path):
+    """
+    Speedup figure with one row per dtype and one column per FIELDS entry;
+    returns False if no series could be drawn.
+
+    Splitting dtypes across rows means every panel already carries a single
+    precision, so the line style no longer needs to encode it: all lines are
+    solid, and the legend lists solvers only.
+    """
     keys = [k for k in times if k != BASELINE]
     if not keys:
         print("no (solver, dtype) combination besides the baseline was found")
@@ -139,8 +147,10 @@ def plot(times, indices, attrs, material, out_path):
     solved = set(times.get(BASELINE, {}))
     missing = np.array(sorted(set(indices) - solved))
 
-    fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.8), sharex=True, sharey=True)
-    drawn_solvers, drawn_dtypes, drawn_edges = [], [], []
+    n_rows = len(dtypes)
+    fig, axes = plt.subplots(n_rows, 2, figsize=(12.5, 4.4 * n_rows),
+                             sharex=True, sharey=True, squeeze=False)
+    drawn_solvers, drawn_edges = [], []
 
     have_energy = energies_of(attrs, [0]) is not None
     # Half a step, used to give a skipped index a visible width on either axis.
@@ -150,68 +160,75 @@ def plot(times, indices, attrs, material, out_path):
         converted = energies_of(attrs, values) if have_energy else None
         return values if converted is None else converted
 
-    for ax, (field, panel_title) in zip(axes, FIELDS):
-        for solver, dtype in keys:
-            xs, ys = speedup_series(times, (solver, dtype), field)
-            if not xs:
-                continue
-            _, colour, marker = SOLVER_STYLE.get(solver, (solver, None, None))
-            _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
-            # Marker every point overlaps into a solid smear on a dense sweep;
-            # cap the number actually drawn regardless of how many points there are.
-            stride = max(1, len(xs) // 25)
-            ax.plot(to_x(xs), ys, color=colour, marker=marker, ls=ls,
-                    markersize=5, markeredgecolor="white", markeredgewidth=0.6,
-                    markevery=stride, lw=1.6, alpha=0.95, zorder=3)
-            if solver not in drawn_solvers:
-                drawn_solvers.append(solver)
-            if dtype not in drawn_dtypes:
-                drawn_dtypes.append(dtype)
-
-        ax.axhline(1.0, color="0.2", lw=1.1, ls=":", zorder=2)
-        ax.axhspan(1.0, ymax, color="#27AE60", alpha=0.05, zorder=0)
-        ax.axhspan(ymin, 1.0, color="#C0392B", alpha=0.05, zorder=0)
-
-        # Contiguous runs of skipped indices are shaded as single spans.
-        if len(missing):
-            breaks = np.where(np.diff(missing) > 1)[0] + 1
-            for run in np.split(missing, breaks):
-                left, right = to_x([run[0], run[-1]])
-                ax.axvspan(left - half_step, right + half_step, color="0.55",
-                           alpha=0.25, zorder=1)
-
-        ax.set_yscale("log")
-        ax.set_ylim(ymin, ymax)
-        ax.set_xlabel(axis_label(have_energy))
-        ax.set_title(panel_title, fontsize=11)
-        ax.grid(True, which="major", alpha=0.3)
-        ax.grid(True, which="minor", alpha=0.12)
-        if have_energy:
-            drawn_edges = mark_band_edges(ax, attrs, label=False)
-        for spine in ("top", "right"):
-            ax.spines[spine].set_visible(False)
-
     base_text = f"SuperLU {BASELINE[1]}"
-    axes[0].set_ylabel(f"speedup vs {base_text}")
-    axes[0].text(0.02, 0.97, f"faster than {base_text}", va="top", fontsize=8,
-                 color="#1E8449", transform=axes[0].transAxes)
-    axes[0].text(0.02, 0.03, f"slower than {base_text}", va="bottom", fontsize=8,
-                 color="#922B21", transform=axes[0].transAxes)
+
+    for row, dtype in enumerate(dtypes):
+        row_keys = [k for k in keys if k[1] == dtype]
+        for col, (field, panel_title) in enumerate(FIELDS):
+            ax = axes[row, col]
+            for solver, _ in row_keys:
+                xs, ys = speedup_series(times, (solver, dtype), field)
+                if not xs:
+                    continue
+                _, colour, marker = SOLVER_STYLE.get(solver, (solver, None, None))
+                # Marker every point overlaps into a solid smear on a dense
+                # sweep; cap the number drawn regardless of how many there are.
+                stride = max(1, len(xs) // 25)
+                ax.plot(to_x(xs), ys, color=colour, marker=marker,
+                        markersize=5, markeredgecolor="white",
+                        markeredgewidth=0.6, markevery=stride, lw=1.6,
+                        alpha=0.95, zorder=3)
+                if solver not in drawn_solvers:
+                    drawn_solvers.append(solver)
+
+            ax.axhline(1.0, color="0.2", lw=1.1, ls=":", zorder=2)
+            ax.axhspan(1.0, ymax, color="#27AE60", alpha=0.05, zorder=0)
+            ax.axhspan(ymin, 1.0, color="#C0392B", alpha=0.05, zorder=0)
+
+            # Contiguous runs of skipped indices are shaded as single spans.
+            if len(missing):
+                breaks = np.where(np.diff(missing) > 1)[0] + 1
+                for run in np.split(missing, breaks):
+                    left, right = to_x([run[0], run[-1]])
+                    ax.axvspan(left - half_step, right + half_step,
+                               color="0.55", alpha=0.25, zorder=1)
+
+            ax.set_yscale("log")
+            ax.set_ylim(ymin, ymax)
+            ax.grid(True, which="major", alpha=0.3)
+            ax.grid(True, which="minor", alpha=0.12)
+            if have_energy:
+                drawn_edges = mark_band_edges(ax, attrs, label=False)
+            for spine in ("top", "right"):
+                ax.spines[spine].set_visible(False)
+            if row == n_rows - 1:
+                ax.set_xlabel(axis_label(have_energy))
+            if row == 0:
+                ax.set_title(panel_title, fontsize=11)
+            if col == 0:
+                ax.set_ylabel(f"speedup vs {base_text}\n({dtype_label(dtype)})")
+
+        axes[row, 0].text(0.02, 0.97, f"faster than {base_text}", va="top",
+                          fontsize=8, color="#1E8449",
+                          transform=axes[row, 0].transAxes)
+        axes[row, 0].text(0.02, 0.03, f"slower than {base_text}", va="bottom",
+                          fontsize=8, color="#922B21",
+                          transform=axes[row, 0].transAxes)
 
     extra = [(plt.Line2D([], [], color="0.2", lw=1.1, ls=":"),
               f"{base_text} baseline")]
     if len(missing):
         extra.append((plt.Rectangle((0, 0), 1, 1, color="0.55", alpha=0.25),
                       "no right-hand side"))
-    # The band edge lines are drawn without labels, since both panels carry
+    # The band edge lines are drawn without labels, since every panel carries
     # them; they are named once here instead. Only the edges that fell inside
     # the swept range were drawn, so only those are named.
     for key in drawn_edges:
         colour, text = BAND_EDGE_STYLE[key]
         extra.append((plt.Line2D([], [], color=colour, ls="--", lw=1.0), text))
-    handles, labels = legend_handles(drawn_solvers, drawn_dtypes, extra)
+    handles, labels = legend_handles(drawn_solvers, [], extra)
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
-               frameon=False, fontsize=9, bbox_to_anchor=(0.5, -0.08))
+               frameon=False, fontsize=9, bbox_to_anchor=(0.5, -0.04 / n_rows))
 
     fig.suptitle(f"{material} — runtime relative to {base_text}",
                  fontsize=12, y=1.0)
@@ -249,7 +266,7 @@ def main():
                          f"result to use as a baseline; run "
                          f"run_bench/run_benchmarks.py first")
     attrs = material_metadata(args.h5path)
-    if not plot(times, indices, attrs, material, out_path):
+    if not plot(times, indices, dtypes, attrs, material, out_path):
         raise SystemExit(1)
 
 
