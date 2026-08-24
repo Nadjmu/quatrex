@@ -329,6 +329,32 @@ def load_system(h5path, idx):
     return A, b
 
 
+def load_energy_metadata(h5path):
+    """
+    (indices, energies, valence_band_edge, conduction_band_edge) from a
+    material file's metadata group. Edge values are None if not recorded.
+    """
+    with h5py.File(h5path, "r") as f:
+        indices = f["metadata/indices"][:]
+        energies = f["metadata/energies"][:]
+        attrs = f["metadata"].attrs
+        valence = float(attrs["valence_band_edge"]) if "valence_band_edge" in attrs else None
+        conduction = float(attrs["conduction_band_edge"]) if "conduction_band_edge" in attrs else None
+    return indices, energies, valence, conduction
+
+
+def energy_of_idx(indices, energies, idx):
+    """Energy in eV recorded for one E_<idx>, or None if idx is not present."""
+    hit = np.flatnonzero(indices == idx)
+    return float(energies[hit[0]]) if hit.size else None
+
+
+def idx_of_energy(indices, energies, energy):
+    """Index whose recorded energy is nearest the requested one, in eV."""
+    nearest = int(np.argmin(np.abs(energies - energy)))
+    return int(indices[nearest])
+
+
 def load_condition_number(h5path, idx):
     """
     global/condition_full_svd is an array indexed the same way as
@@ -651,8 +677,18 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     b_high = np.asarray(b, dtype=HIGH_DTYPE)
 
     low_name = np.dtype(low_dtype).name
-    print(f"Problem : {h5path.name}  E_{idx}  n={A.shape[0]}  nnz={A.nnz}  "
-          f"b.shape={b.shape}")
+    indices, energies, valence, conduction = load_energy_metadata(h5path)
+    energy = energy_of_idx(indices, energies, idx)
+    energy_str = f"{energy:.4f} eV" if energy is not None else "unknown"
+    edges = []
+    if valence is not None:
+        edges.append(f"valence={valence:.4f} eV")
+    if conduction is not None:
+        edges.append(f"conduction={conduction:.4f} eV")
+    edge_str = f"  [{', '.join(edges)}]" if edges else ""
+
+    print(f"Problem : {h5path.name}  E_{idx}  E={energy_str}{edge_str}  "
+          f"n={A.shape[0]}  nnz={A.nnz}  b.shape={b.shape}")
     print(f"Solver  : {solver_name}   low_dtype={low_name}   high_dtype=complex128")
 
     if inner == "gmres":
@@ -809,7 +845,12 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
 def main():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap)
-    cli.add_index_selection(ap, default_all=False)
+    cli.add_index_selection(ap, default_all=True)
+    ap.add_argument("--energy", type=float, nargs="+", default=None,
+                    metavar="EV",
+                    help="one or more energies in eV; each is resolved to "
+                         "the index with the nearest recorded energy. "
+                         "Mutually exclusive with --idx/--start/--end.")
     cli.add_solver_selection(ap, choices=tuple(SOLVER_BUILDERS),
                              default="superlu", multiple=False)
     cli.add_block_partition(ap, auto=False)
@@ -843,7 +884,14 @@ def main():
     args = ap.parse_args()
 
     h5path = Path(args.h5path)
-    indices = cli.resolve_indices(ap, args)
+    if args.energy is not None:
+        if args.idx is not None or args.start is not None:
+            ap.error("--energy is mutually exclusive with --idx/--start/--end")
+        file_indices, file_energies, _, _ = load_energy_metadata(h5path)
+        indices = [idx_of_energy(file_indices, file_energies, e)
+                  for e in args.energy]
+    else:
+        indices = cli.resolve_indices(ap, args)
     factor_dtype = np.dtype(args.factor_dtype)
 
     for idx in indices:
