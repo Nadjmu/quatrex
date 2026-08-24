@@ -75,7 +75,7 @@ def main():
         if in_bin.size == 0:
             continue
         shown = in_bin[:args.max_per_bin]
-        print(f"kappa_2 in [{lo:.0f}, {hi:.0f}): {in_bin.size} rows"
+        print(f"kappa_2 in [{lo:.2e}, {hi:.2e}): {in_bin.size} rows"
               f"{f', showing {shown.size}' if shown.size < in_bin.size else ''}")
         for i in shown:
             idx = int(indices[i])
