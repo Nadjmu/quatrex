@@ -157,9 +157,12 @@ def plot(times, indices, attrs, material, out_path):
                 continue
             _, colour, marker = SOLVER_STYLE.get(solver, (solver, None, None))
             _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
+            # Marker every point overlaps into a solid smear on a dense sweep;
+            # cap the number actually drawn regardless of how many points there are.
+            stride = max(1, len(xs) // 25)
             ax.plot(to_x(xs), ys, color=colour, marker=marker, ls=ls,
                     markersize=5, markeredgecolor="white", markeredgewidth=0.6,
-                    lw=1.6, alpha=0.95, zorder=3)
+                    markevery=stride, lw=1.6, alpha=0.95, zorder=3)
             if solver not in drawn_solvers:
                 drawn_solvers.append(solver)
             if dtype not in drawn_dtypes:
