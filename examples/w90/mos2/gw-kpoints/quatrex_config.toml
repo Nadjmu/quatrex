@@ -6,7 +6,7 @@ formalism = "negf"
 [device] # ==========================================================
 kpoint_grid = [1, 3, 1]
 construct_from_unit_cell = true
-transport_direction = "x"
+transport_direction = "a"
 
 neighbor_cell_cutoff = [2, 2, 0]
 
@@ -34,11 +34,11 @@ coulomb_screening_density = true
 
 
 [electron] # =========================================================
-left_contact.name = "source"
+left_contact.name = "left"
 left_contact.fermi_level = -0.031537969  # eV
 left_contact.mid_gap_energy = -1 # eV
 
-right_contact.name = "drain"
+right_contact.name = "right"
 right_contact.fermi_level = -0.031537969  # eV
 right_contact.mid_gap_energy = -1 # eV
 
