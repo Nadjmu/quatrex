@@ -81,11 +81,6 @@ def main():
     order = np.argsort(indices)
     indices, cond_2 = indices[order], cond_2[order]
 
-    def energy_of(idx):
-        if grid_energy_min is None or resolution is None:
-            return None
-        return grid_energy_min + resolution * idx
-
     n_bins = int(np.floor(cond_2.max() / args.bin_width)) + 1
     for b in range(n_bins):
         lo, hi = b * args.bin_width, (b + 1) * args.bin_width
