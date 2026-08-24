@@ -78,6 +78,8 @@ N. J. Higham, Accuracy and Stability of Numerical Algorithms, 2nd ed., SIAM
 of explicit inversion.
 """
 
+import time
+
 import numpy as np
 import scipy.linalg as sla
 import scipy.sparse.linalg as spla
@@ -1653,8 +1655,14 @@ class CuDSS:
 
         b0 = np.zeros((self.n, self.nrhs), dtype=self.dtype, order="F")
         self.solver = nvmath.sparse.advanced.DirectSolver(self.A_csr, b0)
+
+        t0 = time.perf_counter()
         self.plan_info = self.solver.plan()  # reordering and symbolic phase
+        self.plan_seconds = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
         self.fac_info = self.solver.factorize()  # numerical factorization
+        self.factor_seconds = time.perf_counter() - t0
 
     def solve(self, b):
         b = np.asarray(b, dtype=self.dtype, order="F")

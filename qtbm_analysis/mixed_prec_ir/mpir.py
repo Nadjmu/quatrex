@@ -265,6 +265,14 @@ class _CuDSSSolver:
         self._buf = np.empty((self.n, self.nrhs), dtype=self.dtype, order="F")
         self._one = None        # built lazily, for GMRES-IR only
         self._one_buf = None
+        # Symbolic (reordering) and numeric factorization seconds, timed
+        # separately inside solver_classes.CuDSS; see factor_breakdown().
+        self.symbolic_s = self._solver.plan_seconds
+        self.numeric_s = self._solver.factor_seconds
+
+    def factor_breakdown(self):
+        """(symbolic_s, numeric_s), or None where a solver fuses the two."""
+        return (self.symbolic_s, self.numeric_s)
 
     def _solve_block(self, b2d):
         self._buf[:, :] = b2d
@@ -418,7 +426,11 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None)
     history = []
     true_err_history = []
 
+    t0 = time.perf_counter()
     solver = SOLVER_BUILDERS[solver_name](A, low_dtype, bs, b)
+    factor_s = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
     x = solver.solve(b_high.astype(low_dtype)).astype(HIGH_DTYPE)
 
     for _ in range(max_iter):
@@ -430,11 +442,15 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None)
         if rel < tol:
             break
         x = x + solver.solve(r.astype(low_dtype)).astype(HIGH_DTYPE)
+    inner_s = time.perf_counter() - t0
 
     extra = {
         "history": history,
         "true_err_history": true_err_history,
         "mem_bytes": solver.factor_nbytes(),
+        "factor_s": factor_s,
+        "inner_s": inner_s,
+        "factor_breakdown": getattr(solver, "factor_breakdown", lambda: None)(),
     }
     if hasattr(solver, "free"):
         solver.free()
@@ -507,7 +523,9 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
     true_err_history = []
     gmres_iters_history = []   # list (per outer iter) of lists (per rhs column)
 
+    t0 = time.perf_counter()
     solver = SOLVER_BUILDERS[solver_name](A, low_dtype, bs, b)
+    factor_s = time.perf_counter() - t0
 
     def precond_apply(v):
         return solver.solve(v.astype(low_dtype)).astype(HIGH_DTYPE)
@@ -515,6 +533,7 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
     A_op = spla.LinearOperator((n, n), matvec=lambda v: A_high @ v, dtype=HIGH_DTYPE)
     M_op = spla.LinearOperator((n, n), matvec=precond_apply, dtype=HIGH_DTYPE)
 
+    t0 = time.perf_counter()
     x2 = solver.solve(b2.astype(low_dtype)).astype(HIGH_DTYPE)   # x0: low-precision direct solve
 
     for _ in range(max_iter):
@@ -545,6 +564,7 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
             iters_this_round.append(counter[0])
         gmres_iters_history.append(iters_this_round)
         x2 = x2 + d2
+    inner_s = time.perf_counter() - t0
 
     x = x2 if orig_ndim == 2 else x2[:, 0]
 
@@ -553,6 +573,9 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
         "true_err_history": true_err_history,
         "gmres_iters_history": gmres_iters_history,
         "mem_bytes": solver.factor_nbytes(),
+        "factor_s": factor_s,
+        "inner_s": inner_s,
+        "factor_breakdown": getattr(solver, "factor_breakdown", lambda: None)(),
     }
     if hasattr(solver, "free"):
         solver.free()
@@ -567,12 +590,20 @@ def solve_direct(solver_name, A, b, bs, dtype):
     ceiling, and at the low precision it provides the lower bound that
     refinement must improve upon.
     """
+    t0 = time.perf_counter()
     solver = SOLVER_BUILDERS[solver_name](A, dtype, bs, b)
+    factor_s = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
     x = solver.solve(np.asarray(b, dtype=dtype)).astype(HIGH_DTYPE)
+    inner_s = time.perf_counter() - t0
+
     mem_bytes = solver.factor_nbytes()
+    factor_breakdown = getattr(solver, "factor_breakdown", lambda: None)()
     if hasattr(solver, "free"):
         solver.free()
-    return x, {"mem_bytes": mem_bytes}
+    return x, {"mem_bytes": mem_bytes, "factor_s": factor_s, "inner_s": inner_s,
+              "factor_breakdown": factor_breakdown}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -781,6 +812,10 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     def med(name, key):
         return float(np.median([r[key] for r in all_records[name]]))
 
+    def med_extra(name, key):
+        vals = [r["extra"][key] for r in all_records[name] if key in r["extra"]]
+        return float(np.median(vals)) if vals else None
+
     header = f"{'Metric':<{col}}" + "".join(f"  {nm:<28}" for nm in names)
     print(header)
     print("─" * len(header))
@@ -800,6 +835,29 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
         vals = [fmt.format(med(nm, key)) if isinstance(fmt, str) else fmt(med(nm, key))
                 for nm in names]
         print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
+
+    # Factorization time is the solver construction call; solve/inner-loop time
+    # is everything after it -- for the two solve_direct variants, the single
+    # solve() call, and for the refinement variant, the initial low-precision
+    # solve plus every outer iteration (residual, correction solve, update).
+    # The two need not sum exactly to "Wall time" above: dtype casts and array
+    # setup outside both timed blocks are not attributed to either.
+    for label, key in [("Factorization time (ms)", "factor_s"),
+                       ("Solve / inner-loop time (ms)", "inner_s")]:
+        vals = [f"{med_extra(nm, key)*1e3:.1f}" if med_extra(nm, key) is not None
+                else "n/a" for nm in names]
+        print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
+
+    # Symbolic (reordering) vs. numeric factorization, where the backend keeps
+    # them separate; scipy's splu, UMFPACK and python-mumps fuse both into one
+    # call and expose no split, so this row is only populated for cuDSS.
+    breakdowns = {nm: all_records[nm][0]["extra"].get("factor_breakdown")
+                 for nm in names}
+    if any(bd is not None for bd in breakdowns.values()):
+        for label, i in [("  symbolic (ms)", 0), ("  numeric (ms)", 1)]:
+            vals = [f"{breakdowns[nm][i]*1e3:.1f}" if breakdowns[nm] is not None
+                    else "n/a (fused)" for nm in names]
+            print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
 
     mem_row = [f"{all_records[nm][0]['extra'].get('mem_bytes', 0)/1e6:.2f}"
                for nm in names]
