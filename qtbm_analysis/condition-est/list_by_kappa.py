@@ -54,11 +54,29 @@ def main():
         valid = g["valid"][:]
         grid_energy_min = g.attrs.get("grid_energy_min")
         resolution = g.attrs.get("resolution")
+        valence = g.attrs.get("valence_band_edge")
+        conduction = g.attrs.get("conduction_band_edge")
+
+    def energy_of(idx):
+        if grid_energy_min is None or resolution is None:
+            return None
+        return grid_energy_min + resolution * idx
 
     indices, cond_2 = indices[valid], cond_2[valid]
     if indices.size == 0:
         print("no valid rows")
         return
+
+    if valence is not None and conduction is not None:
+        energies = np.array([energy_of(int(i)) for i in indices])
+        in_gap = (energies >= valence) & (energies <= conduction)
+        indices, cond_2 = indices[~in_gap], cond_2[~in_gap]
+        if indices.size == 0:
+            print("no valid rows outside the band gap "
+                  f"[{valence:.4f}, {conduction:.4f}] eV")
+            return
+    else:
+        print("[warning] no band edges recorded; showing all indices")
 
     order = np.argsort(indices)
     indices, cond_2 = indices[order], cond_2[order]
