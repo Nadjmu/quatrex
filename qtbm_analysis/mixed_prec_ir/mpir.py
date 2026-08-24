@@ -357,16 +357,31 @@ def idx_of_energy(indices, energies, energy):
 
 def load_condition_number(h5path, idx):
     """
-    global/condition_full_svd is an array indexed the same way as
-    metadata/indices / metadata/energies -- one condition number per energy
-    index, at the SAME level as E_<idx> (a sibling, not nested under it).
-    Returns None if the dataset or this particular idx isn't present.
+    kappa_2(A) for one energy index, from the material's own condition-estimate
+    file, cli.CONDITION_DIR/<material>.h5 -- a separate file from h5path,
+    written by the condition-est pipeline, not by run_benchmarks.py. Its
+    /condition/indices holds the same energy indices as h5path's
+    metadata/indices, and /condition/cond_2 the corresponding kappa_2 (from
+    sigma_max/sigma_min); /condition/valid marks entries where the SVD
+    estimate succeeded. Returns None if the file, the index, or a valid
+    estimate for it isn't present.
     """
-    with h5py.File(h5path, "r") as f:
-        if "global/condition_full_svd" not in f:
+    cond_path = cli.CONDITION_DIR / f"{Path(h5path).stem}.h5"
+    if not cond_path.exists():
+        return None
+    with h5py.File(cond_path, "r") as f:
+        if "condition/cond_2" not in f:
             return None
-        kappa_arr = f["global/condition_full_svd"][:]
-    return float(kappa_arr[idx]) if 0 <= idx < len(kappa_arr) else None
+        indices = f["condition/indices"][:]
+        cond2 = f["condition/cond_2"][:]
+        valid = f["condition/valid"][:] if "condition/valid" in f else None
+    hit = np.flatnonzero(indices == idx)
+    if hit.size == 0:
+        return None
+    i = hit[0]
+    if valid is not None and not valid[i]:
+        return None
+    return float(cond2[i])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -702,10 +717,11 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
 
     kappa = load_condition_number(h5path, idx)
     if kappa is not None:
-        print(f"Condition number (full SVD) at E_{idx}: {kappa:.3e}")
+        print(f"Condition number (kappa_2) at E_{idx}: {kappa:.3e}")
     else:
-        print(f"Condition number: not available (no global/condition_full_svd "
-              f"entry for idx={idx})")
+        cond_path = cli.CONDITION_DIR / f"{h5path.stem}.h5"
+        print(f"Condition number: not available (no valid entry for idx={idx} "
+              f"in {cond_path})")
 
     x_true = None
     if reference_solver is not None:
