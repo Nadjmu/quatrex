@@ -89,16 +89,74 @@ at all.
 
 ## 4. `mpir.py`
 
+Basic: one solver, one precision, default inner solve (LU-IR).
+
 ```bash
 python mpir.py .../carbon-nanotube.h5 --idx 5 --solver superlu \
     --factor-dtype complex64
+```
+
+GPU, cuDSS at `complex64` — cuDSS has no `complex32` factorization; see below.
+
+```bash
+python mpir.py .../si-bulk.h5 --idx 254 --solver cudss --factor-dtype complex64
+```
+
+GMRES-IR instead of LU-IR, with the inner solve's own tolerance, restart and
+iteration cap. Needed once the condition number exceeds the LU-IR bound; see
+section 3.
+
+```bash
 python mpir.py .../si-bulk.h5 --idx 254 --solver mumps --factor-dtype complex64 \
     --inner gmres --gmres-tol 1e-8 --gmres-restart 30 --gmres-max-iter 50
-python mpir.py .../si-bulk.h5 --idx 254 --solver cudss --factor-dtype complex64
+```
+
+Half precision (`complex32`), CPU only — Block Thomas, LU with substitution.
+
+```bash
 python mpir.py .../carbon-nanotube.h5 --idx 84 --solver block-thomas \
     --factor-dtype complex32 --inner gmres
+```
+
+Half precision, the explicit-block-inverse implementation, with its inverse
+formed at `float16` instead of the `float32` default — the factorization is
+then half precision throughout, at some cost in accuracy; see
+[`../solvers/README.md`](../solvers/README.md).
+
+```bash
 python mpir.py .../carbon-nanotube.h5 --idx 84 --solver block-thomas-inv \
     --factor-dtype complex32 --inner gmres --inv-dtype float16
+```
+
+By energy rather than index — resolves to the nearest recorded energy;
+mutually exclusive with `--idx`/`--start`/`--end`.
+
+```bash
+python mpir.py .../si-bulk.h5 --energy 6.1 6.2 6.3 \
+    --solver cudss --factor-dtype complex64 --inner gmres
+```
+
+Sweeping a range. Each index prints its own full report; nothing is written to
+disk (see section 6).
+
+```bash
+python mpir.py .../carbon-nanotube.h5 --start 0 --end 400 \
+    --solver block-thomas --factor-dtype complex32 --inner gmres
+```
+
+Repeats with the median reported, for the noisier GPU timings.
+
+```bash
+python mpir.py .../si-bulk.h5 --idx 254 --solver cudss \
+    --factor-dtype complex64 --repeats 5
+```
+
+A different reference solver for the forward error — `--reference-solver`
+defaults to `superlu`.
+
+```bash
+python mpir.py .../si-bulk.h5 --idx 254 --solver cudss \
+    --factor-dtype complex64 --reference-solver mumps
 ```
 
 Three variants of the **same** solver family are measured, so the comparison

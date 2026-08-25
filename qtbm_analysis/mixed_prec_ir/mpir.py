@@ -1158,6 +1158,7 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
                   else "n/a" for nm in names]
     print(f"  {'Componentwise backward error (cbe: omega)':<{col-2}}" +
           "".join(f"  {v:<28}" for v in omega_vals))
+    print()
 
     # 2. Timing: wall time, then factorization (with its symbolic/numeric
     # split where available), then solve/inner-loop time.
@@ -1191,6 +1192,7 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
                   else "n/a" for nm in names]
     print(f"  {'Solve / inner-loop time (ms)':<{col-2}}" +
           "".join(f"  {v:<28}" for v in solve_vals))
+    print()
 
     # 3. Memory: the size of the stored factorization, which is the quantity
     # the mixed-precision argument is about, and its ratio to the complex128
