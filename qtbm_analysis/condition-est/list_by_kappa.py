@@ -5,8 +5,8 @@ List energy indices by kappa_2 bucket, from a condition_est.py output file.
 Input
 -----
 A condition-est analysis file (condition_est.py's output), holding the
-condition group written there: indices, cond_2, valid, and the grid_energy_min
-/ resolution attributes copied from the material file.
+condition group written there: indices, cond_2, cond_inf, valid, and the
+grid_energy_min / resolution attributes copied from the material file.
 
 Only rows with valid == True are considered; energy(i) = grid_energy_min +
 resolution * i.
@@ -15,8 +15,11 @@ Output
 ------
 Buckets widen by alternating factors of 2 and 5 above --first-edge, e.g.
 0-500, 500-1e3, 1e3-5e3, 5e3-1e4, 1e4-5e4, 5e4-1e5, ..., covering the observed
-kappa_2 range. For each bucket, the index and energy of up to --max-per-bin
-rows falling in it, in index order.
+kappa_2 range -- kappa_2 is the bucketing variable, kappa_inf is listed
+alongside it as a check against the LU-IR bound, which is stated in the
+infinity norm (see mixed_prec_ir/README.md). For each bucket, the index,
+energy and both condition numbers of up to --max-per-bin rows falling in it,
+in index order.
 
 Usage
 -----
@@ -71,6 +74,7 @@ def main():
         g = f[GROUP]
         indices = g["indices"][:]
         cond_2 = g["cond_2"][:]
+        cond_inf = g["cond_inf"][:]
         valid = g["valid"][:]
         grid_energy_min = g.attrs.get("grid_energy_min")
         resolution = g.attrs.get("resolution")
@@ -82,7 +86,7 @@ def main():
             return None
         return grid_energy_min + resolution * idx
 
-    indices, cond_2 = indices[valid], cond_2[valid]
+    indices, cond_2, cond_inf = indices[valid], cond_2[valid], cond_inf[valid]
     if indices.size == 0:
         print("no valid rows")
         return
@@ -90,7 +94,7 @@ def main():
     if valence is not None and conduction is not None:
         energies = np.array([energy_of(int(i)) for i in indices])
         in_gap = (energies >= valence) & (energies <= conduction)
-        indices, cond_2 = indices[~in_gap], cond_2[~in_gap]
+        indices, cond_2, cond_inf = indices[~in_gap], cond_2[~in_gap], cond_inf[~in_gap]
         if indices.size == 0:
             print("no valid rows outside the band gap "
                   f"[{valence:.4f}, {conduction:.4f}] eV")
@@ -99,7 +103,7 @@ def main():
         print("[warning] no band edges recorded; showing all indices")
 
     order = np.argsort(indices)
-    indices, cond_2 = indices[order], cond_2[order]
+    indices, cond_2, cond_inf = indices[order], cond_2[order], cond_inf[order]
 
     edges = bin_edges(args.first_edge, cond_2.max())
     for lo, hi in zip(edges[:-1], edges[1:]):
@@ -113,7 +117,8 @@ def main():
             idx = int(indices[i])
             e = energy_of(idx)
             e_str = f"{e:.4f} eV" if e is not None else "unknown"
-            print(f"  idx={idx:<6} E={e_str:<14} kappa_2={cond_2[i]:.3e}")
+            print(f"  idx={idx:<6} E={e_str:<14} kappa_2={cond_2[i]:.3e}  "
+                  f"kappa_inf={cond_inf[i]:.3e}")
 
 
 if __name__ == "__main__":
