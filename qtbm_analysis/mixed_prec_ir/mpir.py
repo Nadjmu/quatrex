@@ -842,6 +842,13 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
         vals = [r["extra"][key] for r in all_records[name] if key in r["extra"]]
         return float(np.median(vals)) if vals else None
 
+    def med_opt(name, key):
+        """Like med(), but None-safe for a top-level key that may be None
+        (eta2 when svds did not converge, or omega/eta1/etainf when normA
+        was never computed)."""
+        vals = [r[key] for r in all_records[name] if r.get(key) is not None]
+        return float(np.median(vals)) if vals else None
+
     header = f"{'Metric':<{col}}" + "".join(f"  {nm:<28}" for nm in names)
     print(header)
     print("─" * len(header))
@@ -860,8 +867,8 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
         print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
 
     def eta_str(nm):
-        e1, e2, ei = med_extra(nm, "eta1"), med_extra(nm, "eta2"), med_extra(nm, "etainf")
-        e2s = f"{e2:.2e}" if e2 is not None else "n/a"
+        e1, e2, ei = med_opt(nm, "eta1"), med_opt(nm, "eta2"), med_opt(nm, "etainf")
+        e2s = f"{e2:.2e}" if e2 is not None else "n/a (svds)"
         if e1 is None:
             return "n/a"
         return f"{e1:.2e} / {e2s} / {ei:.2e}"
@@ -869,7 +876,7 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     print(f"  {'Normwise backward error (nbe: eta_1/2/inf)':<{col-2}}" +
           "".join(f"  {eta_str(nm):<28}" for nm in names))
 
-    omega_vals = [f"{med_extra(nm, 'omega'):.2e}" if med_extra(nm, "omega") is not None
+    omega_vals = [f"{med_opt(nm, 'omega'):.2e}" if med_opt(nm, "omega") is not None
                   else "n/a" for nm in names]
     print(f"  {'Componentwise backward error (cbe: omega)':<{col-2}}" +
           "".join(f"  {v:<28}" for v in omega_vals))
