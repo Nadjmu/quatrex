@@ -103,7 +103,6 @@ from solver_classes import (
     SparseLU,
     block_sizes_from_matrix,
     extract_blocks_sparse,
-    normalize_block_sizes,
     offband_nnz,
 )
 
@@ -190,10 +189,10 @@ def build_solver(A, backend, dtype=np.complex128, block_sizes=None):
     if backend in ("block-thomas", "block-thomas-inv"):
         Ac = A.tocsr()
         Ac.sort_indices()
-        # block_sizes may be an int (uniform) from --block-size; normalize so
-        # the report below and the partition itself see the same tuple.
-        sizes = (normalize_block_sizes(Ac.shape[0], block_sizes)
-                 if block_sizes else block_sizes_from_matrix(Ac))
+        # Always detected from the sparsity pattern, never uniform, as
+        # everywhere else in the pipeline. block_sizes is accepted for the
+        # call signature and ignored.
+        sizes = block_sizes_from_matrix(Ac)
         bad = offband_nnz(Ac, sizes)
         print(
             f"[blocks] {len(sizes)} blocks, "
@@ -561,7 +560,7 @@ def run(args):
         if quantity == "eigenvalue":
             vals, res = compute_eigenvalues(
                 A, e, args.backend, args.method, args.num_values, args.tol,
-                args.max_iter, args.ncv, shift_invert, args.block_size,
+                args.max_iter, args.ncv, shift_invert, None,
                 factor_dtype,
             )
             out[f"eig_{e}"] = (vals, res)
@@ -569,7 +568,7 @@ def run(args):
             vals, res = compute_singular(
                 A, e, args.backend, args.method, args.num_values, args.tol,
                 args.max_iter, args.ncv, shift_invert, not args.no_fallback,
-                args.block_size, factor_dtype,
+                None, factor_dtype,
             )
             out[f"svd_{e}"] = (vals, res)
 
@@ -728,7 +727,6 @@ def build_parser(backends=CPU_BACKENDS, default_backend="mumps", prog=None):
                     help="do not retry with arpack when propack fails to "
                          "converge (default: retry, reusing the "
                          "factorizations already paid for)")
-    cli.add_block_partition(ap, auto=False)
     return ap
 
 

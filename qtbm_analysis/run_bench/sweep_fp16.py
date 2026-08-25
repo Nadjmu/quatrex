@@ -20,9 +20,10 @@ Algorithm
 ---------
 For every selected energy index:
 
-1. Extract the block-tridiagonal blocks of M under the requested partition,
-   either the uniform --block-size or, with --auto-blocks, the partition
-   detected from the sparsity pattern once on the first matrix.
+1. Extract the block-tridiagonal blocks of M under the partition detected
+   from the sparsity pattern, once on the first matrix. The partition is never
+   uniform, and there is no option to make it so; the sparsity pattern does not
+   depend on the energy index, so one detection serves the whole sweep.
 2. Solve M x = b with both half-precision variants,
        implementation 1  BlockThomasFP16             LU with substitution,
        implementation 2  BlockThomasExplicitInvFP16  explicit block inverses.
@@ -57,8 +58,8 @@ plotting/plot_fp16_accuracy.py, which consumes the group.
 
 Usage
 -----
-    python sweep_fp16.py .../carbon-nanotube.h5 --start 0 --end 401 --block-size 32
-    python sweep_fp16.py .../graphene.h5 --start 0 --end 401 --auto-blocks
+    python sweep_fp16.py .../carbon-nanotube.h5 --start 0 --end 401
+    python sweep_fp16.py .../graphene.h5 --start 0 --end 401
     python sweep_fp16.py .../graphene.h5 --idx 0 25 50 --inv-dtype float16
     python ../plotting/plot_fp16_accuracy.py \
         /scratch/yimili/error-analysis-block-thomas/carbon-nanotube.h5
@@ -95,7 +96,6 @@ def parse_args():
     cli.add_h5_input(ap, required=False,
                      default=str(cli.material_h5("carbon-nanotube")))
     cli.add_index_selection(ap)
-    cli.add_block_partition(ap, default_block_size=32)
     cli.add_inv_dtype(ap)
     ap.add_argument("--cond-path", type=str,
                     default="global/condition_full_svd", metavar="PATH",
@@ -113,21 +113,20 @@ def load_matrix(g):
                          shape=shape)
 
 
-def resolve_partition(M, partition, auto_blocks):
+def resolve_partition(M, partition):
     """
-    Partition to use for this matrix.
+    Partition to use for this matrix, detected from its sparsity pattern.
 
-    Returns `partition` unchanged unless --auto-blocks was given and no
-    partition has been detected yet, in which case it is derived from the
-    sparsity pattern and validated. `partition` is None on the first call under
-    --auto-blocks. Detection happens once because the pattern does not depend
-    on the energy index.
+    Returns `partition` unchanged once it has been detected; it is None on the
+    first call. Detection happens once because the pattern does not depend on
+    the energy index. The partition is always non-uniform, as everywhere else
+    in the pipeline.
 
     Raises ValueError if the detected partition is not block tridiagonal:
     extract_blocks_sparse would then silently discard the out-of-band entries
     and both variants would return a plausible but wrong solution.
     """
-    if not auto_blocks or isinstance(partition, (list, tuple)):
+    if partition is not None:
         return partition
     partition = block_sizes_from_matrix(M)
     bad = offband_nnz(M, partition)
@@ -148,7 +147,7 @@ def sweep(args, indices, inv_dtype):
     a list of (index, exception repr).
     """
     rows, failed = [], []
-    partition = cli.resolve_partition(args)
+    partition = None          # detected from the first matrix, see resolve_partition
 
     with h5py.File(args.h5path, "r") as f:
         cond_arr = f[args.cond_path][:] if args.cond_path in f else None
@@ -166,7 +165,7 @@ def sweep(args, indices, inv_dtype):
                 x128 = f[f"{key}/blockthomas/complex128/x"][:]
                 x64 = f[f"{key}/blockthomas/complex64/x"][:]
 
-                partition = resolve_partition(M, partition, args.auto_blocks)
+                partition = resolve_partition(M, partition)
                 D, L, U = extract_blocks_sparse(M, partition)
 
                 x16 = BlockThomasFP16(D, L, U).solve(b)
@@ -224,10 +223,7 @@ def run_attrs(args, partition, part_desc, failed, indices):
         n_failed=len(failed),
         **material_metadata(args.h5path),
     )
-    if isinstance(partition, (list, tuple)):
-        attrs["block_sizes"] = np.asarray(partition, dtype=np.int64)
-    else:
-        attrs["block_size"] = int(partition)
+    attrs["block_sizes"] = np.asarray(partition, dtype=np.int64)
     if failed:
         attrs["failed_idx"] = np.asarray([i for i, _ in failed], dtype=np.int64)
         attrs["failed_reason"] = [message for _, message in failed]
@@ -249,9 +245,7 @@ def main():
     inv_dtype = getattr(np, args.inv_dtype)
     rows, partition, failed = sweep(args, indices, inv_dtype)
 
-    part_desc = (f"{len(partition)} custom blocks"
-                 if isinstance(partition, (list, tuple))
-                 else f"block size {partition}")
+    part_desc = f"{len(partition)} detected blocks"
     print(f"\nCompleted {len(rows)}/{len(indices)} indices "
           f"({args.material}, {part_desc}).")
     if failed:

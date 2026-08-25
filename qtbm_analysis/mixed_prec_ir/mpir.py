@@ -115,7 +115,7 @@ Usage
         --factor-dtype complex64
 
     python mpir.py .../carbon-nanotube.h5 --idx 5 --solver block-thomas \\
-        --block-size 32 --factor-dtype complex64
+        --factor-dtype complex64
 
     python mpir.py .../si-bulk.h5 --idx 254 --solver mumps \\
         --factor-dtype complex64 --inner gmres --gmres-tol 1e-8 \\
@@ -152,6 +152,7 @@ sys.path.append(str((Path(__file__).parent / ".." / "solvers").resolve()))
 import cli
 from solver_classes import (
     SparseLU, UMFPACK, MUMPS, BlockThomas, CuDSS, extract_blocks_sparse,
+    block_sizes_from_matrix, offband_nnz,
 )
 from bench_all import backward_errors, _matrix_norm, NORMWISE_ORDS
 
@@ -173,8 +174,22 @@ HIGH_DTYPE = np.complex128
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_block_thomas(A, dtype, bs, b):
-    if bs is None:
-        raise ValueError("--block-size is required for --solver block-thomas")
+    """
+    Block Thomas over the partition detected from the sparsity pattern.
+
+    The exported matrices have a non-uniform block structure, so the partition
+    is always detected and never uniform, as in run_bench/single_solve.py and
+    run_benchmarks.py's resolve_partition. `bs` is accepted to satisfy the
+    builder contract and ignored. A partition that cuts a real coupling yields
+    a silently wrong solution, so it is validated with offband_nnz before
+    anything is factored.
+    """
+    bs = block_sizes_from_matrix(A)
+    bad = offband_nnz(A, bs)
+    if bad:
+        raise ValueError(
+            f"block partition leaves {bad} nonzeros outside the "
+            f"block-tridiagonal band; the solution would be wrong")
     D, L, U = extract_blocks_sparse(A, bs)
     return BlockThomas(D, L, U, dtype=dtype)
 
@@ -780,6 +795,11 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
           f"n={A.shape[0]}  nnz={A.nnz}  b.shape={b.shape}")
     print(f"Solver  : {solver_name}   low_dtype={low_name}   high_dtype=complex128")
 
+    if solver_name.startswith("block-thomas"):
+        part = block_sizes_from_matrix(A)
+        print(f"Blocks  : {len(part)} blocks detected from the sparsity "
+              f"pattern, sizes {min(part)}..{max(part)}")
+
     if inner == "gmres":
         inner_label = "GMRES-IR"
         print(f"Inner   : GMRES(A) in complex128, preconditioned by {solver_name} "
@@ -1059,7 +1079,6 @@ def main():
                          "Mutually exclusive with --idx/--start/--end.")
     cli.add_solver_selection(ap, choices=tuple(SOLVER_BUILDERS),
                              default="superlu", multiple=False)
-    cli.add_block_partition(ap, auto=False)
     cli.add_factor_dtype(
         ap, default="complex64",
         help="precision of the low-precision factorization, u_f "
@@ -1103,7 +1122,7 @@ def main():
     for idx in indices:
         if len(indices) > 1:
             print("=" * 78)
-        run_benchmarks(h5path, idx, args.solver, args.block_size,
+        run_benchmarks(h5path, idx, args.solver, None,
                        factor_dtype, args.tol, args.max_iter, args.repeats,
                        reference_solver=args.reference_solver,
                        inner=args.inner, gmres_tol=args.gmres_tol,

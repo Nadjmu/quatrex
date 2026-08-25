@@ -48,8 +48,6 @@ Option vocabulary
     --dtypes            one or more complex working precisions
     --factor-dtype      the precision of a factorization, u_f
     --inv-dtype         the precision in which an explicit inverse is formed
-    --block-size        a uniform Block Thomas block size
-    --auto-blocks       detect a non-uniform partition from the sparsity pattern
     --material          label used in output filenames and figure titles
     --outdir            output directory
 
@@ -584,30 +582,12 @@ def add_inv_dtype(ap, default="float32"):
     return ap
 
 
-def add_block_partition(ap, default_block_size=None, auto=True):
-    """--block-size, and optionally --auto-blocks."""
-    ap.add_argument("--block-size", type=int, default=default_block_size,
-                    metavar="M",
-                    help="uniform Block Thomas block size"
-                         + ("" if default_block_size is None
-                            else f" (default: {default_block_size})"))
-    if auto:
-        ap.add_argument("--auto-blocks", action="store_true",
-                        help="detect a non-uniform partition from the "
-                             "sparsity pattern instead of using --block-size")
-    return ap
-
-
-def resolve_partition(args):
-    """
-    Partition implied by --block-size and --auto-blocks.
-
-    Returns None when --auto-blocks was given, meaning the caller must detect
-    the partition from the matrix, and the integer block size otherwise.
-    """
-    if getattr(args, "auto_blocks", False):
-        return None
-    return args.block_size
+# There is deliberately no --block-size / --auto-blocks pair here. Every driver
+# detects the Block Thomas partition from the sparsity pattern with
+# solver_classes.block_sizes_from_matrix; the exported matrices have a
+# non-uniform block structure, so a uniform partition either cuts a real
+# coupling or pads the blocks, and offering it as an option only invites a
+# silently wrong result.
 
 
 def add_output(ap, material=True, outdir_default=None, outdir_help=None):

@@ -12,8 +12,8 @@ One HDF5 file per material in HDF5_DIR, named <material>.h5, each containing
     E_<idx>/M               system matrix M(E), CSC triplet
     E_<idx>/rhs             right-hand side, (n, nrhs)
 
-The materials processed and their uniform block sizes are listed in
-MATERIAL_BS; BLOCK_MODE selects where the Block Thomas partition comes from.
+The materials processed are listed in MATERIAL_BS. The Block Thomas partition
+is always detected from the sparsity pattern; it is never uniform.
 
 Algorithm
 ---------
@@ -68,24 +68,13 @@ from solver_classes import block_sizes_from_matrix, offband_nnz
 
 HDF5_DIR = cli.HDF5_DIR
 
-# Materials to benchmark, and their block sizes. Both come from cli.MATERIALS,
-# which is the one place a per-material property is edited; only the materials
-# that declare a block size can be partitioned, so only those are listed.
+# Materials to benchmark. Taken from cli.MATERIALS, which is the one place a
+# per-material property is edited; only the materials that declare a block size
+# can be partitioned, so only those are listed. The block size itself is not
+# used: the partition is always detected from the sparsity pattern, never
+# uniform. See resolve_partition.
 MATERIAL_BS = {name: mat.block_size for name, mat in cli.MATERIALS.items()
                if mat.block_size is not None}
-
-# Custom non-uniform partitions per material, used when BLOCK_MODE == "custom",
-# taken from the `blocks` field of cli.MATERIALS. Generate an entry with
-#     python ../block-thomas/determine_custom_block_size.py <material>.h5 --emit-python
-# and set it there.
-MATERIAL_BLOCKS = {name: mat.blocks for name, mat in cli.MATERIALS.items()
-                   if mat.blocks is not None}
-
-# Source of the Block Thomas partition:
-#   "uniform"  MATERIAL_BS
-#   "custom"   MATERIAL_BLOCKS, an error if the material has no entry
-#   "auto"     detected from the sparsity pattern of the first matrix
-BLOCK_MODE = "auto"
 
 # The first entry defines the baseline that speedups and "vs base" errors in
 # bench() refer to.
@@ -94,7 +83,7 @@ DTYPES = (np.complex128, np.complex64)
 # GMRES (both backends) and cuDSS are dropped: this sweep only covers the
 # direct solvers, at complex128 and complex64. The fp16 Block Thomas variants
 # are excluded, same as DEFAULT_SOLVERS: their NumPy kernels made a full sweep
-# impractically slow, confirmed with single_solve.py --auto-blocks.
+# impractically slow, confirmed with single_solve.py.
 SOLVERS = tuple(s for s in DEFAULT_SOLVERS
                 if s not in {"gmres", "gmres-cupy", "cudss"})
 
@@ -103,45 +92,36 @@ EXCLUDE = {}
 
 def resolve_partition(material, M_first):
     """
-    Block partition for one material, per BLOCK_MODE.
+    Block partition for one material, detected from its sparsity pattern.
+
+    The partition is never uniform: the exported matrices have a non-uniform
+    block structure, and a uniform partition of one of them either cuts a real
+    coupling or pads the blocks. There is deliberately no option to select one.
 
     Parameters
     ----------
-    material : material name, used to index MATERIAL_BS / MATERIAL_BLOCKS.
-    M_first  : the matrix at the first energy index. Only used by "auto"; the
-               sparsity pattern is identical at every index, so the partition
-               is detected once per material rather than once per index.
+    material : material name, used only in the error message.
+    M_first  : the matrix at the first energy index. The sparsity pattern is
+               identical at every index, so the partition is detected once per
+               material rather than once per index.
 
     Returns
     -------
-    int for a uniform partition, or a list of per-block sizes summing to n.
+    list of per-block sizes summing to n.
 
     Raises
     ------
-    KeyError   BLOCK_MODE == "custom" and the material has no entry.
     ValueError the detected partition is not block tridiagonal, which would
                make every Block Thomas result silently wrong.
     """
-    if BLOCK_MODE == "uniform":
-        return MATERIAL_BS[material]
-    if BLOCK_MODE == "custom":
-        sizes = MATERIAL_BLOCKS.get(material)
-        if sizes is None:
-            raise KeyError(
-                f"BLOCK_MODE='custom' but MATERIAL_BLOCKS has no entry for "
-                f"'{material}'. Generate one with determine_custom_block_size.py "
-                f"--emit-python, or switch BLOCK_MODE to 'auto'.")
-        return list(sizes)
-    if BLOCK_MODE == "auto":
-        sizes = block_sizes_from_matrix(M_first)
-        bad = offband_nnz(M_first, sizes)
-        print(f"  auto partition: {len(sizes)} blocks, "
-              f"sizes {min(sizes)}..{max(sizes)}, off-band nnz = {bad}")
-        if bad:
-            raise ValueError(f"{material}: detected partition leaves {bad} "
-                             f"nonzeros outside the block-tridiagonal band")
-        return list(sizes)
-    raise ValueError(f"unknown BLOCK_MODE {BLOCK_MODE!r}")
+    sizes = block_sizes_from_matrix(M_first)
+    bad = offband_nnz(M_first, sizes)
+    print(f"  auto partition: {len(sizes)} blocks, "
+          f"sizes {min(sizes)}..{max(sizes)}, off-band nnz = {bad}")
+    if bad:
+        raise ValueError(f"{material}: detected partition leaves {bad} "
+                         f"nonzeros outside the block-tridiagonal band")
+    return list(sizes)
 
 
 def load_sparse(g):
@@ -171,11 +151,8 @@ def run_material(material, h5path):
     print(f"{material} | n_energies = {len(indices)} | E[-1] = {energies[-1]}")
 
     bs = resolve_partition(material, first_M)
-    if isinstance(bs, (list, tuple)):
-        print(f"Partition: {len(bs)} custom blocks, "
-              f"sizes {min(bs)}..{max(bs)} (BLOCK_MODE={BLOCK_MODE})")
-    else:
-        print(f"Partition: uniform, block size = {bs}")
+    print(f"Partition: {len(bs)} detected blocks, "
+          f"sizes {min(bs)}..{max(bs)}")
     print(f"Indices: {idx_arr[:10]}... (total {len(idx_arr)})")
 
     benchmarked = 0

@@ -21,9 +21,11 @@ Input
     h5path              a material HDF5 file, read for E_<idx>/M and
                         E_<idx>/rhs and for global/condition_full_svd
     --idx / --start,--end   the energy indices to process
-    --block-size        the Block Thomas block size
     --tol, --max-iter   the outer refinement criterion
     --gmres-*           the inner GMRES parameters
+
+The Block Thomas partition is always detected from the sparsity pattern; it is
+never uniform, and there is no option to make it so.
 
 Algorithm
 ---------
@@ -79,10 +81,9 @@ No figures are produced; see plotting/plot_mixed_prec_ir.py.
 
 Usage
 -----
-    python c32_gmres_ir.py .../carbon-nanotube.h5 --idx 84 --block-size 32
+    python c32_gmres_ir.py .../carbon-nanotube.h5 --idx 84
 
-    python c32_gmres_ir.py .../carbon-nanotube.h5 --start 0 --end 401 \
-        --block-size 32
+    python c32_gmres_ir.py .../carbon-nanotube.h5 --start 0 --end 401
 
     python ../plotting/plot_mixed_prec_ir.py \
         /scratch/yimili/mixed-precision-IR/carbon-nanotube.h5
@@ -106,7 +107,8 @@ sys.path.insert(0, str((_HERE / ".." / "solvers").resolve()))
 import cli
 import mpir
 from factor_io import save_table, material_metadata
-from solver_classes import extract_blocks_sparse, BlockThomasFP16
+from solver_classes import (extract_blocks_sparse, BlockThomasFP16,
+                            block_sizes_from_matrix, offband_nnz)
 
 # Top-level group of the analysis file this script writes.
 GROUP = "gmres_ir"
@@ -129,8 +131,16 @@ def register_fp16_builder():
     ignores the dtype argument, since its working precision is always float16.
     """
     def _build(A, dtype, bs, b):
+        # bs is always None here: the partition is detected from the sparsity
+        # pattern, never uniform, as everywhere else in the pipeline. See
+        # mpir._build_block_thomas.
         if bs is None:
-            raise ValueError("--block-size is required for block-thomas-fp16")
+            bs = block_sizes_from_matrix(A)
+        bad = offband_nnz(A, bs)
+        if bad:
+            raise ValueError(
+                f"block partition leaves {bad} nonzeros outside the "
+                f"block-tridiagonal band; the solution would be wrong")
         D, L, U = extract_blocks_sparse(A, bs)
         return BlockThomasFP16(D, L, U)
 
@@ -280,7 +290,6 @@ def parse_args():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap)
     cli.add_index_selection(ap, default_all=False)
-    cli.add_block_partition(ap, default_block_size=32, auto=False)
 
     ap.add_argument("--tol", type=float, default=1e-14,
                     help="outer convergence tolerance on ||r||/||b||")
@@ -319,7 +328,6 @@ def main():
 
     print(f"material   : {material}")
     print(f"h5path     : {args.h5path}")
-    print(f"block size : {args.block_size}")
     print(f"indices    : {len(indices)} ({indices[0]}..{indices[-1]})")
     print(f"outer tol  : {args.tol:.1e}   max outer iters: {args.max_iter}")
     print(f"inner GMRES: rtol {args.gmres_tol:.1e}  restart {args.gmres_restart}  "
@@ -329,7 +337,7 @@ def main():
     skipped = []
     for idx in indices:
         try:
-            all_rows.extend(run_index(args.h5path, idx, args.block_size, args))
+            all_rows.extend(run_index(args.h5path, idx, None, args))
         except SystemExit as e:            # raised by mpir.load_system for a bad index
             skipped.append((idx, str(e)))
             print(f"\nE_{idx}: skipped ({e})")
@@ -341,7 +349,7 @@ def main():
     attrs = dict(
         material=material,
         source=str(args.h5path),
-        block_size=int(args.block_size),
+        partition="auto (block_sizes_from_matrix)",
         idx_requested=[int(indices[0]), int(indices[-1])],
         n_requested=len(indices),
         outer_tol=float(args.tol),
