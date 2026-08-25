@@ -156,6 +156,7 @@ import cli
 from solver_classes import (
     SparseLU, UMFPACK, MUMPS, BlockThomas, CuDSS, extract_blocks_sparse,
 )
+from bench_all import backward_errors, _matrix_norm, NORMWISE_ORDS
 
 warnings.filterwarnings("ignore", category=sp.SparseEfficiencyWarning)
 
@@ -653,17 +654,25 @@ def _per_column(diff, denom):
     return np.linalg.norm(diff, axis=0) / np.linalg.norm(denom, axis=0)
 
 
-def benchmark_solver(fn, A_high, b_high, repeats, x_true=None):
+def benchmark_solver(fn, A_high, b_high, repeats, x_true=None, normA=None):
     """
     Run fn() `repeats` times and record accuracy, time and memory.
 
-    Returns a list of dicts with the keys residual, true_err, wall_s,
-    peak_py_mb, net_rss_mb, extra and x, where
+    Returns a list of dicts with the keys residual, true_err, eta1, eta2,
+    etainf, omega, wall_s, peak_py_mb, net_rss_mb, extra and x, where
 
         residual = ||A x - b|| / ||b||, in the Frobenius norm when b has
                    several columns, so one aggregate number covers all of them
         true_err = ||x - x_true|| / ||x_true||, present only when x_true was
                    supplied through --reference-solver, otherwise None
+        eta1/eta2/etainf = normwise backward error (Rigal-Gaches), in the 1-,
+                   2- and infinity-norm; eta2 is None where normA[2] is None
+                   (the spectral-norm estimate did not converge)
+        omega    = componentwise backward error (Oettli-Prager)
+
+    normA is {1: ..., 2: ..., inf: ...}, from bench_all._matrix_norm, computed
+    once per problem in run_benchmarks and passed in here since it does not
+    depend on the variant; see bench_all.backward_errors for the formulas.
 
     extra["per_rhs_residual"] and extra["per_rhs_true_err"] carry the same
     quantities broken out per right-hand-side column, so that a subset of
@@ -697,6 +706,11 @@ def benchmark_solver(fn, A_high, b_high, repeats, x_true=None):
         residual = np.linalg.norm(res_vec) / norm_b
         extra["per_rhs_residual"] = _per_column(res_vec, b_high)
 
+        eta1 = eta2 = etainf = omega = None
+        if normA is not None:
+            _, etas, omega = backward_errors(A_high, x, b_high, normA, R=res_vec)
+            eta1, eta2, etainf = etas[1], etas[2], etas[np.inf]
+
         true_err = None
         if x_true is not None:
             err_vec = x - x_true
@@ -706,6 +720,10 @@ def benchmark_solver(fn, A_high, b_high, repeats, x_true=None):
         records.append({
             "residual":   residual,
             "true_err":   true_err,
+            "eta1":       eta1,
+            "eta2":       eta2,
+            "etainf":     etainf,
+            "omega":      omega,
             "wall_s":     wall,
             "peak_py_mb": peak_bytes / 1024**2,
             "net_rss_mb": tracker.peak_mb - baseline_rss,
@@ -721,6 +739,13 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     A, b = load_system(h5path, idx)
     A_high = A.tocsc().astype(HIGH_DTYPE)
     b_high = np.asarray(b, dtype=HIGH_DTYPE)
+
+    # Matrix-only, so computed once and reused for every variant's backward
+    # error; see bench_all._matrix_norm and bench_all.backward_errors.
+    normA = {p: _matrix_norm(A_high, p) for p in NORMWISE_ORDS}
+    if normA[2] is None:
+        print(f"  [warning] svds did not converge for ||A||_2; eta2 is "
+              f"skipped for every variant at this index")
 
     low_name = np.dtype(low_dtype).name
     indices, energies, valence, conduction = load_energy_metadata(h5path)
@@ -798,7 +823,8 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     for name, fn in variants:
         print(f"  Benchmarking '{name}' x{repeats} ...", flush=True)
         try:
-            all_records[name] = benchmark_solver(fn, A_high, b_high, repeats, x_true=x_true)
+            all_records[name] = benchmark_solver(fn, A_high, b_high, repeats,
+                                                 x_true=x_true, normA=normA)
         except (ImportError, TypeError, RuntimeError) as e:
             print(f"    skipped: {e}")
     print()
@@ -821,20 +847,37 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     print("─" * len(header))
 
     have_x_true = all_records[names[0]][0]["true_err"] is not None
+
+    # 1. Accuracy: residual, forward error, then the two backward errors.
     rows = [
         ("Relative residual ||Ax-b||/||b||", "residual",    "{:.2e}"),
     ]
     if have_x_true:
-        rows.append(("True error ||x-x_true||/||x_true||", "true_err", "{:.2e}"))
-    rows += [
-        ("Wall time (ms)",                   "wall_s",      lambda v: f"{v*1e3:.1f}"),
-        ("Peak Python heap (MiB)",           "peak_py_mb",  "{:.2f}"),
-        ("Peak RSS above baseline (MiB)",    "net_rss_mb",  "{:.1f}"),
-    ]
+        rows.append(("Forward error (ferr) ||x-x_true||/||x_true||", "true_err", "{:.2e}"))
     for label, key, fmt in rows:
         vals = [fmt.format(med(nm, key)) if isinstance(fmt, str) else fmt(med(nm, key))
                 for nm in names]
         print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
+
+    def eta_str(nm):
+        e1, e2, ei = med_extra(nm, "eta1"), med_extra(nm, "eta2"), med_extra(nm, "etainf")
+        e2s = f"{e2:.2e}" if e2 is not None else "n/a"
+        if e1 is None:
+            return "n/a"
+        return f"{e1:.2e} / {e2s} / {ei:.2e}"
+
+    print(f"  {'Normwise backward error (nbe: eta_1/2/inf)':<{col-2}}" +
+          "".join(f"  {eta_str(nm):<28}" for nm in names))
+
+    omega_vals = [f"{med_extra(nm, 'omega'):.2e}" if med_extra(nm, "omega") is not None
+                  else "n/a" for nm in names]
+    print(f"  {'Componentwise backward error (cbe: omega)':<{col-2}}" +
+          "".join(f"  {v:<28}" for v in omega_vals))
+
+    # 2. Timing: wall time, then factorization (with its symbolic/numeric
+    # split where available), then solve/inner-loop time.
+    wall_vals = [f"{med(nm, 'wall_s')*1e3:.1f}" for nm in names]
+    print(f"  {'Wall time (ms)':<{col-2}}" + "".join(f"  {v:<28}" for v in wall_vals))
 
     # Factorization time is the solver construction call; solve/inner-loop time
     # is everything after it -- for the two solve_direct variants, the single
@@ -842,22 +885,36 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     # solve plus every outer iteration (residual, correction solve, update).
     # The two need not sum exactly to "Wall time" above: dtype casts and array
     # setup outside both timed blocks are not attributed to either.
-    for label, key in [("Factorization time (ms)", "factor_s"),
-                       ("Solve / inner-loop time (ms)", "inner_s")]:
-        vals = [f"{med_extra(nm, key)*1e3:.1f}" if med_extra(nm, key) is not None
-                else "n/a" for nm in names]
-        print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
+    factor_vals = [f"{med_extra(nm, 'factor_s')*1e3:.1f}" if med_extra(nm, "factor_s") is not None
+                   else "n/a" for nm in names]
+    print(f"  {'Factorization time (ms)':<{col-2}}" +
+          "".join(f"  {v:<28}" for v in factor_vals))
 
-    # Symbolic (reordering) vs. numeric factorization, where the backend keeps
-    # them separate; scipy's splu, UMFPACK and python-mumps fuse both into one
-    # call and expose no split, so this row is only populated for cuDSS.
+    # Symbolic (reordering) vs. numeric factorization -- a breakdown of the
+    # row directly above, where the backend keeps the two separate; scipy's
+    # splu, UMFPACK and python-mumps fuse both into one call and expose no
+    # split, so this is only populated for cuDSS.
     breakdowns = {nm: all_records[nm][0]["extra"].get("factor_breakdown")
                  for nm in names}
     if any(bd is not None for bd in breakdowns.values()):
-        for label, i in [("  symbolic (ms)", 0), ("  numeric (ms)", 1)]:
+        for label, i in [("    symbolic (ms)", 0), ("    numeric (ms)", 1)]:
             vals = [f"{breakdowns[nm][i]*1e3:.1f}" if breakdowns[nm] is not None
                     else "n/a (fused)" for nm in names]
             print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
+
+    solve_vals = [f"{med_extra(nm, 'inner_s')*1e3:.1f}" if med_extra(nm, "inner_s") is not None
+                  else "n/a" for nm in names]
+    print(f"  {'Solve / inner-loop time (ms)':<{col-2}}" +
+          "".join(f"  {v:<28}" for v in solve_vals))
+
+    # 3. Memory: Python heap, process RSS growth, then the solver's own
+    # accounting of its stored factors.
+    for label, key, fmt in [
+        ("Peak Python heap (MiB)",        "peak_py_mb", "{:.2f}"),
+        ("Peak RSS above baseline (MiB)", "net_rss_mb", "{:.1f}"),
+    ]:
+        vals = [fmt.format(med(nm, key)) for nm in names]
+        print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
 
     mem_row = [f"{all_records[nm][0]['extra'].get('mem_bytes', 0)/1e6:.2f}"
                for nm in names]
