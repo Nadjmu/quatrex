@@ -170,15 +170,9 @@ def parse_args():
              f"(default: {' '.join(DEFAULT_MATERIALS)})",
     )
 
-    parser.add_argument(
-        "--stride",
-        type=int,
-        default=1,
-        metavar="N",
-        help="keep every Nth selected index. The sweep is dense and one row "
-             "costs a factorization and two singular-value computations, so a "
-             "stride is the cheap way to a first pass. Default: 1.",
-    )
+    # --stride comes from cli.add_index_selection above: the sweep is dense
+    # and one row costs a factorization and two singular-value computations,
+    # so it is the cheap way to a first pass.
 
     parser.add_argument(
         "--threads",
@@ -440,7 +434,6 @@ def process_material(parser, args, h5_path, material_name):
             raise RuntimeError(f"{h5_path}: no E_<index> groups with M found.")
 
         selected = sorted(cli.resolve_indices(parser, args, available_indices))
-        selected = selected[::args.stride]
 
         if not selected:
             raise RuntimeError(f"{h5_path}: no indices selected.")

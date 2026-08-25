@@ -43,6 +43,7 @@ Option vocabulary
     matrix, rhs         positional; a CSR .npz triplet and a .npy vector
     --idx N [N ...]     explicit energy indices
     --start / --end     an inclusive index range, the alternative to --idx
+    --stride            keep every Nth index of the selection above
     --solver            exactly one solver
     --solvers           one or more solvers
     --dtypes            one or more complex working precisions
@@ -487,7 +488,9 @@ def add_h5_input(ap, required=True, default=None, help=None):
 def add_index_selection(ap, default_all=True):
     """
     Energy index selection: --idx for explicit indices, --start and --end for
-    an inclusive range. The two are mutually exclusive.
+    an inclusive range, and --stride to thin any of those. The two index
+    sources are mutually exclusive; --stride composes with either, or with
+    neither.
     """
     group = ap.add_mutually_exclusive_group(required=not default_all)
     group.add_argument("--idx", type=int, nargs="+", default=None,
@@ -498,16 +501,32 @@ def add_index_selection(ap, default_all=True):
                             "requires --end")
     ap.add_argument("--end", type=int, default=None, metavar="N",
                     help="last energy index of the range, inclusive")
+    ap.add_argument("--stride", type=int, default=1, metavar="N",
+                    help="keep every Nth index of the selection, in "
+                         "ascending order (default: 1, every index). The "
+                         "index values kept are unchanged -- E_4 is still "
+                         "E_4 at --stride 2, not renumbered -- so energy(i) "
+                         "= grid_energy_min + resolution * i still holds for "
+                         "every kept index, and every downstream script that "
+                         "reads an index list from the file needs no change.")
     return ap
 
 
 def resolve_indices(ap, args, available=None):
     """
-    Index list implied by --idx or --start/--end.
+    Index list implied by --idx or --start/--end, thinned by --stride.
 
-    With neither given, returns `available` if it was supplied, otherwise
-    raises a parser error. Indices absent from `available` are reported and
-    dropped rather than causing a failure part-way through a sweep.
+    With neither --idx nor --start given, returns `available` if it was
+    supplied, otherwise raises a parser error. Indices absent from
+    `available` are reported and dropped rather than causing a failure
+    part-way through a sweep. --stride is applied last, to the final
+    ascending list, so it thins whichever source produced it uniformly.
+
+    Because the kept index values are the literal grid positions rather than
+    positions renumbered from 0, a --stride > 1 selection composes freely
+    with everything downstream that already keys off the index value: energy
+    lookup, band-edge marking, and any later script re-opening the same file
+    with its own --idx/--start/--end need no stride awareness of their own.
     """
     if args.idx is not None:
         requested = list(args.idx)
@@ -516,21 +535,23 @@ def resolve_indices(ap, args, available=None):
             ap.error("--start requires --end")
         requested = list(range(args.start, args.end + 1))
     elif available is not None:
-        return list(available)
+        requested = list(available)
     else:
         ap.error("give either --idx N [N ...] or --start S --end E")
 
-    if available is None:
-        return requested
+    if available is not None:
+        available_set = set(available)
+        missing = [i for i in requested if i not in available_set]
+        requested = [i for i in requested if i in available_set]
+        if missing:
+            shown = missing[:20]
+            more = " ..." if len(missing) > 20 else ""
+            print(f"[warning] requested indices not present: {shown}{more}")
 
-    available = set(available)
-    selected = [i for i in requested if i in available]
-    missing = [i for i in requested if i not in available]
-    if missing:
-        shown = missing[:20]
-        more = " ..." if len(missing) > 20 else ""
-        print(f"[warning] requested indices not present: {shown}{more}")
-    return selected
+    stride = getattr(args, "stride", 1)
+    if stride > 1:
+        requested = sorted(requested)[::stride]
+    return requested
 
 
 def add_solver_selection(ap, choices=ALL_SOLVERS, default=None, multiple=True,

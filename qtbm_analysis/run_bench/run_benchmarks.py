@@ -41,6 +41,7 @@ Usage
 -----
     python run_benchmarks.py                  # all materials, one process
     python run_benchmarks.py --material si-bulk  # one material only
+    python run_benchmarks.py --material si-bulk --exclude-solvers superlu
 
 Run each material as its own process (e.g. one `nohup ... &` per material) to
 keep them independent: a crash or OOM kill in one no longer takes the others
@@ -87,6 +88,11 @@ DTYPES = (np.complex128, np.complex64)
 SOLVERS = tuple(s for s in DEFAULT_SOLVERS
                 if s not in {"gmres", "gmres-cupy", "cudss"})
 
+# Dropped by default: nothing. --exclude-solvers adds to this per invocation,
+# so one slow material can drop a solver (e.g. SuperLU) without affecting the
+# others; see main(). Dropping superlu entirely is safe with plot_speedup.py's
+# baseline made a plot-time choice (--baseline-solver/--baseline-dtype) rather
+# than a hard-coded requirement.
 EXCLUDE = {}
 
 
@@ -131,7 +137,7 @@ def load_sparse(g):
                          shape=shape)
 
 
-def run_material(material, h5path):
+def run_material(material, h5path, solvers=SOLVERS):
     """
     Benchmark every energy index of one material and append the results into
     its HDF5 file. Returns the number of indices benchmarked.
@@ -149,6 +155,8 @@ def run_material(material, h5path):
 
     idx_arr = np.array(indices)
     print(f"{material} | n_energies = {len(indices)} | E[-1] = {energies[-1]}")
+    if solvers != SOLVERS:
+        print(f"Solvers: {', '.join(solvers)} (--exclude-solvers applied)")
 
     bs = resolve_partition(material, first_M)
     print(f"Partition: {len(bs)} detected blocks, "
@@ -163,7 +171,7 @@ def run_material(material, h5path):
                 continue
             M_idx = load_sparse(f[f"E_{idx}/M"])
             bench(M_idx, rhs_idx, idx, bs, dtypes=DTYPES, h5file=f,
-                  save=True, solvers=SOLVERS, exclude=EXCLUDE)
+                  save=True, solvers=solvers, exclude=EXCLUDE)
             benchmarked += 1
     return benchmarked
 
@@ -173,8 +181,17 @@ def main():
     parser.add_argument("--material", choices=sorted(MATERIAL_BS),
                         help="benchmark only this material, as its own "
                              "process (default: all, in one process)")
+    parser.add_argument("--exclude-solvers", nargs="+", choices=SOLVERS,
+                        default=(), metavar="NAME",
+                        help="drop these solvers for this invocation only, "
+                             "e.g. --exclude-solvers superlu for a material "
+                             "where it is impractically slow. Materials "
+                             "already benchmarked with the full solver set "
+                             "are unaffected; plot_speedup.py's baseline is "
+                             "chosen at plot time and need not be superlu.")
     args = parser.parse_args()
     materials = [args.material] if args.material else MATERIAL_BS
+    solvers = tuple(s for s in SOLVERS if s not in args.exclude_solvers)
 
     for material in materials:
         print("=" * 80)
@@ -186,7 +203,7 @@ def main():
             print(f"Warning: {h5path} not found, skipping.")
             continue
 
-        count = run_material(material, h5path)
+        count = run_material(material, h5path, solvers=solvers)
         print(f"Finished {material}: appended solver results for {count} "
               f"indices into {h5path}")
         print(f"Plot with: python ../plotting/plot_speedup.py {h5path}\n")

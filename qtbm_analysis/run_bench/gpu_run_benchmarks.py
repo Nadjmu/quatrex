@@ -29,11 +29,18 @@ divides by the SuperLU complex128 baseline already in the file.
 
 Usage
 -----
-    python gpu_run_benchmarks.py
+    python gpu_run_benchmarks.py                  # all materials, one process
+    python gpu_run_benchmarks.py --material si-bulk  # one material only
+
+Run each material as its own process, as with run_benchmarks.py: a crash or
+OOM kill in one no longer takes the others down with it, and does not corrupt
+their HDF5 files.
+
     python ../plotting/plot_speedup.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
         --solvers cudss gmres_cupy --suffix _gpu
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -84,7 +91,14 @@ def run_material(material, h5path):
 
 
 def main():
-    for material in MATERIAL_BS:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--material", choices=sorted(MATERIAL_BS),
+                        help="benchmark only this material, as its own "
+                             "process (default: all, in one process)")
+    args = parser.parse_args()
+    materials = [args.material] if args.material else MATERIAL_BS
+
+    for material in materials:
         h5path = HDF5_DIR / f"{material}.h5"
         if not h5path.exists():
             print(f"Warning: {h5path} not found, skipping.")

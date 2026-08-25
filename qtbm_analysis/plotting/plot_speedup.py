@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Solver runtime relative to the SuperLU complex128 baseline.
+Solver runtime relative to a baseline (solver, dtype) combination.
 
 Input
 -----
@@ -43,6 +43,17 @@ Usage
     python plot_speedup.py .../graphene.h5 --outdir figures
     python plot_speedup.py .../graphene.h5 --solvers cudss gmres-cupy \
         --suffix _gpu
+    python plot_speedup.py .../si-bulk.h5 \
+        --baseline-solver superlu --baseline-dtype complex128
+
+The baseline is a plot-time choice, not a property of the data: every solver's
+raw factor/solve times are already in the file, so swapping which one the rest
+are divided by costs one rerun of this script, not a rerun of the sweep. The
+default baseline is Block Thomas complex128, so that every figure reads as
+speedup relative to the solver this project builds; pass
+--baseline-solver/--baseline-dtype for a different one, e.g. SuperLU for a
+figure comparable to the classical-solver literature, or for a material where
+Block Thomas itself was excluded from the sweep.
 """
 
 import argparse
@@ -61,10 +72,8 @@ import cli
 from factor_io import material_metadata
 from style import (BAND_EDGE_STYLE, SOLVER_STYLE, axis_label, dtype_label,
                    energies_of, legend_handles, mark_band_edges,
-                   save_figure)
+                   save_figure, solver_label)
 
-# Canonical (solver, precision) of the baseline every ratio refers to.
-BASELINE = ("superlu", "complex128")
 FIELDS = (("time_fact", "Factorization time"), ("time_solve", "Solve time"))
 
 
@@ -100,14 +109,14 @@ def read_timings(h5path, solvers, dtypes):
     return times, indices
 
 
-def speedup_series(times, key, field):
+def speedup_series(times, key, field, baseline):
     """
-    Speedup of `key` over the baseline, at every index where both ran and the
+    Speedup of `key` over `baseline`, at every index where both ran and the
     denominator is strictly positive.
 
     Returns (indices, speedups) as parallel lists, sorted by index.
     """
-    base = times.get(BASELINE, {})
+    base = times.get(baseline, {})
     series = times.get(key, {})
     points = [(idx, base[idx][field] / series[idx][field])
               for idx in sorted(series)
@@ -120,7 +129,7 @@ def speedup_series(times, key, field):
     return list(xs), list(ys)
 
 
-def plot(times, indices, dtypes, attrs, material, out_path):
+def plot(times, indices, dtypes, attrs, material, out_path, baseline):
     """
     Speedup figure with one row per dtype and one column per FIELDS entry;
     returns False if no series could be drawn.
@@ -129,14 +138,14 @@ def plot(times, indices, dtypes, attrs, material, out_path):
     precision, so the line style no longer needs to encode it: all lines are
     solid, and the legend lists solvers only.
     """
-    keys = [k for k in times if k != BASELINE]
+    keys = [k for k in times if k != baseline]
     if not keys:
         print("no (solver, dtype) combination besides the baseline was found")
         return False
 
     all_values = [y for _, field in ((None, "time_fact"), (None, "time_solve"))
                   for key in keys
-                  for y in speedup_series(times, key, field)[1]]
+                  for y in speedup_series(times, key, field, baseline)[1]]
     if not all_values:
         print("no index has both a baseline and a comparison timing")
         return False
@@ -144,7 +153,7 @@ def plot(times, indices, dtypes, attrs, material, out_path):
     ymin = min(all_values + [1.0]) / 2.0
     ymax = max(all_values + [1.0]) * 2.0
 
-    solved = set(times.get(BASELINE, {}))
+    solved = set(times.get(baseline, {}))
     missing = np.array(sorted(set(indices) - solved))
 
     n_rows = len(dtypes)
@@ -160,14 +169,14 @@ def plot(times, indices, dtypes, attrs, material, out_path):
         converted = energies_of(attrs, values) if have_energy else None
         return values if converted is None else converted
 
-    base_text = f"SuperLU {BASELINE[1]}"
+    base_text = f"{solver_label(baseline[0])} {baseline[1]}"
 
     for row, dtype in enumerate(dtypes):
         row_keys = [k for k in keys if k[1] == dtype]
         for col, (field, panel_title) in enumerate(FIELDS):
             ax = axes[row, col]
             for solver, _ in row_keys:
-                xs, ys = speedup_series(times, (solver, dtype), field)
+                xs, ys = speedup_series(times, (solver, dtype), field, baseline)
                 if not xs:
                     continue
                 _, colour, marker = SOLVER_STYLE.get(solver, (solver, None, None))
@@ -251,22 +260,31 @@ def main():
                                f"(default: {cli.BLOCK_THOMAS_DIR})")
     ap.add_argument("--suffix", type=str, default="", metavar="TEXT",
                     help="appended to the output filename stem, e.g. '_gpu'")
+    ap.add_argument("--baseline-solver", type=str, default="block-thomas",
+                    choices=cli.ALL_SOLVERS, metavar="NAME",
+                    help="solver every speedup is taken relative to "
+                         "(default: block-thomas)")
+    ap.add_argument("--baseline-dtype", type=str, default="complex128",
+                    choices=cli.COMPLEX_DTYPES, metavar="DTYPE",
+                    help="dtype of the baseline solver (default: complex128)")
     args = ap.parse_args()
 
     args.h5path = Path(args.h5path)
     material = args.material or args.h5path.stem
     out_path = Path(args.outdir) / f"{material}_speedup{args.suffix}.png"
+    baseline = (args.baseline_solver, args.baseline_dtype)
 
-    solvers = list(dict.fromkeys([BASELINE[0]] + list(args.solvers)))
-    dtypes = list(dict.fromkeys([BASELINE[1]] + list(args.dtypes)))
+    solvers = list(dict.fromkeys([baseline[0]] + list(args.solvers)))
+    dtypes = list(dict.fromkeys([baseline[1]] + list(args.dtypes)))
 
     times, indices = read_timings(args.h5path, solvers, dtypes)
-    if BASELINE not in times:
-        raise SystemExit(f"{args.h5path} has no {BASELINE[0]}/{BASELINE[1]} "
+    if baseline not in times:
+        raise SystemExit(f"{args.h5path} has no {baseline[0]}/{baseline[1]} "
                          f"result to use as a baseline; run "
-                         f"run_bench/run_benchmarks.py first")
+                         f"run_bench/run_benchmarks.py first, or pick a "
+                         f"different --baseline-solver/--baseline-dtype")
     attrs = material_metadata(args.h5path)
-    if not plot(times, indices, dtypes, attrs, material, out_path):
+    if not plot(times, indices, dtypes, attrs, material, out_path, baseline):
         raise SystemExit(1)
 
 
