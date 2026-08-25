@@ -401,20 +401,20 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
         history.append(rel)
         if x_true is not None:
             true_err_history.append(np.linalg.norm(x - x_true) / norm_x_true)
-        x_history.append(x.copy())
+        # No copy: the update below rebinds x to a new array rather than
+        # writing into it, so the retained reference is never overwritten.
+        # Keep it that way -- an in-place `x +=` here would silently corrupt
+        # every stored iterate.
+        x_history.append(x)
         if rel < tol:
             break
         x = x + solver.solve(r.astype(low_dtype)).astype(HIGH_DTYPE)
     inner_s = time.perf_counter() - t0
 
-    etainf_history, omega_history = _backward_error_histories(
-        A_high, b_high, x_history, normA)
-
     extra = {
         "history": history,
         "true_err_history": true_err_history,
-        "etainf_history": etainf_history,
-        "omega_history": omega_history,
+        "x_history": x_history,
         "mem_bytes": solver.factor_nbytes(),
         "factor_s": factor_s,
         "inner_s": inner_s,
@@ -429,14 +429,13 @@ def _backward_error_histories(A_high, b_high, x_history, normA):
     """
     eta_inf and omega of every outer iterate, as two lists.
 
-    Computed after the refinement loop has been timed, from iterates the loop
-    stored, rather than inside it: omega needs |A| |x|, a second sparse matvec
-    per iteration, which would be charged to inner_s and inflate the very
-    figure the timing rows are there to report. Copying an iterate is O(n k)
-    and does not.
+    Called by benchmark_solver once the wall timer has stopped, never from
+    inside a refinement loop: omega needs |A| |x|, a second sparse matvec per
+    iteration, which charged to the timed region would inflate the very
+    figures the timing rows exist to report. The loops therefore only retain
+    their iterates, and the errors are reconstructed here afterwards.
 
-    Returns ([], []) when normA is None, which is the case only if the caller
-    did not supply it.
+    Returns ([], []) when normA or the iterate history is absent.
     """
     if normA is None or not x_history:
         return [], []
@@ -535,7 +534,9 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
         history.append(rel)
         if x_true2 is not None:
             true_err_history.append(np.linalg.norm(x2 - x_true2) / norm_x_true)
-        x_history.append(x2.copy())
+        # No copy; see the note in solve_mixed_ir. x2 = x2 + d2 below rebinds
+        # rather than writing in place, so the retained reference stays valid.
+        x_history.append(x2)
         if rel < tol:
             break
 
@@ -562,14 +563,10 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
 
     x = x2 if orig_ndim == 2 else x2[:, 0]
 
-    etainf_history, omega_history = _backward_error_histories(
-        A_high, b2, x_history, normA)
-
     extra = {
         "history": history,
         "true_err_history": true_err_history,
-        "etainf_history": etainf_history,
-        "omega_history": omega_history,
+        "x_history": x_history,
         "gmres_iters_history": gmres_iters_history,
         "mem_bytes": solver.factor_nbytes(),
         "factor_s": factor_s,
@@ -726,6 +723,13 @@ def benchmark_solver(fn, A_high, b_high, repeats, x_true=None, normA=None):
         if normA is not None:
             _, etas, omega = backward_errors(A_high, x, b_high, normA, R=res_vec)
             eta1, eta2, etainf = etas[1], etas[2], etas[np.inf]
+
+        # Per-iteration backward errors, from the iterates the refinement loop
+        # retained. Done here rather than in the loop so that neither the wall
+        # timer above nor the loop's own inner_s is charged for them.
+        extra["etainf_history"], extra["omega_history"] = \
+            _backward_error_histories(A_high, b_high,
+                                      extra.pop("x_history", []), normA)
 
         true_err = None
         if x_true is not None:
