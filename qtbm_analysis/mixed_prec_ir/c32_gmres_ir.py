@@ -163,7 +163,7 @@ def run_index(h5path, idx, bs, args):
     A, b = mpir.load_system(h5path, idx)
     A_high = A.tocsc().astype(HIGH)
     b_high = np.asarray(b, dtype=HIGH)
-    kappa = mpir.load_condition_number(h5path, idx)
+    kappa = mpir.load_condition_numbers(h5path, idx)[2]
 
     n, nnz = A.shape[0], int(A.nnz)
     print(f"\n{'='*78}")

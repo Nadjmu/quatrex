@@ -338,33 +338,43 @@ def idx_of_energy(indices, energies, energy):
     return int(indices[nearest])
 
 
-def load_condition_number(h5path, idx):
+def load_condition_numbers(h5path, idx):
     """
-    kappa_2(A) for one energy index, from the material's own condition-estimate
-    file, cli.CONDITION_DIR/<material>.h5 -- a separate file from h5path,
-    written by the condition-est pipeline, not by run_benchmarks.py. Its
-    /condition/indices holds the same energy indices as h5path's
-    metadata/indices, and /condition/cond_2 the corresponding kappa_2 (from
-    sigma_max/sigma_min); /condition/valid marks entries where the SVD
-    estimate succeeded. Returns None if the file, the index, or a valid
-    estimate for it isn't present.
+    {2: kappa_2, "inf": kappa_inf} for one energy index, from the material's
+    own condition-estimate file, cli.CONDITION_DIR/<material>.h5 -- a separate
+    file from h5path, written by the condition-est pipeline, not by
+    run_benchmarks.py. Its /condition/indices holds the same energy indices as
+    h5path's metadata/indices, /condition/cond_2 and /condition/cond_inf the
+    corresponding condition numbers, and /condition/valid marks rows where the
+    estimate succeeded; condition_est.py computes all norms of one row
+    together, so validity is shared between them. Returns {2: None, "inf":
+    None} if the file, the index, or a valid row for it isn't present.
+
+    kappa_2 (from sigma_max/sigma_min) is the general-purpose conditioning
+    figure reported throughout this project. kappa_inf is reported alongside
+    it here specifically because the classical LU-IR convergence requirement,
+    kappa_inf(A) u_f < 1 (see the module docstring), is stated in the infinity
+    norm, not the 2-norm; the two can differ enough that only one of them
+    crosses the threshold near a band edge.
     """
+    missing = {2: None, "inf": None}
     cond_path = cli.CONDITION_DIR / f"{Path(h5path).stem}.h5"
     if not cond_path.exists():
-        return None
+        return missing
     with h5py.File(cond_path, "r") as f:
-        if "condition/cond_2" not in f:
-            return None
+        if "condition/cond_2" not in f or "condition/cond_inf" not in f:
+            return missing
         indices = f["condition/indices"][:]
         cond2 = f["condition/cond_2"][:]
+        condinf = f["condition/cond_inf"][:]
         valid = f["condition/valid"][:] if "condition/valid" in f else None
     hit = np.flatnonzero(indices == idx)
     if hit.size == 0:
-        return None
+        return missing
     i = hit[0]
     if valid is not None and not valid[i]:
-        return None
-    return float(cond2[i])
+        return missing
+    return {2: float(cond2[i]), "inf": float(condinf[i])}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -809,9 +819,22 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
         inner_label = "LU-IR"
         print(f"Inner   : single {low_name} triangular solve (classic LU-IR)")
 
-    kappa = load_condition_number(h5path, idx)
-    if kappa is not None:
-        print(f"Condition number (kappa_2) at E_{idx}: {kappa:.3e}")
+    kappa = load_condition_numbers(h5path, idx)
+    if kappa[2] is not None:
+        print(f"Condition number at E_{idx}: kappa_2={kappa[2]:.3e}  "
+              f"kappa_inf={kappa['inf']:.3e}")
+        # The classical LU-IR requirement is stated in the infinity norm (see
+        # the module docstring): kappa_inf(A) u_f < 1. GMRES-IR is not bound
+        # by it, so the check is informative there, not a prediction of
+        # failure. u_f is the nominal roundoff of low_dtype; for a solver that
+        # casts a different internal working precision (e.g.
+        # block-thomas-fp16, always called with low_dtype=complex128 -- see
+        # c32_gmres_ir.py) this reports the cast precision, not the true one.
+        u_f = float(np.finfo(low_dtype).eps)
+        bound = kappa["inf"] * u_f
+        verdict = "within" if bound < 1 else "EXCEEDS"
+        print(f"  LU-IR bound: kappa_inf * u_f = {bound:.2e}  "
+              f"({verdict} the kappa_inf * u_f < 1 requirement)")
     else:
         cond_path = cli.CONDITION_DIR / f"{h5path.stem}.h5"
         print(f"Condition number: not available (no valid entry for idx={idx} "
@@ -1031,7 +1054,15 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     omega_history = all_records[ir_name][0]["extra"].get("omega_history", [])
     gmres_iters_history = all_records[ir_name][0]["extra"].get("gmres_iters_history", [])
     if history:
-        print(f"\n  IR convergence history (first run, {ir_name}):")
+        converged = history[-1] < tol
+        if converged:
+            print(f"\n  Converged in {len(history)} outer iteration"
+                  f"{'s' if len(history) != 1 else ''} "
+                  f"(||r||/||b|| = {history[-1]:.2e} < tol {tol:.0e})")
+        else:
+            print(f"\n  Did NOT converge within {max_iter} outer iterations "
+                  f"(||r||/||b|| = {history[-1]:.2e}, tol {tol:.0e})")
+        print(f"  IR convergence history (first run, {ir_name}):")
         for i, rel in enumerate(history):
             tag = "  <- converged" if i == len(history) - 1 and rel < tol else ""
             line = f"    iter {i}: ||r||/||b|| = {rel:.3e}"
