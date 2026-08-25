@@ -13,13 +13,15 @@ resolution * i.
 
 Output
 ------
-For each bucket [k, k + --bin-width) covering the observed kappa_2 range, the
-index and energy of up to --max-per-bin rows falling in it, in index order.
+Buckets widen by alternating factors of 2 and 5 above --first-edge, e.g.
+0-500, 500-1e3, 1e3-5e3, 5e3-1e4, 1e4-5e4, 5e4-1e5, ..., covering the observed
+kappa_2 range. For each bucket, the index and energy of up to --max-per-bin
+rows falling in it, in index order.
 
 Usage
 -----
     python list_by_kappa.py /scratch/yimili/condition-est/carbon-nanotube.h5
-    python list_by_kappa.py .../si-bulk.h5 --bin-width 1000 --max-per-bin 20
+    python list_by_kappa.py .../si-bulk.h5 --first-edge 1000 --max-per-bin 20
 """
 
 import sys
@@ -34,12 +36,30 @@ import cli
 GROUP = "condition"
 
 
+def bin_edges(first_edge, upper):
+    """
+    [0, first_edge, ...] widening by alternating factors of 2 and 5, up to and
+    including the first edge at or above `upper`.
+
+    e.g. first_edge=500: 0, 500, 1e3, 5e3, 1e4, 5e4, 1e5, 5e5, 1e6, ...
+    """
+    edges = [0.0, float(first_edge)]
+    factors = (2.0, 5.0)
+    i = 0
+    while edges[-1] < upper:
+        edges.append(edges[-1] * factors[i % 2])
+        i += 1
+    return edges
+
+
 def main():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap, help="condition-est analysis file, e.g. "
                              "condition-est/carbon-nanotube.h5")
-    ap.add_argument("--bin-width", type=float, default=500.0, metavar="K",
-                    help="width of each kappa_2 bucket (default: 500)")
+    ap.add_argument("--first-edge", type=float, default=500.0, metavar="K",
+                    help="first bucket boundary above 0; later boundaries "
+                         "widen by alternating factors of 2 and 5 "
+                         "(default: 500)")
     ap.add_argument("--max-per-bin", type=int, default=50, metavar="N",
                     help="rows listed per bucket (default: 50)")
     args = ap.parse_args()
@@ -81,9 +101,8 @@ def main():
     order = np.argsort(indices)
     indices, cond_2 = indices[order], cond_2[order]
 
-    n_bins = int(np.floor(cond_2.max() / args.bin_width)) + 1
-    for b in range(n_bins):
-        lo, hi = b * args.bin_width, (b + 1) * args.bin_width
+    edges = bin_edges(args.first_edge, cond_2.max())
+    for lo, hi in zip(edges[:-1], edges[1:]):
         in_bin = np.flatnonzero((cond_2 >= lo) & (cond_2 < hi))
         if in_bin.size == 0:
             continue
