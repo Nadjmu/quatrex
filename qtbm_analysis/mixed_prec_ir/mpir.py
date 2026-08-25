@@ -866,15 +866,12 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
                 for nm in names]
         print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
 
-    def eta_str(nm):
-        e1, e2, ei = med_opt(nm, "eta1"), med_opt(nm, "eta2"), med_opt(nm, "etainf")
-        e2s = f"{e2:.2e}" if e2 is not None else "n/a (svds)"
-        if e1 is None:
-            return "n/a"
-        return f"{e1:.2e} / {e2s} / {ei:.2e}"
-
-    print(f"  {'Normwise backward error (nbe: eta_1/2/inf)':<{col-2}}" +
-          "".join(f"  {eta_str(nm):<28}" for nm in names))
+    for label, key in [("Normwise backward error (nbe, eta_1)",   "eta1"),
+                       ("Normwise backward error (nbe, eta_2)",   "eta2"),
+                       ("Normwise backward error (nbe, eta_inf)", "etainf")]:
+        vals = [f"{med_opt(nm, key):.2e}" if med_opt(nm, key) is not None
+                else "n/a" for nm in names]
+        print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
 
     omega_vals = [f"{med_opt(nm, 'omega'):.2e}" if med_opt(nm, "omega") is not None
                   else "n/a" for nm in names]
