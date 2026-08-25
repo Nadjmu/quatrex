@@ -654,7 +654,36 @@ def _per_column(diff, denom):
     return np.linalg.norm(diff, axis=0) / np.linalg.norm(denom, axis=0)
 
 
-def benchmark_solver(fn, A_high, b_high, repeats, x_true=None, normA=None):
+def _debug_eta_print(label, A_high, x, b_high, res_vec, normA):
+    """
+    Raw component norms behind one eta_p computation, for one variant.
+
+    Prints ||A||_p, ||x||_p, ||b||_p and ||r||_p per column (p = 1, 2, inf),
+    i.e. every term of eta_p = ||r||_p / (||A||_p ||x||_p + ||b||_p) separately,
+    so a denominator or numerator that is out of scale is visible directly
+    rather than only in the already-divided ratio.
+    """
+    X2 = x if x.ndim == 2 else x[:, None]
+    B2 = b_high if b_high.ndim == 2 else b_high[:, None]
+    R2 = res_vec if res_vec.ndim == 2 else res_vec[:, None]
+    print(f"  [debug eta] {label}")
+    for p in NORMWISE_ORDS:
+        if normA[p] is None:
+            print(f"    p={p}: ||A||_p not available (svds did not converge)")
+            continue
+        normX = np.linalg.norm(X2, ord=p, axis=0)
+        normB = np.linalg.norm(B2, ord=p, axis=0)
+        normR = np.linalg.norm(R2, ord=p, axis=0)
+        j = int(np.argmax(normR / np.where(normB > 0, normB, 1)))
+        print(f"    p={p}: ||A||_p={normA[p]:.3e}  "
+              f"||x||_p[col {j}]={normX[j]:.3e}  "
+              f"||b||_p[col {j}]={normB[j]:.3e}  "
+              f"||r||_p[col {j}]={normR[j]:.3e}  "
+              f"denom={normA[p]*normX[j] + normB[j]:.3e}")
+
+
+def benchmark_solver(fn, A_high, b_high, repeats, x_true=None, normA=None,
+                     debug_eta=False, debug_label=""):
     """
     Run fn() `repeats` times and record accuracy, time and memory.
 
@@ -710,6 +739,8 @@ def benchmark_solver(fn, A_high, b_high, repeats, x_true=None, normA=None):
         if normA is not None:
             _, etas, omega = backward_errors(A_high, x, b_high, normA, R=res_vec)
             eta1, eta2, etainf = etas[1], etas[2], etas[np.inf]
+            if debug_eta:
+                _debug_eta_print(debug_label, A_high, x, b_high, res_vec, normA)
 
         true_err = None
         if x_true is not None:
@@ -735,7 +766,8 @@ def benchmark_solver(fn, A_high, b_high, repeats, x_true=None, normA=None):
 
 def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repeats,
                    reference_solver=None, inner="direct",
-                   gmres_tol=1e-8, gmres_restart=30, gmres_max_iter=50):
+                   gmres_tol=1e-8, gmres_restart=30, gmres_max_iter=50,
+                   debug_eta=False):
     A, b = load_system(h5path, idx)
     A_high = A.tocsc().astype(HIGH_DTYPE)
     b_high = np.asarray(b, dtype=HIGH_DTYPE)
@@ -824,7 +856,9 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
         print(f"  Benchmarking '{name}' x{repeats} ...", flush=True)
         try:
             all_records[name] = benchmark_solver(fn, A_high, b_high, repeats,
-                                                 x_true=x_true, normA=normA)
+                                                 x_true=x_true, normA=normA,
+                                                 debug_eta=debug_eta,
+                                                 debug_label=name)
         except (ImportError, TypeError, RuntimeError) as e:
             print(f"    skipped: {e}")
     print()
@@ -1016,6 +1050,11 @@ def main():
     ap.add_argument("--gmres-max-iter", type=int, default=50,
                     help="maximum inner GMRES iterations per outer step "
                          "(--inner gmres only)")
+    ap.add_argument("--debug-eta", action="store_true",
+                    help="print the raw ||A||_p, ||x||_p, ||b||_p, ||r||_p "
+                         "terms behind eta_p for the worst right-hand-side "
+                         "column of every variant, for diagnosing why nbe/cbe "
+                         "come out an unexpected size")
     args = ap.parse_args()
 
     h5path = Path(args.h5path)
@@ -1037,7 +1076,8 @@ def main():
                        reference_solver=args.reference_solver,
                        inner=args.inner, gmres_tol=args.gmres_tol,
                        gmres_restart=args.gmres_restart,
-                       gmres_max_iter=args.gmres_max_iter)
+                       gmres_max_iter=args.gmres_max_iter,
+                       debug_eta=args.debug_eta)
 
 
 if __name__ == "__main__":
