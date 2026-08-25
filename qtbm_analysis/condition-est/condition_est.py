@@ -76,7 +76,7 @@ Usage
     python condition_est.py --stride 10
     python condition_est.py /scratch/yimili/matrices2/hdf5/graphene.h5 \\
         --start 0 --end 400 --resume
-    python ../plotting/plot_condition.py
+    python ../plotting/condition-est/plot_condition.py
 """
 
 import gc
@@ -570,7 +570,7 @@ def main():
 
     print()
     print("Plot the result with:")
-    print(f"  python ../plotting/plot_condition.py --outdir {args.outdir}")
+    print(f"  python ../plotting/condition-est/plot_condition.py --outdir {args.outdir}")
 
 
 if __name__ == "__main__":

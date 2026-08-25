@@ -78,7 +78,7 @@ DTYPE_STYLE = {
 FP16_UNIT_ROUNDOFF = 2.0 ** -11           # 4.883e-4
 
 # Band edge marks. The valence and conduction edge are distinguished by colour,
-# matching plotting/bandstructure.py, where the same two levels are drawn.
+# matching plotting/materials/bandstructure.py, where the same two levels are drawn.
 BAND_EDGE_STYLE = {
     "valence_band_edge": ("tab:blue", "valence band edge"),
     "conduction_band_edge": ("tab:red", "conduction band edge"),

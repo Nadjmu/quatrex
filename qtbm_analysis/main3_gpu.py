@@ -28,12 +28,12 @@ Written to EXPORT_DIR/<material>/, identical to main3.py:
     condition_full_svd.npy, max_singular_values.npy, min_singular_values.npy,
     M_E_<idx>.npz, Sigma_E_<idx>.npz, rhs_E_<idx>.npy
 
-No figures are produced; see plotting/plot_qtbm_spectra.py.
+No figures are produced; see plotting/matrices2/plot_qtbm_spectra.py.
 
 Usage
 -----
     python main3_gpu.py
-    python plotting/plot_qtbm_spectra.py /scratch/yimili/matrices2/dev_12_sorted_BENCH
+    python plotting/matrices2/plot_qtbm_spectra.py /scratch/yimili/matrices2/dev_12_sorted_BENCH
 """
 
 import sys
@@ -260,7 +260,7 @@ def process_example(name):
         export_matrices(example, hamiltonian, overlap, energies, out_dir)
 
     print(f"  output directory: {out_dir}")
-    print(f"  plot with: python plotting/plot_qtbm_spectra.py {out_dir}\n")
+    print(f"  plot with: python plotting/matrices2/plot_qtbm_spectra.py {out_dir}\n")
 
 
 def main():

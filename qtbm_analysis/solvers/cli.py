@@ -206,7 +206,7 @@ class Material:
         M(E) from it.
     inputs
         DFT input directory holding hamiltonian.mat and, for a non-orthogonal
-        basis, overlap.mat. plotting/bandstructure.py reads it.
+        basis, overlap.mat. plotting/materials/bandstructure.py reads it.
     block_size
         Uniform Block Thomas block size. One periodic lead block.
     blocks
@@ -220,11 +220,11 @@ class Material:
         eV. It is not derived from the band edges; set it to whatever range and
         resolution the material is to be swept over.
     mid_gap_energy
-        An energy inside the band gap, used by plotting/bandstructure.py to
+        An energy inside the band gap, used by plotting/materials/bandstructure.py to
         separate the valence from the conduction bands when it locates the
         edges. Not used elsewhere.
     transverse_k, num_k_points, lead_offset
-        Contact band structure parameters; see plotting/bandstructure.py.
+        Contact band structure parameters; see plotting/materials/bandstructure.py.
     """
 
     example: Path | None = None

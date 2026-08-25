@@ -25,7 +25,7 @@ import numpy as np
 import scipy.io
 import scipy.sparse as sps
 
-sys.path.append(str((Path(__file__).resolve().parent / ".."
+sys.path.append(str((Path(__file__).resolve().parent / ".." / ".."
                      / "solvers").resolve()))
 
 import cli

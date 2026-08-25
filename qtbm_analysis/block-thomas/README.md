@@ -104,7 +104,7 @@ python growth_factor.py .../graphene.h5 --start 1 --end 400
 python growth_factor.py .../graphene.h5 --start 1 --end 400 \
     --solvers block-thomas superlu umfpack --dtypes complex128
 
-python ../plotting/plot_growth_factor.py \
+python ../plotting/block-thomas/plot_growth_factor.py \
     /scratch/yimili/error-analysis-block-thomas/graphene.h5
 ```
 

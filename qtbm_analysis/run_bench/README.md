@@ -29,7 +29,7 @@ from `solvers/cli.py`, so the option names match every other script; see
 
 ```bash
 python run_benchmarks.py
-python ../plotting/plot_speedup.py /scratch/yimili/matrices2/hdf5/graphene.h5
+python ../plotting/block-thomas/plot_speedup.py /scratch/yimili/matrices2/hdf5/graphene.h5
 ```
 
 Sweeps every material of `cli.MATERIALS` that declares a block size, appending
@@ -108,7 +108,7 @@ range, against the stored `complex128` Block Thomas solution as reference.
 python sweep_fp16.py .../carbon-nanotube.h5 --start 0 --end 401 --block-size 32
 python sweep_fp16.py .../graphene.h5 --start 0 --end 401 --auto-blocks
 python sweep_fp16.py .../graphene.h5 --idx 0 25 50 --inv-dtype float16
-python ../plotting/plot_fp16_accuracy.py \
+python ../plotting/block-thomas/plot_fp16_accuracy.py \
     /scratch/yimili/error-analysis-block-thomas/graphene.h5
 ```
 
@@ -144,12 +144,12 @@ a factorization that is half precision throughout, so the gap against the
 
 `gpu_run_benchmarks.py` runs only the GPU solvers and appends them into the
 same material files. It does not rerun any CPU solver, so it may be executed on
-a GPU node without repeating the CPU sweep; `plotting/plot_speedup.py` reads
+a GPU node without repeating the CPU sweep; `plotting/block-thomas/plot_speedup.py` reads
 the SuperLU baseline already present in the file.
 
 ```bash
 python gpu_run_benchmarks.py
-python ../plotting/plot_speedup.py <material>.h5 --solvers cudss --suffix _gpu
+python ../plotting/block-thomas/plot_speedup.py <material>.h5 --solvers cudss --suffix _gpu
 ```
 
 Both GPU drivers complete without error on a CPU-only machine: availability is

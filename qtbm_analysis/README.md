@@ -91,13 +91,18 @@ which every analysis of that material writes its own top-level group.
                     │
                     ▼
   STAGE 5  PLOT (reads HDF5, writes figures only, into the same directory)
-                    plotting/plot_growth_factor.py
-                    plotting/plot_fp16_accuracy.py
-                    plotting/plot_speedup.py
-                    plotting/plot_non_normal.py
-                    plotting/plot_qtbm_spectra.py
-                    plotting/bandstructure.py
+                    plotting/block-thomas/plot_growth_factor.py
+                    plotting/block-thomas/plot_fp16_accuracy.py
+                    plotting/block-thomas/plot_speedup.py
+                    plotting/non-normal/plot_non_normal.py
+                    plotting/matrices2/plot_qtbm_spectra.py
+                    plotting/materials/bandstructure.py
 ```
+
+`plotting/` mirrors this same scratch-directory layout: one subfolder per
+category (`block-thomas/`, `condition-est/`, `non-normal/`, `mixed_prec_ir/`,
+`matrices2/`, `materials/`), holding the scripts that plot that category's
+data. `style.py` is the only file at `plotting/`'s top level.
 
 ### 2.2 The invariant
 
@@ -152,7 +157,8 @@ carries the band edges, the Block Thomas block size, the input directories and
 the contact band structure parameters, and every stage reads them from there:
 `main3.py` positions the energy sweep on the conduction edge, `make_hdf5.py`
 records both edges in the material file, `run_benchmarks.py` takes the block
-size, and `plotting/bandstructure.py` takes the inputs and the mid-gap energy.
+size, and `plotting/materials/bandstructure.py` takes the inputs and the
+mid-gap energy.
 
 ```python
 "graphene": Material(
@@ -167,8 +173,8 @@ size, and `plotting/bandstructure.py` takes the inputs and the mid-gap energy.
 
 A band edge left at `None` is not fatal: stage 1 falls back to the value in the
 QTBM configuration, and stage 2 records only the edges it has. Run
-`plotting/bandstructure.py <material>` to determine them; it reports both edges
-and the gap.
+`plotting/materials/bandstructure.py <material>` to determine them; it reports
+both edges and the gap.
 
 **The energy sweep is a first energy, a last energy and a step, all in eV.** It
 is not derived from the band edges, and the number of energy indices is stated
@@ -230,10 +236,12 @@ python non-normal.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
     --start 0 --end 401
 
 # Stage 5: figures, each written beside the data it was drawn from.
-cd ../plotting
+# plotting/ mirrors the same category layout as the scratch directories.
+cd ../plotting/block-thomas
 python plot_speedup.py        /scratch/yimili/matrices2/hdf5/graphene.h5
 python plot_growth_factor.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 python plot_fp16_accuracy.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
+cd ../non-normal
 python plot_non_normal.py     /scratch/yimili/non-normal/graphene.h5
 
 # Tests: synthetic data only, no cluster files required.

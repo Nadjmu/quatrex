@@ -35,7 +35,7 @@ E_<idx>/M:
     E_<idx>/superlu/<dtype>/, E_<idx>/blockthomas/<dtype>/, ...
 
 This mutates the source file in place. Copy it first if the original must be
-preserved. No figures are produced here; see plotting/plot_speedup.py.
+preserved. No figures are produced here; see plotting/block-thomas/plot_speedup.py.
 
 Usage
 -----
@@ -48,7 +48,7 @@ keep them independent: a crash or OOM kill in one no longer takes the others
 down with it, and does not corrupt their HDF5 files (a killed process can
 corrupt whichever file it was writing to when it died).
 
-    python ../plotting/plot_speedup.py /scratch/yimili/matrices2/hdf5/graphene.h5
+    python ../plotting/block-thomas/plot_speedup.py /scratch/yimili/matrices2/hdf5/graphene.h5
 """
 
 import argparse
@@ -206,7 +206,7 @@ def main():
         count = run_material(material, h5path, solvers=solvers)
         print(f"Finished {material}: appended solver results for {count} "
               f"indices into {h5path}")
-        print(f"Plot with: python ../plotting/plot_speedup.py {h5path}\n")
+        print(f"Plot with: python ../plotting/block-thomas/plot_speedup.py {h5path}\n")
 
     print("All materials processed.")
 

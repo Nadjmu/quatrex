@@ -85,7 +85,7 @@ Output
 one row per (index, solver, dtype, norm), plus a per-index report on stdout.
 The file is opened in append mode and only that group is rewritten, so results
 of other analyses of the same material are preserved. No figures are produced;
-see plotting/plot_growth_factor.py, which consumes the group.
+see plotting/block-thomas/plot_growth_factor.py, which consumes the group.
 
 Usage
 -----
@@ -93,7 +93,7 @@ Usage
     python growth_factor.py .../graphene.h5 --start 1 --end 400
     python growth_factor.py .../graphene.h5 --start 1 --end 400 \
         --solvers block-thomas superlu umfpack --dtypes complex128
-    python ../plotting/plot_growth_factor.py \
+    python ../plotting/block-thomas/plot_growth_factor.py \
         /scratch/yimili/error-analysis-block-thomas/graphene.h5
 """
 
@@ -518,7 +518,7 @@ def main():
                           norms=list(NORMS),
                           **material_metadata(h5path)))
     print(f"wrote {out_path}:/{GROUP}  ({len(records)} rows)")
-    print(f"Plot with: python ../plotting/plot_growth_factor.py {out_path}")
+    print(f"Plot with: python ../plotting/block-thomas/plot_growth_factor.py {out_path}")
 
 
 if __name__ == "__main__":

@@ -52,14 +52,14 @@ group is created; a later run over a different index selection requires
 --overwrite. The file is opened in append mode and only this group is written,
 so results of other analyses of the same material are preserved.
 
-No figures are produced; see plotting/plot_non_normal.py, which reads this group
+No figures are produced; see plotting/non-normal/plot_non_normal.py, which reads this group
 and renders the per-index frames and the animation.
 
 Usage
 -----
     python non-normal.py /scratch/yimili/matrices2/hdf5/carbon-chain.h5 \
         --start 0 --end 401
-    python ../plotting/plot_non_normal.py \
+    python ../plotting/non-normal/plot_non_normal.py \
         /scratch/yimili/non-normal/carbon-chain.h5
 """
 
@@ -591,7 +591,7 @@ def main():
           + ", ".join(MATRIX_DATASETS))
     print()
     print("Render the frames and the animation with:")
-    print(f"  python ../plotting/plot_non_normal.py {out_path}")
+    print(f"  python ../plotting/non-normal/plot_non_normal.py {out_path}")
 
 
 if __name__ == "__main__":

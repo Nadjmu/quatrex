@@ -54,14 +54,14 @@ fwd_err_fp16_inv_vs_c128, fwd_err_c64_vs_c128 and cond_full_svd. The run
 configuration and the list of failed indices are group attributes. The file is
 opened in append mode and only that group is rewritten, so results of other
 analyses of the same material are preserved. No figures are produced; see
-plotting/plot_fp16_accuracy.py, which consumes the group.
+plotting/block-thomas/plot_fp16_accuracy.py, which consumes the group.
 
 Usage
 -----
     python sweep_fp16.py .../carbon-nanotube.h5 --start 0 --end 401
     python sweep_fp16.py .../graphene.h5 --start 0 --end 401
     python sweep_fp16.py .../graphene.h5 --idx 0 25 50 --inv-dtype float16
-    python ../plotting/plot_fp16_accuracy.py \
+    python ../plotting/block-thomas/plot_fp16_accuracy.py \
         /scratch/yimili/error-analysis-block-thomas/carbon-nanotube.h5
 """
 
@@ -258,7 +258,7 @@ def main():
                attrs=run_attrs(args, partition, part_desc, failed, indices))
 
     print(f"\nwrote {out_path}:/{GROUP}  ({len(rows)} rows)")
-    print(f"Plot with: python ../plotting/plot_fp16_accuracy.py {out_path}")
+    print(f"Plot with: python ../plotting/block-thomas/plot_fp16_accuracy.py {out_path}")
 
 
 if __name__ == "__main__":

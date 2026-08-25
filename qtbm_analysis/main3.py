@@ -63,13 +63,13 @@ Written to EXPORT_DIR/<material>/, which make_hdf5.py consolidates:
     Sigma_E_<idx>.npz            Sigma(E) at the same index, CSR triplet
     rhs_E_<idx>.npy              the right-hand side at the same index
 
-No figures are produced; see plotting/plot_qtbm_spectra.py, which reads these
+No figures are produced; see plotting/matrices2/plot_qtbm_spectra.py, which reads these
 arrays.
 
 Usage
 -----
     python main3.py
-    python plotting/plot_qtbm_spectra.py /scratch/yimili/matrices2/dev_12_sorted_BENCH
+    python plotting/matrices2/plot_qtbm_spectra.py /scratch/yimili/matrices2/dev_12_sorted_BENCH
 """
 
 import sys
@@ -299,7 +299,7 @@ def process_example(name):
         export_matrices(example, hamiltonian, overlap, energies, out_dir)
 
     print(f"  output directory: {out_dir}")
-    print(f"  plot with: python plotting/plot_qtbm_spectra.py {out_dir}\n")
+    print(f"  plot with: python plotting/matrices2/plot_qtbm_spectra.py {out_dir}\n")
 
 
 def main():

@@ -57,8 +57,8 @@ from collections import defaultdict
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
-sys.path.append(str(_HERE))
-sys.path.append(str((_HERE / ".." / "solvers").resolve()))
+sys.path.append(str((_HERE / "..").resolve()))
+sys.path.append(str((_HERE / ".." / ".." / "solvers").resolve()))
 
 import matplotlib.pyplot as plt
 
