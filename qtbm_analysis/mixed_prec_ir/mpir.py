@@ -151,8 +151,8 @@ import scipy.sparse.linalg as spla
 sys.path.append(str((Path(__file__).parent / ".." / "solvers").resolve()))
 import cli
 from solver_classes import (
-    SparseLU, UMFPACK, MUMPS, BlockThomas, CuDSS, extract_blocks_sparse,
-    block_sizes_from_matrix, offband_nnz,
+    SparseLU, UMFPACK, MUMPS, BlockThomas, BlockThomasExplicitInv, CuDSS,
+    extract_blocks_sparse, block_sizes_from_matrix, offband_nnz,
 )
 from bench_all import backward_errors, _matrix_norm, NORMWISE_ORDS
 
@@ -173,15 +173,14 @@ HIGH_DTYPE = np.complex128
 # passed uniformly so that no call site has to special-case cuDSS.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_block_thomas(A, dtype, bs, b):
+def _detected_blocks(A):
     """
-    Block Thomas over the partition detected from the sparsity pattern.
+    Partition detected from the sparsity pattern, validated with offband_nnz.
 
     The exported matrices have a non-uniform block structure, so the partition
     is always detected and never uniform, as in run_bench/single_solve.py and
-    run_benchmarks.py's resolve_partition. `bs` is accepted to satisfy the
-    builder contract and ignored. A partition that cuts a real coupling yields
-    a silently wrong solution, so it is validated with offband_nnz before
+    run_benchmarks.py's resolve_partition. A partition that cuts a real
+    coupling yields a silently wrong solution, so it is validated before
     anything is factored.
     """
     bs = block_sizes_from_matrix(A)
@@ -190,8 +189,21 @@ def _build_block_thomas(A, dtype, bs, b):
         raise ValueError(
             f"block partition leaves {bad} nonzeros outside the "
             f"block-tridiagonal band; the solution would be wrong")
-    D, L, U = extract_blocks_sparse(A, bs)
+    return bs
+
+
+def _build_block_thomas(A, dtype, bs, b):
+    """Implementation 1 (LU with substitution). `bs` is ignored; see
+    _detected_blocks."""
+    D, L, U = extract_blocks_sparse(A, _detected_blocks(A))
     return BlockThomas(D, L, U, dtype=dtype)
+
+
+def _build_block_thomas_inv(A, dtype, bs, b):
+    """Implementation 2 (explicit block inverses). `bs` is ignored; see
+    _detected_blocks."""
+    D, L, U = extract_blocks_sparse(A, _detected_blocks(A))
+    return BlockThomasExplicitInv(D, L, U, dtype=dtype)
 
 
 def _solve_columns(solve_one, b):
@@ -282,7 +294,8 @@ SOLVER_BUILDERS = {
     "superlu":      lambda A, dtype, bs, b: SparseLU(A, dtype=dtype),
     "umfpack":      lambda A, dtype, bs, b: UMFPACK(A, dtype=dtype),
     "mumps":        lambda A, dtype, bs, b: MUMPS(A, dtype=dtype),
-    "block-thomas": _build_block_thomas,
+    "block-thomas":     _build_block_thomas,
+    "block-thomas-inv": _build_block_thomas_inv,
     "cudss":        lambda A, dtype, bs, b: _CuDSSSolver(
         A, dtype, b.shape[1] if np.asarray(b).ndim == 2 else 1),
 }
