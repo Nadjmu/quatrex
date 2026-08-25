@@ -96,7 +96,17 @@ def read_timings(h5path, solvers, dtypes):
 
         for idx in indices:
             for solver in solvers:
+                # A solver's own valid dtypes, from cli.SOLVERS -- not just
+                # any dtype in `dtypes`. block-thomas-fp16 and block-thomas
+                # share an HDF5 group name (fp16 nests as a complex32 child of
+                # the same parent), so without this a query for
+                # block-thomas-fp16 at complex128 silently reads the plain
+                # Block Thomas result out of that shared group and mislabels
+                # it, rather than finding nothing.
+                valid = cli.SOLVERS.get(solver, {}).get("dtypes", dtypes)
                 for dtype in dtypes:
+                    if dtype not in valid:
+                        continue
                     g = f.get(f"E_{idx}/{cli.h5_group(solver)}/{dtype}")
                     if g is None:
                         continue

@@ -270,9 +270,11 @@ def bench(As, B, idx, bs, dtypes=DEFAULT_DTYPES, h5file=None, save=True,
     x_base = None                              # SuperLU solution at dtypes[0]
                                                # against which vs_base is taken
 
+    base_label = (f"superlu_{_sfx(dtypes[0])}" if "superlu" in solvers
+                  else "none (superlu excluded; vs_base omitted)")
     print(f"idx={idx}  n={n}  B.shape={B.shape}  "
           f"nnz={As.nnz / (n * n):6.2%} of dense  "
-          f"baseline=superlu_{_sfx(dtypes[0])}")
+          f"baseline={base_label}")
 
     def _finish(key, label, solver, x, t_f, t_s, extra="", saver=None):
         """Record one (solver, dtype) result, report it, and persist it."""
