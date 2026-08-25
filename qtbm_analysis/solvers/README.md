@@ -245,7 +245,7 @@ same length, with the run configuration attached as group attributes:
 
 ```
 <analysis dir>/<material>.h5
-└── <analysis>/    growth_factor, fp16_sweep, gmres_ir
+└── <analysis>/    growth_factor, fp16_sweep
     ├── attrs      material, source, n_rows, columns, run parameters
     └── one dataset per column, int64, float64 or variable-length UTF-8
 ```

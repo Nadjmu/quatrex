@@ -15,7 +15,6 @@ a measurement.
 | `plot_speedup.py` | material file, timing datasets | `<material>_speedup.png` |
 | `plot_growth_factor.py` | analysis file, `growth_factor` | `<material>_growth_factor.png` |
 | `plot_fp16_accuracy.py` | analysis file, `fp16_sweep` | `_relres_fwderr.png`, `_forward_accuracy.png`, `_error_vs_condition.png` |
-| `plot_mixed_prec_ir.py` | analysis file, `gmres_ir` | `_ir_accuracy.png`, `_ir_iterations.png`, `_ir_error_vs_condition.png` |
 | `plot_non_normal.py` | analysis file, `non_normality` | `<material>_frames/E_*.png`, `<material>_non_normal.gif` |
 | `plot_qtbm_spectra.py` | a `main3.py` output directory | `_spectrum.png`, `_condition.png`, `_singular_values.png` |
 | `bandstructure.py` | `examples/<material>/inputs` | `bandstructure.png`, `bandstructure_zoom.png`, `hamiltonian_matrix.png` |
@@ -79,8 +78,6 @@ run_bench/gpu_run_benchmarks.py  ─► the same file                           
 block-thomas/growth_factor.py    ─► error-analysis-block-thomas/            ─► plot_growth_factor.py
                                      <material>.h5 :/growth_factor
 run_bench/sweep_fp16.py          ─► the same file :/fp16_sweep              ─► plot_fp16_accuracy.py
-mixed_prec_ir/c32_gmres_ir.py    ─► mixed-precision-IR/                     ─► plot_mixed_prec_ir.py
-                                     <material>.h5 :/gmres_ir
 non-normal/non-normal.py         ─► non-normal/<material>.h5                ─► plot_non_normal.py
                                      :/non_normality
 main3.py / main3_gpu.py          ─► matrices2/<material>/energies.npy, ...  ─► plot_qtbm_spectra.py
@@ -100,7 +97,6 @@ python plot_speedup.py        /scratch/yimili/matrices2/hdf5/graphene.h5
 python plot_speedup.py        .../graphene.h5 --solvers cudss --suffix _gpu
 python plot_growth_factor.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 python plot_fp16_accuracy.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
-python plot_mixed_prec_ir.py  /scratch/yimili/mixed-precision-IR/graphene.h5
 python plot_non_normal.py     /scratch/yimili/non-normal/carbon-chain.h5 --ping-pong
 python plot_qtbm_spectra.py   /scratch/yimili/matrices2/dev_12_sorted_BENCH
 python bandstructure.py       graphene si-bulk
@@ -132,10 +128,6 @@ above it indicates ill-conditioning rather than an unstable factorization. The
 second figure isolates the cost of dropping from single to half precision on
 the same algorithm; the third plots the forward error against `kappa_2(M)` with
 the reference line `kappa_2 u`.
-
-**`plot_mixed_prec_ir.py`.** Accuracy per variant, iteration counts, and error
-against conditioning. The inner GMRES iteration count is the quantity that
-determines whether refinement is cheaper than factorizing at higher precision.
 
 **`plot_non_normal.py`.** Its panels are per rank rather than per energy, so it
 has no energy axis to mark; the energy of the frame appears in the frame title

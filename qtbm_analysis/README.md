@@ -86,8 +86,6 @@ which every analysis of that material writes its own top-level group.
                                        <material>.h5 :/growth_factor   │
     run_bench/sweep_fp16.py ───────► error-analysis-block-thomas/ ◄────┘
                                        <material>.h5 :/fp16_sweep
-    mixed_prec_ir/c32_gmres_ir.py ─► mixed-precision-IR/
-                                       <material>.h5 :/gmres_ir
     non-normal/non-normal.py ──────► non-normal/
                                        <material>.h5 :/non_normality
                     │
@@ -96,7 +94,6 @@ which every analysis of that material writes its own top-level group.
                     plotting/plot_growth_factor.py
                     plotting/plot_fp16_accuracy.py
                     plotting/plot_speedup.py
-                    plotting/plot_mixed_prec_ir.py
                     plotting/plot_non_normal.py
                     plotting/plot_qtbm_spectra.py
                     plotting/bandstructure.py
@@ -223,8 +220,11 @@ cd ../run_bench
 python sweep_fp16.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
     --start 0 --end 401 --block-size 416
 cd ../mixed_prec_ir
-python c32_gmres_ir.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
-    --start 0 --end 401 --block-size 416
+# Console report only; nothing is written. One invocation per solver and
+# precision under test.
+python mpir.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
+    --start 0 --end 401 --solver block-thomas \
+    --factor-dtype complex32 --inner gmres
 cd ../non-normal
 python non-normal.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
     --start 0 --end 401
@@ -234,7 +234,6 @@ cd ../plotting
 python plot_speedup.py        /scratch/yimili/matrices2/hdf5/graphene.h5
 python plot_growth_factor.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 python plot_fp16_accuracy.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
-python plot_mixed_prec_ir.py  /scratch/yimili/mixed-precision-IR/graphene.h5
 python plot_non_normal.py     /scratch/yimili/non-normal/graphene.h5
 
 # Tests: synthetic data only, no cluster files required.
@@ -353,7 +352,7 @@ and `--idx 0 25 50` are both valid.
 
 | Was | Now | Where |
 |---|---|---|
-| positional `csv_path` | positional `h5path` | `plot_growth_factor`, `plot_fp16_accuracy`, `plot_mixed_prec_ir` |
+| positional `csv_path` | positional `h5path` | `plot_growth_factor`, `plot_fp16_accuracy` |
 | positional `data_dir` | positional `h5path` | `plot_non_normal` |
 | `--no-csv` | `--no-save` | `growth_factor` |
 | `--save-csv` | removed | `non-normal`; the HDF5 group replaces it |
@@ -363,7 +362,7 @@ and `--idx 0 25 50` are both valid.
 
 | Was | Now | Where |
 |---|---|---|
-| `--bs` | `--block-size` | `sweep_fp16`, `single_solve`, `mpir`, `c32_gmres_ir` |
+| `--bs` | `--block-size` | `sweep_fp16`, `single_solve`, `mpir` |
 | `--block-sizes` | `--block-size` | `arnoldi_shift_invert_*` |
 | `--compare-bs` | `--compare-block-size` | `determine_custom_block_size` |
 | `--low-dtype` | `--factor-dtype` | `mpir` |
@@ -375,7 +374,8 @@ and `--idx 0 25 50` are both valid.
 | `--indices 0:401` | `--start 0 --end 401` | `non-normal` |
 | `--idx N` (single) | `--idx N [N ...]` | `growth_factor`, `mpir` |
 | `--maxiter` | `--max-iter` | `arnoldi_shift_invert_*` |
-| `--gmres-maxiter` | `--gmres-max-iter` | `mpir`, `c32_gmres_ir` |
+| `--gmres-maxiter` | `--gmres-max-iter` | `mpir` |
+| `c32_gmres_ir.py` | `mpir.py --factor-dtype complex32` | `mixed_prec_ir` |
 | `-k` | `-k`, `--num-values` | `arnoldi_shift_invert_*` |
 | `block_thomas`, `blockthomas` | `block-thomas` | everywhere |
 | `block_thomas_inv`, `blockthomas_inv` | `block-thomas-inv` | everywhere |
@@ -694,15 +694,17 @@ solver implementation:
 2. the solver at `complex128`, no refinement — the accuracy reference
 3. the solver at `u_f`, no refinement — the lower bound refinement must beat
 
-`c32_gmres_ir.py` extends this to the half-precision Block Thomas
-factorization, adding two further reference points, and sweeps an energy range.
-It does not reimplement the refinement drivers: it registers one additional
-builder into `mpir.SOLVER_BUILDERS` at run time, so any correction to the
-refinement logic applies to it automatically.
+The solver family and the factorization precision are chosen independently:
+`--solver` selects the implementation, `--factor-dtype` the precision it runs
+at. `complex128` and `complex64` are available to every solver that has them,
+and `complex32` — the embedded-real `float16` factorization — to `block-thomas`
+and `block-thomas-inv`, the only two implementations that have one. Which
+pairings exist is read from `cli.SOLVERS` and checked at the parser; see
+[`mixed_prec_ir/README.md`](mixed_prec_ir/README.md).
 
 The evidence for whether half-precision preconditioning works is the
 convergence history and the inner iteration counts, not any single final
-number; both are recorded per index.
+number; both are printed per index.
 
 ---
 

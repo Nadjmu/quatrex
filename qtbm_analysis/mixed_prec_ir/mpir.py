@@ -7,11 +7,19 @@ Input
     h5path, --idx      the system A = E_<idx>/M and b = E_<idx>/rhs from a
                        material HDF5 file
     --solver           which solver family provides the low-precision
-                       factorization: superlu, umfpack, mumps, block_thomas or
-                       cudss
-    --factor-dtype     the factorization precision, u_f below
+                       factorization: superlu, umfpack, mumps, block-thomas,
+                       block-thomas-inv or cudss
+    --factor-dtype     the factorization precision, u_f below: complex128,
+                       complex64 or complex32
+    --inv-dtype        for block-thomas-inv at complex32 only, the precision
+                       its explicit block inverses are formed in
     --inner            the inner correction solve, direct or gmres
     --tol, --max-iter  the outer convergence criterion
+
+The solver family and the factorization precision are chosen independently:
+--solver selects the implementation and --factor-dtype the precision it runs
+at. That is what makes the three variants below a comparison of precision
+rather than of implementation. Not every combination exists; see Precisions.
 
 The file is opened read-only; nothing is written back.
 
@@ -40,9 +48,9 @@ substitution using the low-precision factors, convergence requires roughly
 
     kappa_inf(A) u_f  <  1,
 
-so at u_f = 2^-24, single precision, the method is limited to kappa about 1e7,
-and at u_f = 2^-11, half precision, to kappa about 1e3. QTBM matrices near a
-band edge exceed both. The GMRES-based variant replaces that inner solve with
+so at u_f = 2^-24, complex64, the method is limited to kappa about 1e7, and at
+u_f = 2^-11, complex32, to kappa about 1e3. QTBM matrices near a band edge
+exceed both. The GMRES-based variant replaces that inner solve with
 GMRES applied to the preconditioned system, which relaxes the requirement to
 approximately kappa u_f^{1/2} or better depending on the variant analysed, and
 is what makes refinement applicable at these condition numbers at all. This is
@@ -76,8 +84,39 @@ Both variants share the outer loop and differ only in step 4.
 
 The preconditioner in the GMRES variant requires only the action of the
 factorization as an operator, never explicit access to L and U. That is what
-allows the same code to drive superlu, block_thomas, mumps and cudss
+allows the same code to drive superlu, block-thomas, mumps and cudss
 identically, including the two solvers that expose no factors at all.
+
+Precisions
+----------
+--factor-dtype takes complex128, complex64 or complex32, and which of them a
+--solver accepts is read from cli.SOLVERS; see solver_dtypes.
+
+    complex128  every solver
+    complex64   every solver except umfpack, which has no single-precision
+                build
+    complex32   block-thomas and block-thomas-inv only
+
+complex32 is a storage label and not a NumPy dtype. There is no complex half
+format, so the two Block Thomas implementations embed each complex block into a
+real one of twice the dimension and hold that in float16; solver_classes
+documents the embedding and the power-of-two scalings it requires. The general
+sparse direct solvers offer no half-precision factorization at all, which is
+why complex32 is restricted to those two families rather than being rejected at
+run time by whichever library was asked for it.
+
+Two consequences are visible in the output and are not incidental.
+
+First, vectors entering a complex32 solver are cast to complex128, not to some
+narrower type: the cast is then lossless and every rounding happens inside the
+solver, where the embedding and the rescaling can be applied to it. Casting
+narrower first would insert a second, unrelated rounding ahead of the
+half-precision one and misattribute its effect. See cast_dtype.
+
+Second, complex32 does not halve the stored matrix relative to complex64. The
+embedding writes each of the two real components of an entry twice, so one
+complex entry occupies 8 bytes in both cases, and what the narrower format
+saves the redundancy gives back. See ITEMSIZE.
 
 Comparison
 ----------
@@ -92,9 +131,11 @@ implementation:
 
 Limitations
 -----------
-UMFPACK has no single-precision build, so solver_classes.UMFPACK raises
-TypeError for --factor-dtype complex64. This is a property of the library and
-not of this script; select a different solver for a low-precision comparison.
+Only block-thomas and block-thomas-inv have a complex32 implementation, and
+UMFPACK has no single-precision build at all. Both restrictions are properties
+of the libraries and not of this script; --factor-dtype is checked against
+solver_dtypes before anything is factored, so an unsupported pairing is
+rejected by the parser rather than by a TypeError several minutes in.
 
 The first cuDSS call in a process pays a fixed start-up cost for CUDA context
 creation and kernel compilation that is independent of problem size, measured
@@ -104,17 +145,14 @@ is therefore performed before any variant is measured; see _warm_up_gpu.
 
 Output
 ------
-A table of relative residual, forward error against a reference solution, wall
-time and peak memory per variant, the outer convergence history, and, for the
-GMRES variant, the inner iteration counts. Nothing is written to disk; for
-sweeps and figures see c32_gmres_ir.py and plotting/plot_mixed_prec_ir.py.
+A table of relative residual, forward error against a reference solution,
+backward errors, wall time and factor memory per variant, the outer convergence
+history, and, for the GMRES variant, the inner iteration counts. Nothing is
+written to disk.
 
 Usage
 -----
     python mpir.py .../carbon-nanotube.h5 --idx 5 --solver superlu \\
-        --factor-dtype complex64
-
-    python mpir.py .../carbon-nanotube.h5 --idx 5 --solver block-thomas \\
         --factor-dtype complex64
 
     python mpir.py .../si-bulk.h5 --idx 254 --solver mumps \\
@@ -123,6 +161,15 @@ Usage
 
     python mpir.py .../si-bulk.h5 --idx 254 --solver cudss \\
         --factor-dtype complex64
+
+The complex32 factorization is too inaccurate for LU-IR at these condition
+numbers, so it is the GMRES-preconditioned variant that is worth running:
+
+    python mpir.py .../carbon-nanotube.h5 --idx 84 --solver block-thomas \\
+        --factor-dtype complex32 --inner gmres
+
+    python mpir.py .../carbon-nanotube.h5 --idx 84 --solver block-thomas-inv \\
+        --factor-dtype complex32 --inner gmres --inv-dtype float16
 
 References
 ----------
@@ -151,7 +198,8 @@ import scipy.sparse.linalg as spla
 sys.path.append(str((Path(__file__).parent / ".." / "solvers").resolve()))
 import cli
 from solver_classes import (
-    SparseLU, UMFPACK, MUMPS, BlockThomas, BlockThomasExplicitInv, CuDSS,
+    SparseLU, UMFPACK, MUMPS, BlockThomas, BlockThomasExplicitInv,
+    BlockThomasFP16, BlockThomasExplicitInvFP16, CuDSS,
     extract_blocks_sparse, block_sizes_from_matrix, offband_nnz,
 )
 from bench_all import backward_errors, _matrix_norm, NORMWISE_ORDS
@@ -164,14 +212,117 @@ HIGH_DTYPE = np.complex128
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Solver registry. Each entry maps a --solver name to a builder with the
-# signature builder(A, dtype, bs, b) returning an object exposing solve(b) and
-# factor_nbytes().
+# Factorization precisions
 #
-# The right-hand side b is required only by the cuDSS builder, which must know
-# the column count at construction time; every other builder ignores it. It is
-# passed uniformly so that no call site has to special-case cuDSS.
+# --factor-dtype names a precision, not necessarily a NumPy dtype: complex32 is
+# a storage label for the embedded-real float16 factorizations, exactly as in
+# cli.COMPLEX_DTYPES. Everything in this section exists so that the label can
+# travel through the drivers unchanged and be resolved only at the three points
+# where its meaning actually differs -- the cast applied before a solve, the
+# unit roundoff u_f, and the bytes an entry occupies.
 # ─────────────────────────────────────────────────────────────────────────────
+
+C32 = "complex32"
+
+# --solver family -> the cli.SOLVERS entry carrying its complex32
+# implementation. bench_all treats the half-precision Block Thomas variants as
+# solvers in their own right, since it sweeps solvers rather than precisions;
+# here the family is chosen by --solver and the precision by --factor-dtype, so
+# the paired entries are merged and complex32 becomes one more precision of the
+# family it belongs to.
+C32_SIBLING = {
+    "block-thomas":     "block-thomas-fp16",
+    "block-thomas-inv": "block-thomas-inv-fp16",
+}
+
+# Bytes one complex matrix entry occupies at each precision, for the memory
+# rows. complex32 is not 4: the half-precision solvers hold the real embedding
+# of each block, in which a complex entry becomes a 2x2 float16 block, so each
+# of its two real components is stored twice. The embedding gives back in
+# redundancy exactly what the narrower format saves, and an entry costs the
+# same 8 bytes it does at complex64. Stated here rather than inferred from an
+# itemsize, because there is no dtype to infer it from and because the equality
+# is a result worth being explicit about.
+ITEMSIZE = {"complex128": 16, "complex64": 8, C32: 8}
+
+
+def is_c32(dtype):
+    """True for the complex32 label, which no NumPy dtype corresponds to."""
+    return isinstance(dtype, str) and dtype == C32
+
+
+def dtype_label(dtype):
+    """
+    Canonical precision name for a --factor-dtype value.
+
+    Accepts either the complex32 label or anything np.dtype understands, so
+    that call sites need not know which they hold.
+    """
+    return C32 if is_c32(dtype) else np.dtype(dtype).name
+
+
+def cast_dtype(dtype):
+    """
+    NumPy dtype a vector is cast to before it enters a solver built at `dtype`.
+
+    For complex32 this is complex128, not a narrower type. The half-precision
+    solvers embed to real float16 and perform their own rounding and
+    power-of-two rescaling on every solve, so a complex128 argument is cast
+    losslessly and all precision loss occurs inside the solver, where it
+    belongs. Casting to complex64 on the way in would insert a second rounding
+    that is no part of the method and would be charged to it.
+    """
+    return np.dtype(HIGH_DTYPE) if is_c32(dtype) else np.dtype(dtype)
+
+
+def unit_roundoff(dtype):
+    """
+    u_f, the unit roundoff of a factorization precision, for the LU-IR bound.
+
+    np.finfo(...).eps is the spacing, twice the unit roundoff of the usual
+    definition; the factor of two is kept out of both the complex64 and the
+    complex32 figures so that the printed bound stays comparable across
+    precisions and with the values previously reported.
+    """
+    return float(np.finfo(np.float16 if is_c32(dtype) else dtype).eps)
+
+
+def solver_dtypes(solver_name):
+    """
+    Precisions --solver `solver_name` accepts, from cli.SOLVERS merged with its
+    complex32 sibling; see C32_SIBLING. cli.SOLVERS stays the one place a
+    solver's supported precisions are recorded.
+    """
+    dtypes = list(cli.SOLVERS[solver_name]["dtypes"])
+    sibling = C32_SIBLING.get(solver_name)
+    if sibling is not None:
+        dtypes += [d for d in cli.SOLVERS[sibling]["dtypes"] if d not in dtypes]
+    return tuple(dtypes)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Solver registry. Each entry maps a --solver name to a builder with the
+# signature builder(A, dtype, bs, b, inv_dtype) returning an object exposing
+# solve(b) and factor_nbytes().
+#
+# Two of those arguments concern one builder each and are ignored by the rest:
+# b, which cuDSS needs because it binds the right-hand-side column count at
+# construction, and inv_dtype, which only block-thomas-inv at complex32 reads.
+# Both are passed uniformly so that no call site has to know which solver it is
+# about to build.
+#
+# dtype is the --factor-dtype value, so it may be the complex32 label rather
+# than a NumPy dtype. Only the two Block Thomas builders can receive it; the
+# parser rejects the combination for every other solver. See solver_dtypes.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Precision in which BlockThomasExplicitInvFP16 forms its explicit block
+# inverses before rounding them to float16 for storage and application. Its own
+# default, and the standard mixed-precision split: explicit inversion is the
+# least stable step in that algorithm, and performing it in float16 loses
+# accuracy no later step recovers. Under this setting the factorization is not
+# purely complex32; --inv-dtype float16 makes it so.
+DEFAULT_INV_DTYPE = np.float32
 
 def _detected_blocks(A):
     """
@@ -192,17 +343,28 @@ def _detected_blocks(A):
     return bs
 
 
-def _build_block_thomas(A, dtype, bs, b):
-    """Implementation 1 (LU with substitution). `bs` is ignored; see
-    _detected_blocks."""
+def _build_block_thomas(A, dtype, bs, b, inv_dtype):
+    """
+    Implementation 1 (LU with substitution), at complex128, complex64 or
+    complex32. `bs` is ignored; see _detected_blocks. `inv_dtype` is ignored;
+    this implementation inverts nothing.
+    """
     D, L, U = extract_blocks_sparse(A, _detected_blocks(A))
+    if is_c32(dtype):
+        return BlockThomasFP16(D, L, U)
     return BlockThomas(D, L, U, dtype=dtype)
 
 
-def _build_block_thomas_inv(A, dtype, bs, b):
-    """Implementation 2 (explicit block inverses). `bs` is ignored; see
-    _detected_blocks."""
+def _build_block_thomas_inv(A, dtype, bs, b, inv_dtype):
+    """
+    Implementation 2 (explicit block inverses), at complex128, complex64 or
+    complex32. `bs` is ignored; see _detected_blocks. `inv_dtype` applies only
+    at complex32, where it sets the precision the inverses are formed in before
+    being rounded to float16; see DEFAULT_INV_DTYPE.
+    """
     D, L, U = extract_blocks_sparse(A, _detected_blocks(A))
+    if is_c32(dtype):
+        return BlockThomasExplicitInvFP16(D, L, U, inv_dtype=inv_dtype)
     return BlockThomasExplicitInv(D, L, U, dtype=dtype)
 
 
@@ -291,12 +453,12 @@ class _CuDSSSolver:
 
 # Keyed by canonical solver name; see solvers/cli.py.
 SOLVER_BUILDERS = {
-    "superlu":      lambda A, dtype, bs, b: SparseLU(A, dtype=dtype),
-    "umfpack":      lambda A, dtype, bs, b: UMFPACK(A, dtype=dtype),
-    "mumps":        lambda A, dtype, bs, b: MUMPS(A, dtype=dtype),
+    "superlu":      lambda A, dtype, bs, b, inv_dtype: SparseLU(A, dtype=dtype),
+    "umfpack":      lambda A, dtype, bs, b, inv_dtype: UMFPACK(A, dtype=dtype),
+    "mumps":        lambda A, dtype, bs, b, inv_dtype: MUMPS(A, dtype=dtype),
     "block-thomas":     _build_block_thomas,
     "block-thomas-inv": _build_block_thomas_inv,
-    "cudss":        lambda A, dtype, bs, b: _CuDSSSolver(
+    "cudss":        lambda A, dtype, bs, b, inv_dtype: _CuDSSSolver(
         A, dtype, b.shape[1] if np.asarray(b).ndim == 2 else 1),
 }
 
@@ -395,7 +557,7 @@ def load_condition_numbers(h5path, idx):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
-                   normA=None):
+                   normA=None, inv_dtype=DEFAULT_INV_DTYPE):
     """
     LU-IR: iterative refinement whose correction solve is a single
     low-precision triangular substitution.
@@ -407,11 +569,16 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
 
     Parameters
     ----------
+    low_dtype : the --factor-dtype value, u_f. May be the complex32 label; the
+        vectors handed to the solver are cast with cast_dtype(low_dtype), which
+        is complex128 in that case and leaves every rounding to the solver.
     x_true : complex128 reference solution, optional. When supplied, the
         relative forward error is recorded at each iteration, at the point
         where the residual has already been computed. It is used for reporting
         only: it enters neither the convergence test nor any other control
         flow, so it cannot perturb the residual, timing or memory figures.
+    inv_dtype : passed to the builder; read only by block-thomas-inv at
+        complex32.
 
     Returns
     -------
@@ -420,6 +587,7 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
     """
     b_high = np.asarray(b, dtype=HIGH_DTYPE)
     A_high = A.tocsc().astype(HIGH_DTYPE)
+    cast = cast_dtype(low_dtype)
     norm_b = np.linalg.norm(b_high)
     norm_x_true = np.linalg.norm(x_true) if x_true is not None else None
     history = []
@@ -427,11 +595,11 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
     x_history = []
 
     t0 = time.perf_counter()
-    solver = SOLVER_BUILDERS[solver_name](A, low_dtype, bs, b)
+    solver = SOLVER_BUILDERS[solver_name](A, low_dtype, bs, b, inv_dtype)
     factor_s = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    x = solver.solve(b_high.astype(low_dtype)).astype(HIGH_DTYPE)
+    x = solver.solve(b_high.astype(cast)).astype(HIGH_DTYPE)
 
     for _ in range(max_iter):
         r = b_high - A_high @ x
@@ -446,7 +614,7 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
         x_history.append(x)
         if rel < tol:
             break
-        x = x + solver.solve(r.astype(low_dtype)).astype(HIGH_DTYPE)
+        x = x + solver.solve(r.astype(cast)).astype(HIGH_DTYPE)
     inner_s = time.perf_counter() - t0
 
     extra = {
@@ -502,7 +670,7 @@ def _gmres_solve(A_op, rhs, M_op, tol, restart, maxiter, callback):
 
 def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
                    gmres_tol=1e-8, gmres_restart=30, gmres_max_iter=50,
-                   normA=None):
+                   normA=None, inv_dtype=DEFAULT_INV_DTYPE):
     """
     GMRES-IR: iterative refinement whose correction solve is preconditioned
     GMRES at the working precision.
@@ -528,6 +696,10 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
 
     Parameters
     ----------
+    low_dtype, inv_dtype : as in solve_mixed_ir. At complex32 the
+        preconditioner applications are the only place the half-precision
+        factorization is touched, and each vector reaches it cast losslessly to
+        complex128; see cast_dtype.
     x_true : as in solve_mixed_ir; recorded for reporting only.
 
     Returns
@@ -539,6 +711,7 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
     orig_ndim = b_high.ndim
     b2 = b_high if orig_ndim == 2 else b_high[:, None]
     A_high = A.tocsc().astype(HIGH_DTYPE)
+    cast = cast_dtype(low_dtype)
     n, k = A_high.shape[0], b2.shape[1]
     norm_b = np.linalg.norm(b_high)
 
@@ -554,17 +727,17 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
     gmres_iters_history = []   # list (per outer iter) of lists (per rhs column)
 
     t0 = time.perf_counter()
-    solver = SOLVER_BUILDERS[solver_name](A, low_dtype, bs, b)
+    solver = SOLVER_BUILDERS[solver_name](A, low_dtype, bs, b, inv_dtype)
     factor_s = time.perf_counter() - t0
 
     def precond_apply(v):
-        return solver.solve(v.astype(low_dtype)).astype(HIGH_DTYPE)
+        return solver.solve(v.astype(cast)).astype(HIGH_DTYPE)
 
     A_op = spla.LinearOperator((n, n), matvec=lambda v: A_high @ v, dtype=HIGH_DTYPE)
     M_op = spla.LinearOperator((n, n), matvec=precond_apply, dtype=HIGH_DTYPE)
 
     t0 = time.perf_counter()
-    x2 = solver.solve(b2.astype(low_dtype)).astype(HIGH_DTYPE)   # x0: low-precision direct solve
+    x2 = solver.solve(b2.astype(cast)).astype(HIGH_DTYPE)   # x0: low-precision direct solve
 
     for _ in range(max_iter):
         r2 = b2 - A_high @ x2
@@ -616,20 +789,22 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
     return x, extra
 
 
-def solve_direct(solver_name, A, b, bs, dtype):
+def solve_direct(solver_name, A, b, bs, dtype, inv_dtype=DEFAULT_INV_DTYPE):
     """
     One factorization and one solve at `dtype`, with no refinement.
 
     Used for both reference variants: at complex128 it provides the accuracy
     ceiling, and at the low precision it provides the lower bound that
-    refinement must improve upon.
+    refinement must improve upon. `dtype` may be the complex32 label, in which
+    case the right-hand side is cast with cast_dtype and the solver does its
+    own rounding.
     """
     t0 = time.perf_counter()
-    solver = SOLVER_BUILDERS[solver_name](A, dtype, bs, b)
+    solver = SOLVER_BUILDERS[solver_name](A, dtype, bs, b, inv_dtype)
     factor_s = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    x = solver.solve(np.asarray(b, dtype=dtype)).astype(HIGH_DTYPE)
+    x = solver.solve(np.asarray(b, dtype=cast_dtype(dtype))).astype(HIGH_DTYPE)
     inner_s = time.perf_counter() - t0
 
     mem_bytes = solver.factor_nbytes()
@@ -644,7 +819,7 @@ def solve_direct(solver_name, A, b, bs, dtype):
 # Measurement
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _warm_up_gpu(solver_name, A, b, bs, low_dtype):
+def _warm_up_gpu(solver_name, A, b, bs, low_dtype, inv_dtype=DEFAULT_INV_DTYPE):
     """
     Perform one discarded factorization and solve outside the timed region.
 
@@ -666,8 +841,8 @@ def _warm_up_gpu(solver_name, A, b, bs, low_dtype):
     print("  Warming up GPU (untimed: CUDA context + cuDSS kernel JIT) ...",
           flush=True)
     try:
-        warm = SOLVER_BUILDERS[solver_name](A, low_dtype, bs, b)
-        warm.solve(np.asarray(b, dtype=low_dtype))
+        warm = SOLVER_BUILDERS[solver_name](A, low_dtype, bs, b, inv_dtype)
+        warm.solve(np.asarray(b, dtype=cast_dtype(low_dtype)))
         if hasattr(warm, "free"):
             warm.free()
     except Exception as e:
@@ -679,8 +854,12 @@ def _matrix_nbytes(A, dtype):
     """
     Bytes A occupies when held at `dtype`: its values at that precision, plus
     the index arrays, whose size does not depend on the precision.
+
+    Per-entry sizes come from ITEMSIZE rather than from a NumPy itemsize,
+    because complex32 has no dtype to ask and because its 8 bytes are a
+    property of the real embedding rather than of a storage format.
     """
-    values = A.nnz * np.dtype(dtype).itemsize
+    values = A.nnz * ITEMSIZE[dtype_label(dtype)]
     return int(values + A.indices.nbytes + A.indptr.nbytes)
 
 
@@ -791,7 +970,8 @@ def benchmark_solver(fn, A_high, b_high, repeats, x_true=None, normA=None):
 
 def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repeats,
                    reference_solver=None, inner="direct",
-                   gmres_tol=1e-8, gmres_restart=30, gmres_max_iter=50):
+                   gmres_tol=1e-8, gmres_restart=30, gmres_max_iter=50,
+                   inv_dtype=DEFAULT_INV_DTYPE):
     A, b = load_system(h5path, idx)
     A_high = A.tocsc().astype(HIGH_DTYPE)
     b_high = np.asarray(b, dtype=HIGH_DTYPE)
@@ -803,7 +983,7 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
         print(f"  [warning] svds did not converge for ||A||_2; eta2 is "
               f"skipped for every variant at this index")
 
-    low_name = np.dtype(low_dtype).name
+    low_name = dtype_label(low_dtype)
     indices, energies, valence, conduction = load_energy_metadata(h5path)
     energy = energy_of_idx(indices, energies, idx)
     energy_str = f"{energy:.4f} eV" if energy is not None else "unknown"
@@ -823,6 +1003,17 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
         print(f"Blocks  : {len(part)} blocks detected from the sparsity "
               f"pattern, sizes {min(part)}..{max(part)}")
 
+    if is_c32(low_dtype):
+        # What complex32 means for this solver, since it is a label rather than
+        # a dtype and the two implementations differ in where they leave half
+        # precision. See the module docstring.
+        note = (f"explicit block inverses formed at "
+                f"{np.dtype(inv_dtype).name}, stored and applied at float16"
+                if solver_name == "block-thomas-inv"
+                else "LU with substitution, float16 throughout")
+        print(f"        : complex32 = real embedding at block size 2m in "
+              f"float16; {note}")
+
     if inner == "gmres":
         inner_label = "GMRES-IR"
         print(f"Inner   : GMRES(A) in complex128, preconditioned by {solver_name} "
@@ -839,11 +1030,10 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
         # The classical LU-IR requirement is stated in the infinity norm (see
         # the module docstring): kappa_inf(A) u_f < 1. GMRES-IR is not bound
         # by it, so the check is informative there, not a prediction of
-        # failure. u_f is the nominal roundoff of low_dtype; for a solver that
-        # casts a different internal working precision (e.g.
-        # block-thomas-fp16, always called with low_dtype=complex128 -- see
-        # c32_gmres_ir.py) this reports the cast precision, not the true one.
-        u_f = float(np.finfo(low_dtype).eps)
+        # failure. u_f is the roundoff of the factorization precision itself,
+        # not of the dtype vectors are cast to on the way in, which at
+        # complex32 is complex128; see unit_roundoff and cast_dtype.
+        u_f = unit_roundoff(low_dtype)
         bound = kappa["inf"] * u_f
         verdict = "within" if bound < 1 else "EXCEEDS"
         print(f"  LU-IR bound: kappa_inf * u_f = {bound:.2e}  "
@@ -857,7 +1047,8 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     if reference_solver is not None:
         print(f"Reference: x_true = {reference_solver} complex128", flush=True)
         try:
-            ref = SOLVER_BUILDERS[reference_solver](A, HIGH_DTYPE, bs, b)
+            ref = SOLVER_BUILDERS[reference_solver](A, HIGH_DTYPE, bs, b,
+                                                    DEFAULT_INV_DTYPE)
             x_true = ref.solve(b_high).astype(HIGH_DTYPE)
             if hasattr(ref, "free"):
                 ref.free()
@@ -874,17 +1065,18 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
 
     # Consume the fixed device start-up cost before any variant is timed, so it
     # is not charged to whichever variant happens to run first.
-    _warm_up_gpu(solver_name, A, b, bs, low_dtype)
+    _warm_up_gpu(solver_name, A, b, bs, low_dtype, inv_dtype)
 
     if inner == "gmres":
         ir_fn = lambda: solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter,
                                        x_true=x_true, gmres_tol=gmres_tol,
                                        gmres_restart=gmres_restart,
                                        gmres_max_iter=gmres_max_iter,
-                                       normA=normA)
+                                       normA=normA, inv_dtype=inv_dtype)
     else:
         ir_fn = lambda: solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter,
-                                       x_true=x_true, normA=normA)
+                                       x_true=x_true, normA=normA,
+                                       inv_dtype=inv_dtype)
 
     # The third entry of each variant records what that method must hold
     # besides its factorization, for the working-set row of the report:
@@ -900,10 +1092,10 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
         (f"{solver_name} {low_name} + {inner_label}", ir_fn,
          {"matrix_dtype": HIGH_DTYPE, "krylov": inner == "gmres"}),
         (f"{solver_name} complex128 (direct)",
-         lambda: solve_direct(solver_name, A, b, bs, HIGH_DTYPE),
+         lambda: solve_direct(solver_name, A, b, bs, HIGH_DTYPE, inv_dtype),
          {"matrix_dtype": HIGH_DTYPE, "krylov": False}),
         (f"{solver_name} {low_name} (no refine)",
-         lambda: solve_direct(solver_name, A, b, bs, low_dtype),
+         lambda: solve_direct(solver_name, A, b, bs, low_dtype, inv_dtype),
          {"matrix_dtype": low_dtype, "krylov": False}),
     ]
     variant_info = {name: info for name, _fn, info in variants}
@@ -1101,12 +1293,16 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
 
     nnz = int(A.nnz)
     n = A.shape[0]
-    mib64 = nnz * 16 / 1024**2   # complex128 = 16 bytes/entry
-    mib32 = nnz * 8 / 1024**2    # complex64  = 8 bytes/entry
     idx_mib = (nnz + n + 1) * 4 / 1024**2
+    ref_bytes = ITEMSIZE["complex128"]
     print(f"\n  Theoretical matrix value storage ({nnz} nonzeros, indices excluded):")
-    print(f"    complex128 : {mib64:.3f} MiB")
-    print(f"    complex64  : {mib32:.3f} MiB  (50% saving on values)")
+    for name in ("complex128", "complex64", C32):
+        mib = nnz * ITEMSIZE[name] / 1024**2
+        saving = 1.0 - ITEMSIZE[name] / ref_bytes
+        tag = "" if not saving else f"  ({saving:.0%} saving on values)"
+        print(f"    {name:<11}: {mib:.3f} MiB{tag}")
+    # complex32 matches complex64 above rather than halving it again: the real
+    # embedding stores each real component of an entry twice. See ITEMSIZE.
     print(f"    Index arrays (shared): ~{idx_mib:.3f} MiB")
 
     return all_records
@@ -1124,9 +1320,12 @@ def main():
     cli.add_solver_selection(ap, choices=tuple(SOLVER_BUILDERS),
                              default="superlu", multiple=False)
     cli.add_factor_dtype(
-        ap, default="complex64",
+        ap, choices=cli.COMPLEX_DTYPES, default="complex64",
         help="precision of the low-precision factorization, u_f "
-             "(default: complex64)")
+             "(default: complex64). complex32 is the embedded-real float16 "
+             "factorization and is available for block-thomas and "
+             "block-thomas-inv only")
+    cli.add_inv_dtype(ap, default=np.dtype(DEFAULT_INV_DTYPE).name)
     ap.add_argument("--inner", choices=["direct", "gmres"], default="direct",
                     help="inner correction solve: 'direct' is classic LU-IR, "
                          "a single low-precision triangular solve; 'gmres' is "
@@ -1161,7 +1360,20 @@ def main():
                   for e in args.energy]
     else:
         indices = cli.resolve_indices(ap, args)
-    factor_dtype = np.dtype(args.factor_dtype)
+
+    # Rejected here rather than by whichever library was asked for it, so that
+    # an unsupported pairing costs nothing; see solver_dtypes.
+    accepted = solver_dtypes(args.solver)
+    if args.factor_dtype not in accepted:
+        ap.error(f"--solver {args.solver} has no {args.factor_dtype} "
+                 f"factorization; it accepts {', '.join(accepted)}")
+
+    # The complex32 label travels through the drivers as itself; every other
+    # precision becomes a NumPy dtype here. See the Precisions section of the
+    # module docstring.
+    factor_dtype = (C32 if args.factor_dtype == C32
+                    else np.dtype(args.factor_dtype))
+    inv_dtype = np.dtype(args.inv_dtype)
 
     for idx in indices:
         if len(indices) > 1:
@@ -1171,7 +1383,8 @@ def main():
                        reference_solver=args.reference_solver,
                        inner=args.inner, gmres_tol=args.gmres_tol,
                        gmres_restart=args.gmres_restart,
-                       gmres_max_iter=args.gmres_max_iter)
+                       gmres_max_iter=args.gmres_max_iter,
+                       inv_dtype=inv_dtype)
 
 
 if __name__ == "__main__":

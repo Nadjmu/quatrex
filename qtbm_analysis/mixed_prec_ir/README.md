@@ -9,13 +9,11 @@ All scripts here take the canonical option names; see
 
 | Script | Scope |
 |---|---|
-| `mpir.py` | the library and the single-index driver: LU-IR and GMRES-IR over any solver in `../solvers/` |
-| `c32_gmres_ir.py` | half-precision Block Thomas as a GMRES-IR preconditioner, swept over an energy range |
+| `mpir.py` | the whole study: LU-IR and GMRES-IR over any solver in `../solvers/`, at any precision that solver supports |
 | `sparse.py` | the earlier standalone study: fp32 SuperLU with fp64 refinement |
 | `dense.py` | the earlier standalone study: fp32 LAPACK with fp64 refinement |
 
-No figures are produced here. `c32_gmres_ir.py` writes an analysis HDF5 file,
-which [`../plotting/plot_mixed_prec_ir.py`](../plotting/) renders.
+Nothing is written to disk and no figures are produced.
 
 ---
 
@@ -27,7 +25,7 @@ modern analysis (Carson and Higham, 2017 and 2018) distinguishes:
 
 | Symbol | Meaning | Value here |
 |---|---|---|
-| `u_f` | precision of the factorization | `--factor-dtype`; `complex64` or half |
+| `u_f` | precision of the factorization | `--factor-dtype`; `complex64` or `complex32` |
 | `u` | working precision, in which `x` and the corrections are held | `complex128` |
 | `u_r` | precision of the residual computation | `complex128` |
 
@@ -69,7 +67,7 @@ applications are low-precision solves, and they reuse the same factorization.
 
 The practical question is the condition under which refinement converges.
 
-| Variant | Approximate requirement | Limit at `u_f` = fp32 | at `u_f` = fp16 |
+| Variant | Approximate requirement | Limit at `u_f` = c64 | at `u_f` = c32 |
 |---|---|---|---|
 | LU-IR | `kappa_inf(A) u_f < 1` | `kappa ~ 1e7` | `kappa ~ 1e3` |
 | GMRES-IR | substantially weaker | far higher | far higher |
@@ -94,11 +92,13 @@ at all.
 ```bash
 python mpir.py .../carbon-nanotube.h5 --idx 5 --solver superlu \
     --factor-dtype complex64
-python mpir.py .../carbon-nanotube.h5 --idx 5 --solver block-thomas \
-    --block-size 32 --factor-dtype complex64
 python mpir.py .../si-bulk.h5 --idx 254 --solver mumps --factor-dtype complex64 \
     --inner gmres --gmres-tol 1e-8 --gmres-restart 30 --gmres-max-iter 50
 python mpir.py .../si-bulk.h5 --idx 254 --solver cudss --factor-dtype complex64
+python mpir.py .../carbon-nanotube.h5 --idx 84 --solver block-thomas \
+    --factor-dtype complex32 --inner gmres
+python mpir.py .../carbon-nanotube.h5 --idx 84 --solver block-thomas-inv \
+    --factor-dtype complex32 --inner gmres --inv-dtype float16
 ```
 
 Three variants of the **same** solver family are measured, so the comparison
@@ -114,11 +114,52 @@ solution, the normwise and componentwise backward errors, wall time split into
 factorization and solve, factor memory, the outer convergence history, and, for
 GMRES-IR, the inner iteration counts.
 
-### Practical notes
+### The precisions, and which solver has which
 
-**UMFPACK has no single-precision build**, so `solver_classes.UMFPACK` raises
-`TypeError` for `--factor-dtype complex64`. This is a property of the library, not
-of this script; select a different solver for a low-precision comparison.
+`--solver` selects the implementation and `--factor-dtype` the precision it
+runs at. The two are independent, which is what makes the three variants above
+a comparison of precision rather than of implementation. Not every pairing
+exists:
+
+| `--factor-dtype` | Available for |
+|---|---|
+| `complex128` | every solver |
+| `complex64` | every solver except `umfpack`, which has no single-precision build |
+| `complex32` | `block-thomas` and `block-thomas-inv` only |
+
+`mpir.solver_dtypes` reads this from `cli.SOLVERS`, which stays the one place a
+solver's supported precisions are recorded, and `main` rejects an unsupported
+pairing at the parser rather than letting the library raise several minutes
+into a run.
+
+`complex32` is a **storage label and not a NumPy dtype**. There is no complex
+half format, so `BlockThomasFP16` and `BlockThomasExplicitInvFP16` embed each
+complex block into a real one of twice the dimension and hold that in
+`float16`; the general sparse direct solvers offer no half-precision
+factorization at all. `--inv-dtype` applies to `block-thomas-inv` at
+`complex32` only: it sets the precision the explicit block inverses are formed
+in before being rounded to `float16`, and `float16` is what makes that
+factorization half precision throughout. Both implementations, and what each
+does and does not carry out in half precision, are documented in
+[`../solvers/README.md`](../solvers/README.md).
+
+Two consequences appear directly in the output.
+
+**Vectors entering a `complex32` solver are cast to `complex128`,** not to
+something narrower. The half-precision solvers do their own rounding and
+power-of-two rescaling on every solve, so a `complex128` argument is cast
+losslessly and every rounding then happens inside the solver, where the
+embedding can be applied to it. Casting narrower first would insert a second,
+unrelated rounding ahead of the half-precision one and charge its effect to the
+method. This is `mpir.cast_dtype`, and it is why `u_f` for the `kappa_inf u_f`
+bound comes from `mpir.unit_roundoff` rather than from the cast dtype.
+
+**`complex32` does not halve the matrix again relative to `complex64`.** The
+embedding writes each of the two real components of an entry twice, so an entry
+costs 8 bytes either way and the redundancy gives back exactly what the
+narrower format saves. This is `mpir.ITEMSIZE`, stated explicitly because there
+is no dtype to infer an itemsize from and because the equality is a result
+worth reporting rather than a rounding of one.
 
 **cuDSS start-up cost.** The first cuDSS call in a process pays a fixed cost
 for CUDA context creation and kernel compilation, independent of problem size
@@ -163,64 +204,7 @@ zero.
 
 ---
 
-## 5. `c32_gmres_ir.py`
-
-Extends the study to the half-precision Block Thomas factorization and sweeps
-an energy range.
-
-```bash
-python c32_gmres_ir.py .../carbon-nanotube.h5 --idx 84 --block-size 32
-python c32_gmres_ir.py .../carbon-nanotube.h5 --start 0 --end 401 \
-    --block-size 32
-python ../plotting/plot_mixed_prec_ir.py \
-    /scratch/yimili/mixed-precision-IR/carbon-nanotube.h5
-```
-
-The refinement drivers are not reimplemented. This script imports `mpir` and
-registers one additional builder, `block-thomas-fp16`, into
-`mpir.SOLVER_BUILDERS` at run time — an
-in-memory dict insertion, not a modification of any file — so that `mpir`'s own
-`solve_gmres_ir`, `solve_mixed_ir`, `solve_direct` and `benchmark_solver` drive
-the half-precision solver unchanged. Any correction to the refinement logic
-therefore applies here automatically.
-
-Five variants are compared per energy index, on the same matrix and right-hand
-side:
-
-| Variant | Role |
-|---|---|
-| fp16 direct | the lower bound |
-| fp16 + LU-IR | establishes whether plain refinement suffices |
-| fp16 + GMRES-IR | **the variant under test** |
-| c64 + GMRES-IR | a reference point at a precision where refinement is known to work |
-| c128 direct | the accuracy ceiling |
-
-`x_true` comes from SuperLU at `complex128`, the same convention `mpir` uses,
-so forward errors are comparable across both scripts.
-
-### The cast precision for the half-precision variants
-
-`mpir` casts each vector with `v.astype(low_dtype)` before handing it to the
-preconditioner. There is no `complex32` in NumPy, and `BlockThomasFP16`
-performs its own rounding to `float16` and its own power-of-two rescaling
-internally on every solve. `complex128` is therefore passed as the cast dtype:
-the cast is then lossless and all precision loss occurs inside the
-half-precision solver, where it belongs. Passing `complex64` would silently
-insert an additional rounding step ahead of the half-precision one and would
-misattribute its effect.
-
-### Output
-
-The `gmres_ir` group of `<outdir>/<material>.h5`, with `--outdir` defaulting to
-`cli.MIXED_PREC_DIR`, in long format, one row per `(index, variant)`. The run
-configuration and the skipped indices are group attributes. A verbose per-index
-log goes to stdout. The convergence history and the inner iteration counts,
-rather than any single final number, are the evidence for whether
-half-precision preconditioning works.
-
----
-
-## 6. `sparse.py` and `dense.py`
+## 5. `sparse.py` and `dense.py`
 
 The earlier standalone studies, on a single system rather than a sweep, and
 against SciPy's sparse solvers and LAPACK directly rather than through the
@@ -230,7 +214,17 @@ pure fp32.
 `dense.py` has no half-precision variant because CPU LAPACK provides no fp16
 factorization; that requires cuSOLVER or MAGMA on a device. The half-precision
 study is therefore carried out with the Block Thomas implementations in
-`../solvers/solver_classes.py`, which simulate fp16 arithmetic in NumPy.
+`../solvers/solver_classes.py`, which simulate `float16` arithmetic in NumPy
+and are reached here as `--factor-dtype complex32`.
+
+---
+
+## 6. Output
+
+`mpir.py` writes nothing to disk. Its report is the console table, the
+convergence history and the inner iteration counts, and for a sweep it is run
+once per index. There is no plotting script or saved table for this study yet;
+add one against whichever variants and metrics the thesis figure needs.
 
 ---
 
