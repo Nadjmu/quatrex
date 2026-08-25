@@ -356,7 +356,8 @@ def load_condition_number(h5path, idx):
 # The refinement variants
 # ─────────────────────────────────────────────────────────────────────────────
 
-def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None):
+def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
+                   normA=None):
     """
     LU-IR: iterative refinement whose correction solve is a single
     low-precision triangular substitution.
@@ -385,6 +386,7 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None)
     norm_x_true = np.linalg.norm(x_true) if x_true is not None else None
     history = []
     true_err_history = []
+    x_history = []
 
     t0 = time.perf_counter()
     solver = SOLVER_BUILDERS[solver_name](A, low_dtype, bs, b)
@@ -399,14 +401,20 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None)
         history.append(rel)
         if x_true is not None:
             true_err_history.append(np.linalg.norm(x - x_true) / norm_x_true)
+        x_history.append(x.copy())
         if rel < tol:
             break
         x = x + solver.solve(r.astype(low_dtype)).astype(HIGH_DTYPE)
     inner_s = time.perf_counter() - t0
 
+    etainf_history, omega_history = _backward_error_histories(
+        A_high, b_high, x_history, normA)
+
     extra = {
         "history": history,
         "true_err_history": true_err_history,
+        "etainf_history": etainf_history,
+        "omega_history": omega_history,
         "mem_bytes": solver.factor_nbytes(),
         "factor_s": factor_s,
         "inner_s": inner_s,
@@ -415,6 +423,29 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None)
     if hasattr(solver, "free"):
         solver.free()
     return x, extra
+
+
+def _backward_error_histories(A_high, b_high, x_history, normA):
+    """
+    eta_inf and omega of every outer iterate, as two lists.
+
+    Computed after the refinement loop has been timed, from iterates the loop
+    stored, rather than inside it: omega needs |A| |x|, a second sparse matvec
+    per iteration, which would be charged to inner_s and inflate the very
+    figure the timing rows are there to report. Copying an iterate is O(n k)
+    and does not.
+
+    Returns ([], []) when normA is None, which is the case only if the caller
+    did not supply it.
+    """
+    if normA is None or not x_history:
+        return [], []
+    etainf_history, omega_history = [], []
+    for xi in x_history:
+        _, etas, omega = backward_errors(A_high, xi, b_high, normA)
+        etainf_history.append(etas[np.inf])
+        omega_history.append(omega)
+    return etainf_history, omega_history
 
 
 def _gmres_solve(A_op, rhs, M_op, tol, restart, maxiter, callback):
@@ -433,7 +464,8 @@ def _gmres_solve(A_op, rhs, M_op, tol, restart, maxiter, callback):
 
 
 def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
-                   gmres_tol=1e-8, gmres_restart=30, gmres_max_iter=50):
+                   gmres_tol=1e-8, gmres_restart=30, gmres_max_iter=50,
+                   normA=None):
     """
     GMRES-IR: iterative refinement whose correction solve is preconditioned
     GMRES at the working precision.
@@ -481,6 +513,7 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
 
     history = []
     true_err_history = []
+    x_history = []
     gmres_iters_history = []   # list (per outer iter) of lists (per rhs column)
 
     t0 = time.perf_counter()
@@ -502,6 +535,7 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
         history.append(rel)
         if x_true2 is not None:
             true_err_history.append(np.linalg.norm(x2 - x_true2) / norm_x_true)
+        x_history.append(x2.copy())
         if rel < tol:
             break
 
@@ -528,9 +562,14 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
 
     x = x2 if orig_ndim == 2 else x2[:, 0]
 
+    etainf_history, omega_history = _backward_error_histories(
+        A_high, b2, x_history, normA)
+
     extra = {
         "history": history,
         "true_err_history": true_err_history,
+        "etainf_history": etainf_history,
+        "omega_history": omega_history,
         "gmres_iters_history": gmres_iters_history,
         "mem_bytes": solver.factor_nbytes(),
         "factor_s": factor_s,
@@ -781,10 +820,11 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
         ir_fn = lambda: solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter,
                                        x_true=x_true, gmres_tol=gmres_tol,
                                        gmres_restart=gmres_restart,
-                                       gmres_max_iter=gmres_max_iter)
+                                       gmres_max_iter=gmres_max_iter,
+                                       normA=normA)
     else:
         ir_fn = lambda: solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter,
-                                       x_true=x_true)
+                                       x_true=x_true, normA=normA)
 
     # The third entry of each variant records what that method must hold
     # besides its factorization, for the working-set row of the report:
@@ -915,21 +955,6 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     MIB = 1024.0**2
     mem = {nm: all_records[nm][0]["extra"].get("mem_bytes", 0) for nm in names}
 
-    # The complex128 direct variant is the factorization refinement is meant to
-    # replace, so it is the denominator that makes each saving readable.
-    ref = next((nm for nm in names if "complex128 (direct)" in nm), None)
-
-    def ratio_row(label, size):
-        if ref is None or not size.get(ref):
-            return
-        vals = [f"{size[nm]/size[ref]:.2f}x" if size[nm] else "n/a"
-                for nm in names]
-        print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
-
-    print(f"  {'Factor memory (MiB, factor_nbytes)':<{col-2}}" +
-          "".join(f"  {mem[nm]/MIB:<28.2f}" for nm in names))
-    ratio_row("  relative to complex128", mem)
-
     # The factorization is not the whole footprint. Refinement computes its
     # residual at the working precision, so it holds A at complex128 however
     # low u_f is, and GMRES-IR additionally holds a Krylov basis. Reporting the
@@ -943,9 +968,23 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
             total += _krylov_nbytes(A_high.shape[0], gmres_restart)
         working[nm] = total
 
-    print(f"  {'Working set (MiB, factor + A + basis)':<{col-2}}" +
-          "".join(f"  {working[nm]/MIB:<28.2f}" for nm in names))
-    ratio_row("  relative to complex128", working)
+    # The complex128 direct variant is the factorization refinement is meant to
+    # replace, so it is the denominator that makes each saving readable. The
+    # ratio is printed beside its own value rather than on a row of its own, so
+    # that one column holds everything about one variant.
+    ref = next((nm for nm in names if "complex128 (direct)" in nm), None)
+
+    def mem_row(label, size):
+        vals = []
+        for nm in names:
+            cell = f"{size[nm]/MIB:.2f}"
+            if ref is not None and size.get(ref) and size[nm]:
+                cell += f" ({size[nm]/size[ref]:.2f}x)"
+            vals.append(cell)
+        print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
+
+    mem_row("Factor memory (MiB, factor_nbytes)", mem)
+    mem_row("Working set (MiB, factor + A + basis)", working)
 
     n_rhs = b_high.shape[1] if b_high.ndim == 2 else 1
     if n_rhs > 1:
@@ -964,6 +1003,8 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     ir_name = names[0]
     history = all_records[ir_name][0]["extra"].get("history", [])
     true_err_history = all_records[ir_name][0]["extra"].get("true_err_history", [])
+    etainf_history = all_records[ir_name][0]["extra"].get("etainf_history", [])
+    omega_history = all_records[ir_name][0]["extra"].get("omega_history", [])
     gmres_iters_history = all_records[ir_name][0]["extra"].get("gmres_iters_history", [])
     if history:
         print(f"\n  IR convergence history (first run, {ir_name}):")
@@ -971,7 +1012,11 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
             tag = "  <- converged" if i == len(history) - 1 and rel < tol else ""
             line = f"    iter {i}: ||r||/||b|| = {rel:.3e}"
             if i < len(true_err_history):
-                line += f"   ||x-x_true||/||x_true|| = {true_err_history[i]:.3e}"
+                line += f"   ferr = {true_err_history[i]:.3e}"
+            if i < len(etainf_history):
+                line += f"   nbe_inf = {etainf_history[i]:.3e}"
+            if i < len(omega_history):
+                line += f"   cbe = {omega_history[i]:.3e}"
             if i < len(gmres_iters_history):
                 iters = gmres_iters_history[i]
                 iters_str = iters[0] if len(iters) == 1 else iters
