@@ -139,15 +139,12 @@ E. Carson and N. J. Higham, Accelerating the solution of linear systems by
 import argparse
 import gc
 import sys
-import threading
 import time
-import tracemalloc
 import warnings
 from pathlib import Path
 
 import h5py
 import numpy as np
-import psutil
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
@@ -163,44 +160,6 @@ warnings.filterwarnings("ignore", category=sp.SparseEfficiencyWarning)
 # The working and residual precision, u and u_r in the analysis. Both are
 # complex128; only the factorization precision u_f is varied.
 HIGH_DTYPE = np.complex128
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Memory instrumentation
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _rss_mb():
-    return psutil.Process().memory_info().rss / 1024**2
-
-
-class _PeakRSSTracker:
-    """
-    Peak resident set size over the lifetime of a context.
-
-    RSS is polled from a background thread every `interval` seconds. This
-    captures allocations made inside compiled extensions, which tracemalloc does
-    not observe, at the cost of a sampling granularity that may miss very
-    short-lived peaks. Read .peak_mb after the context exits.
-    """
-    def __init__(self, interval=0.005):
-        self.interval = interval
-        self.peak_mb = 0.0
-        self._stop = threading.Event()
-
-    def _poll(self):
-        while not self._stop.is_set():
-            self.peak_mb = max(self.peak_mb, _rss_mb())
-            self._stop.wait(self.interval)
-
-    def __enter__(self):
-        self.peak_mb = _rss_mb()
-        self._t = threading.Thread(target=self._poll, daemon=True)
-        self._t.start()
-        return self
-
-    def __exit__(self, *_):
-        self._stop.set()
-        self._t.join()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -642,6 +601,28 @@ def _warm_up_gpu(solver_name, A, b, bs, low_dtype):
     gc.collect()
 
 
+def _matrix_nbytes(A, dtype):
+    """
+    Bytes A occupies when held at `dtype`: its values at that precision, plus
+    the index arrays, whose size does not depend on the precision.
+    """
+    values = A.nnz * np.dtype(dtype).itemsize
+    return int(values + A.indices.nbytes + A.indptr.nbytes)
+
+
+def _krylov_nbytes(n, restart):
+    """
+    Bytes of the Krylov basis one inner GMRES solve holds, at the working
+    precision.
+
+    SciPy's gmres takes a single right-hand side, so solve_gmres_ir loops over
+    the columns and only one basis is resident at a time; the count does not
+    scale with the number of right-hand sides. A restarted GMRES(m) holds m + 1
+    basis vectors of length n.
+    """
+    return int((restart + 1) * n * np.dtype(HIGH_DTYPE).itemsize)
+
+
 def _per_column(diff, denom):
     """
     Relative error per right-hand-side column.
@@ -659,7 +640,7 @@ def benchmark_solver(fn, A_high, b_high, repeats, x_true=None, normA=None):
     Run fn() `repeats` times and record accuracy, time and memory.
 
     Returns a list of dicts with the keys residual, true_err, eta1, eta2,
-    etainf, omega, wall_s, peak_py_mb, net_rss_mb, extra and x, where
+    etainf, omega, wall_s, extra and x, where
 
         residual = ||A x - b|| / ||b||, in the Frobenius norm when b has
                    several columns, so one aggregate number covers all of them
@@ -682,25 +663,21 @@ def benchmark_solver(fn, A_high, b_high, repeats, x_true=None, normA=None):
     x is the solution of the last repeat, retained so that individual entries
     can be compared across variants.
 
-    Memory is measured two ways because neither alone is sufficient:
-    tracemalloc records the Python heap exactly but does not observe
-    allocations inside compiled extensions, while the RSS poller observes those
-    but has a sampling granularity of a few milliseconds.
+    Memory is not instrumented here. The quantity the mixed-precision argument
+    concerns is the size of the stored factorization, which every solver
+    reports itself through factor_nbytes and which the drivers carry in
+    extra["mem_bytes"]; see run_benchmarks for why the process-level figures
+    were dropped.
     """
     norm_b = np.linalg.norm(b_high)
     norm_x_true = np.linalg.norm(x_true) if x_true is not None else None
     records = []
     for _ in range(repeats):
         gc.collect()
-        baseline_rss = _rss_mb()
 
-        tracemalloc.start()
-        with _PeakRSSTracker() as tracker:
-            t0 = time.perf_counter()
-            x, extra = fn()
-            wall = time.perf_counter() - t0
-        _, peak_bytes = tracemalloc.get_traced_memory()
-        tracemalloc.stop()
+        t0 = time.perf_counter()
+        x, extra = fn()
+        wall = time.perf_counter() - t0
 
         res_vec = A_high @ x - b_high
         residual = np.linalg.norm(res_vec) / norm_b
@@ -725,8 +702,6 @@ def benchmark_solver(fn, A_high, b_high, repeats, x_true=None, normA=None):
             "etainf":     etainf,
             "omega":      omega,
             "wall_s":     wall,
-            "peak_py_mb": peak_bytes / 1024**2,
-            "net_rss_mb": tracker.peak_mb - baseline_rss,
             "extra":      extra,
             "x":          x,
         })
@@ -811,16 +786,30 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
         ir_fn = lambda: solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter,
                                        x_true=x_true)
 
+    # The third entry of each variant records what that method must hold
+    # besides its factorization, for the working-set row of the report:
+    #
+    #   matrix_dtype  the precision A itself is held at. Refinement forms its
+    #                 residual at the working precision, so it must keep A at
+    #                 complex128 however low u_f is; a bare low-precision solve
+    #                 needs A only at u_f. This is why the working set does not
+    #                 halve even when the factorization does.
+    #   krylov        True where the inner solve builds a Krylov basis, whose
+    #                 size is added on top; see _krylov_nbytes.
     variants = [
-        (f"{solver_name} {low_name} + {inner_label}", ir_fn),
+        (f"{solver_name} {low_name} + {inner_label}", ir_fn,
+         {"matrix_dtype": HIGH_DTYPE, "krylov": inner == "gmres"}),
         (f"{solver_name} complex128 (direct)",
-         lambda: solve_direct(solver_name, A, b, bs, HIGH_DTYPE)),
+         lambda: solve_direct(solver_name, A, b, bs, HIGH_DTYPE),
+         {"matrix_dtype": HIGH_DTYPE, "krylov": False}),
         (f"{solver_name} {low_name} (no refine)",
-         lambda: solve_direct(solver_name, A, b, bs, low_dtype)),
+         lambda: solve_direct(solver_name, A, b, bs, low_dtype),
+         {"matrix_dtype": low_dtype, "krylov": False}),
     ]
+    variant_info = {name: info for name, _fn, info in variants}
 
     all_records = {}
-    for name, fn in variants:
+    for name, fn, _info in variants:
         print(f"  Benchmarking '{name}' x{repeats} ...", flush=True)
         try:
             all_records[name] = benchmark_solver(fn, A_high, b_high, repeats,
@@ -911,19 +900,52 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     print(f"  {'Solve / inner-loop time (ms)':<{col-2}}" +
           "".join(f"  {v:<28}" for v in solve_vals))
 
-    # 3. Memory: Python heap, process RSS growth, then the solver's own
-    # accounting of its stored factors.
-    for label, key, fmt in [
-        ("Peak Python heap (MiB)",        "peak_py_mb", "{:.2f}"),
-        ("Peak RSS above baseline (MiB)", "net_rss_mb", "{:.1f}"),
-    ]:
-        vals = [fmt.format(med(nm, key)) for nm in names]
+    # 3. Memory: the size of the stored factorization, which is the quantity
+    # the mixed-precision argument is about, and its ratio to the complex128
+    # factorization refinement is meant to replace.
+    #
+    # Process-level figures (peak Python heap, peak RSS) are deliberately not
+    # reported. Neither is comparable across the solvers benchmarked here: the
+    # Block Thomas factors are NumPy arrays and so are visible to tracemalloc,
+    # while SuperLU, UMFPACK and MUMPS hold theirs in compiled extensions and
+    # cuDSS holds its on the device, none of which the Python heap observes.
+    # Peak RSS is additionally order-dependent, since the allocator does not
+    # return freed memory to the operating system: whichever variant runs first
+    # is charged the whole growth and the rest measure zero.
+    MIB = 1024.0**2
+    mem = {nm: all_records[nm][0]["extra"].get("mem_bytes", 0) for nm in names}
+
+    # The complex128 direct variant is the factorization refinement is meant to
+    # replace, so it is the denominator that makes each saving readable.
+    ref = next((nm for nm in names if "complex128 (direct)" in nm), None)
+
+    def ratio_row(label, size):
+        if ref is None or not size.get(ref):
+            return
+        vals = [f"{size[nm]/size[ref]:.2f}x" if size[nm] else "n/a"
+                for nm in names]
         print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
 
-    mem_row = [f"{all_records[nm][0]['extra'].get('mem_bytes', 0)/1e6:.2f}"
-               for nm in names]
-    print(f"  {'Factor memory (MB, factor_nbytes)':<{col-2}}" +
-          "".join(f"  {v:<28}" for v in mem_row))
+    print(f"  {'Factor memory (MiB, factor_nbytes)':<{col-2}}" +
+          "".join(f"  {mem[nm]/MIB:<28.2f}" for nm in names))
+    ratio_row("  relative to complex128", mem)
+
+    # The factorization is not the whole footprint. Refinement computes its
+    # residual at the working precision, so it holds A at complex128 however
+    # low u_f is, and GMRES-IR additionally holds a Krylov basis. Reporting the
+    # factor alone therefore overstates what mixed precision saves: the factor
+    # halves, the working set does not.
+    working = {}
+    for nm in names:
+        info = variant_info.get(nm, {"matrix_dtype": HIGH_DTYPE, "krylov": False})
+        total = mem[nm] + _matrix_nbytes(A_high, info["matrix_dtype"])
+        if info["krylov"]:
+            total += _krylov_nbytes(A_high.shape[0], gmres_restart)
+        working[nm] = total
+
+    print(f"  {'Working set (MiB, factor + A + basis)':<{col-2}}" +
+          "".join(f"  {working[nm]/MIB:<28.2f}" for nm in names))
+    ratio_row("  relative to complex128", working)
 
     n_rhs = b_high.shape[1] if b_high.ndim == 2 else 1
     if n_rhs > 1:

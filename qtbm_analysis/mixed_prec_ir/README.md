@@ -110,9 +110,9 @@ implementation:
 3. the solver at `u_f`, no refinement — the lower bound refinement must beat
 
 Reported per variant: relative residual, forward error against the reference
-solution, wall time, peak Python heap and peak RSS above baseline, factor
-memory, the outer convergence history, and, for GMRES-IR, the inner iteration
-counts.
+solution, the normwise and componentwise backward errors, wall time split into
+factorization and solve, factor memory, the outer convergence history, and, for
+GMRES-IR, the inner iteration counts.
 
 ### Practical notes
 
@@ -133,10 +133,33 @@ each right-hand side into it, so that the rebuild-and-refactorize fallback is
 never triggered. Without this the factorization would be recomputed at every
 refinement step, which would defeat the method.
 
-**Memory is measured two ways** because neither suffices alone. `tracemalloc`
-records the Python heap exactly but does not observe allocations inside
-compiled extensions; the RSS poller observes those but samples at a few
-milliseconds and may miss short peaks.
+**Memory is reported at two levels**, both analytic and both relative to the
+`complex128` factorization refinement is meant to replace.
+
+*Factor memory* is the stored factorization, as each solver reports it through
+`factor_nbytes`. It is the one figure comparable across every solver here, and
+it shows the halving that motivates the method.
+
+*Working set* is the factorization plus what the method must hold alongside it,
+and it is the honest version of the claim. Refinement computes its residual at
+the working precision, so it keeps `A` at `complex128` however low `u_f` is;
+only a bare low-precision solve can hold `A` at `u_f`. GMRES-IR additionally
+holds a Krylov basis of `restart + 1` vectors of length `n` at the working
+precision — one basis, not one per right-hand side, since SciPy's `gmres` takes
+a single column and `solve_gmres_ir` loops over them.
+
+The factor halves; the working set does not. On carbon-nanotube at `n = 768`
+the factor ratio is 0.50x while the working set is 0.73x for LU-IR and 0.86x
+for GMRES-IR. Quote the working set where the claim is about memory saved.
+
+Process-level figures are deliberately not reported. The Python heap sees the
+Block Thomas factors, which are NumPy arrays, but not those of SuperLU, UMFPACK
+or MUMPS, which live in compiled extensions, nor those of cuDSS, which live on
+the device; a table mixing the two would rank solvers by where their memory
+sits rather than by how much they use. Peak RSS is additionally order-dependent,
+since the allocator does not return freed memory to the operating system:
+whichever variant runs first is charged the whole growth and the rest measure
+zero.
 
 ---
 
