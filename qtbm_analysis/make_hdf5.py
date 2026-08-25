@@ -190,12 +190,17 @@ def store_sparse(group, name, mat):
 
 
 def build_material(folder: Path, material: str, out_dir: Path,
-                   indices=None):
+                   parser=None, args=None):
     """
     Pack one material's exported files into a single HDF5 file.
 
-    `indices` restricts the energy indices packed; the default is every index
-    found in the export directory.
+    `parser`/`args` resolve which energy indices are packed, via
+    cli.resolve_indices against this material's own exported indices --
+    resolved here rather than once for every material in main(), since a
+    non-uniform --idx selection or a --stride is otherwise applied against the
+    wrong (or absent) available set for materials whose exported indices
+    differ. The default, with neither `args` nor an index selection in it, is
+    every index found in the export directory.
     """
     src = folder / material
     if not src.exists():
@@ -206,14 +211,13 @@ def build_material(folder: Path, material: str, out_dir: Path,
     if not available:
         print(f"  [SKIP] {material}: no M_E_<idx>.npz in {src}")
         return
-    if indices is None:
+    if args is None:
         indices = available
     else:
-        missing = sorted(set(indices) - set(available))
-        indices = [i for i in indices if i in set(available)]
-        if missing:
-            print(f"     [warn] {material}: {len(missing)} requested indices "
-                  f"are not exported, e.g. {missing[:10]}")
+        # cli.resolve_indices prints its own "[warning] requested indices
+        # not present" against `available` -- covers a bad --idx/--start as
+        # well as a --stride applied on top of either or of the full set.
+        indices = cli.resolve_indices(parser, args, available)
         if not indices:
             print(f"  [SKIP] {material}: no requested index is exported")
             return
@@ -356,14 +360,11 @@ def main():
               f"Materials exported in {folder}: {found}")
         sys.exit(1)
 
-    # With neither --idx nor --start/--end, every exported index is packed;
-    # build_material discovers them per material.
-    requested = None
-    if args.idx is not None or args.start is not None:
-        requested = cli.resolve_indices(parser, args)
-
+    # Index selection (--idx/--start/--end/--stride) is resolved once per
+    # material inside build_material, against that material's own exported
+    # indices -- see its docstring for why this can't be done once here.
     for material in targets:
-        build_material(folder, material, out_dir, requested)
+        build_material(folder, material, out_dir, parser, args)
 
     print(f"\nHDF5 files written to: {out_dir}")
 
