@@ -141,7 +141,7 @@ Sweeping a range. Each index prints its own full report; nothing is written to
 disk (see section 6).
 
 ```bash
-python mpir.py .../carbon-nanotube.h5 --start 0 --end 400 \
+python mpir.py .../carbon-nanotube.h5 --stride 10 \
     --solver block-thomas --factor-dtype complex32 --inner gmres
 ```
 

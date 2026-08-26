@@ -94,7 +94,7 @@ import matplotlib.pyplot as plt
 
 import cli
 from factor_io import table_rows
-from mpir import experiment_names, load_experiment
+from mpir import experiment_names, load_experiment, unit_roundoff
 from style import axis_label, energies_of, mark_band_edges, save_figure
 
 # Convergence history, left panel. The three colours are those of Carson and
@@ -151,7 +151,7 @@ def plot_index(rows, runs_for_idx, attrs, idx, out_path):
     """The two-panel convergence figure of one energy index."""
     rows = sorted(rows, key=lambda r: r["outer_iteration"])
     steps = [r["outer_iteration"] for r in rows]
-    u = float(attrs.get("working_u", np.finfo(np.complex128).eps))
+    u = float(attrs.get("working_u", unit_roundoff(np.complex128)))
 
     fig, (left, right) = plt.subplots(1, 2, figsize=(11, 4.2))
 

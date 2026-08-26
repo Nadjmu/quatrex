@@ -58,7 +58,7 @@ and renders the per-index frames and the animation.
 Usage
 -----
     python non-normal.py /scratch/yimili/matrices2/hdf5/carbon-chain.h5 \
-        --start 0 --end 401
+        --stride 10
     python ../plotting/non-normal/plot_non_normal.py \
         /scratch/yimili/non-normal/carbon-chain.h5
 """
@@ -66,7 +66,6 @@ Usage
 import argparse
 import gc
 import os
-import re
 import sys
 import time
 import warnings
@@ -167,22 +166,8 @@ def parse_args():
 # ============================================================
 
 def discover_indices(h5_file):
-    pattern = re.compile(r"^E_(\d+)$")
-    found = []
-
-    for name in h5_file.keys():
-        match = pattern.fullmatch(name)
-
-        if match is None:
-            continue
-
-        if not isinstance(h5_file[name], h5py.Group):
-            continue
-
-        if "M" in h5_file[name] and "spectrum" in h5_file[name]:
-            found.append(int(match.group(1)))
-
-    return sorted(found)
+    """Energy indices holding both an M and a spectrum."""
+    return cli.available_indices(h5_file, require=("M", "spectrum"))
 
 
 def load_csc_matrix(h5_file, group_name):

@@ -502,14 +502,20 @@ def cast_dtype(dtype):
 
 def unit_roundoff(dtype):
     """
-    u_f, the unit roundoff of a factorization precision, for the LU-IR bound.
+    The unit roundoff of a precision: half of np.finfo(...).eps, since eps is
+    the spacing between 1 and the next representable float and the unit
+    roundoff -- the maximum relative rounding error under round-to-nearest --
+    is half of that spacing. This is Carson and Higham's u (Table 1.2: half
+    precision 2^-11, single 2^-24, double 2^-53), the convention already used
+    elsewhere in this project (run_bench/sweep_fp16.py,
+    plotting/block-thomas/plot_fp16_accuracy.py) and in the module docstring's
+    own worked example above (u_f = 2^-24 at complex64, 2^-11 at complex32).
 
-    np.finfo(...).eps is the spacing, twice the unit roundoff of the usual
-    definition; the factor of two is kept out of both the complex64 and the
-    complex32 figures so that the printed bound stays comparable across
-    precisions and with the values previously reported.
+    Used both for u_f, the factorization precision, and for u, the working
+    precision (dtype=HIGH_DTYPE) -- one function so the two can never drift
+    apart in convention.
     """
-    return float(np.finfo(np.float16 if is_c32(dtype) else dtype).eps)
+    return float(np.finfo(np.float16 if is_c32(dtype) else dtype).eps) / 2.0
 
 
 def solver_dtypes(solver_name):
@@ -1055,7 +1061,7 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
     # that at u_f would accept a solution good only to the factorization
     # precision, which is what refinement exists to improve on. u_f enters the
     # metrics as u_s, never the stopping test. See RefinementMonitor.
-    monitor = RefinementMonitor(float(np.finfo(HIGH_DTYPE).eps), A_high.shape[0],
+    monitor = RefinementMonitor(unit_roundoff(HIGH_DTYPE), A_high.shape[0],
                                 rho_thresh=rho_thresh, max_iter=max_iter,
                                 ferr_thresh=ferr_thresh)
 
@@ -1376,7 +1382,7 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
 
     # At the working precision, as in solve_mixed_ir; u_f never enters the
     # stopping test.
-    monitor = RefinementMonitor(float(np.finfo(HIGH_DTYPE).eps), n,
+    monitor = RefinementMonitor(unit_roundoff(HIGH_DTYPE), n,
                                 rho_thresh=rho_thresh, max_iter=max_iter,
                                 k_max=k_max, ferr_thresh=ferr_thresh)
 
@@ -1737,7 +1743,7 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
         """Reference correction for a retained residual; see refinement_metrics."""
         return ref.solve(np.asarray(r, dtype=HIGH_DTYPE)).astype(HIGH_DTYPE)
 
-    u_work = float(np.finfo(HIGH_DTYPE).eps)
+    u_work = unit_roundoff(HIGH_DTYPE)
     k_max_str = f"k_gmres >= {k_max}" if k_max is not None else "disabled"
     ferr_str = (f"ferr_i/ferr_i-1 >= ferr_thresh={ferr_thresh:.2f}"
                if ferr_thresh is not None and x_true is not None else "disabled")
@@ -1762,7 +1768,7 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
     # GMRES-IR, whose inner solve runs at the working precision. It sets the
     # scale of the whole convergence factor; see refinement_metrics.
     if inner == "gmres":
-        u_s = float(np.finfo(HIGH_DTYPE).eps)
+        u_s = unit_roundoff(HIGH_DTYPE)
         ir_fn = lambda: solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter,
                                        x_true=x_true, gmres_tol=gmres_tol,
                                        gmres_restart=gmres_restart,
@@ -2042,7 +2048,7 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
     # refinement variant. Both are keyed by (idx, variant) so that a sweep
     # concatenates cleanly and either table can be read on its own.
     u_f = unit_roundoff(low_dtype)
-    u_work = float(np.finfo(HIGH_DTYPE).eps)
+    u_work = unit_roundoff(HIGH_DTYPE)
     n_blocks = len(block_sizes_from_matrix(A)) \
         if solver_name.startswith("block-thomas") else -1
     common = dict(idx=int(idx), n=int(n), nnz=nnz, n_rhs=int(n_rhs),
@@ -2285,7 +2291,7 @@ def main():
         residual_dtype=np.dtype(HIGH_DTYPE).name,
         # u itself, so that a figure can draw the level refinement aims at
         # without having to know what complex128 rounds to.
-        working_u=float(np.finfo(HIGH_DTYPE).eps),
+        working_u=unit_roundoff(HIGH_DTYPE),
         rho_thresh=float(args.rho_thresh),
         max_iter=int(args.max_iter),
         k_max=int(args.k_max) if args.k_max is not None else -1,

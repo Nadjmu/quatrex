@@ -512,6 +512,41 @@ def add_index_selection(ap, default_all=True):
     return ap
 
 
+def available_indices(h5_file, require="M"):
+    """
+    Energy indices actually present in an open material file, ascending.
+
+    `metadata/indices`, the full sweep make_hdf5.py records, is the candidate
+    list where the file has one; otherwise the E_<idx> groups themselves are
+    scanned. Either way an index is counted only when its group holds every
+    name in `require`, a string or a sequence of them, so a partially written
+    file reports what it really contains. Pass require=None to accept every
+    group.
+
+    The sweeps are thousands of indices long and their extent is a property of
+    the file, never of a hard-coded range, so every driver that offers a
+    default-all index selection resolves it through this function and passes
+    the result to resolve_indices as `available`.
+    """
+    required = () if require is None else (
+        (require,) if isinstance(require, str) else tuple(require))
+
+    if "metadata/indices" in h5_file:
+        candidates = [int(i) for i in h5_file["metadata/indices"][:]]
+    else:
+        candidates = [int(k[2:]) for k in h5_file
+                      if k.startswith("E_") and k[2:].isdigit()]
+
+    out = []
+    for index in candidates:
+        group = h5_file.get(f"E_{index}")
+        if group is None or not hasattr(group, "keys"):
+            continue
+        if all(name in group for name in required):
+            out.append(index)
+    return sorted(out)
+
+
 def resolve_indices(ap, args, available=None):
     """
     Index list implied by --idx or --start/--end, thinned by --stride.

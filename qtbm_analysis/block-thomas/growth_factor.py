@@ -52,6 +52,29 @@ Per (index, solver, dtype):
        rho          max|U_ij| / max|A_eff_ij|      pivot growth factor
        resid_rel    ||A_eff - L U|| / ||A_eff||    reconstruction guard
 
+The three growth columns are all normwise, and differ only in how much of the
+entrywise theorem they discard. From |A - LU| <= gamma_n |L| |U|, any monotone
+norm gives ||A - LU|| <= gamma_n || |L| |U| ||, so the tight ratio is the one
+that enters the backward-error bound. The loose ratio applies the further
+estimate || |L| |U| || <= ||L|| ||U|| and is therefore never smaller; it is
+reported only because it is the form usually quoted. rho is the norm-free
+scalar summary, and max|U| is the standard cheap surrogate for Wilkinson's
+maximum over all intermediate A^(k).
+
+3. For the Block Thomas variants only, report the Schur-complement recursion:
+
+       schur_growth    max_k ||S_k||_2 / max_k ||A_kk||_2   block growth
+       schur_norm_max  max_k ||S_k||_2
+       schur_cond_max  max_k kappa_2(S_k)                   pivot conditioning
+       inv_resid_max   max_k ||S_k G_k - I||_2              impl. 2 only
+
+Block LU pivots only within a diagonal block, so rho and the two ratios do not
+tell the whole story: the recursion itself amplifies, and its backward error
+carries the conditioning of the pivot blocks S_k, not only their size. The
+explicit inverses G_k of implementation 2 add a further factor, since inversion
+is not backward stable; see schur_analyse. All four are 2-norm quantities and
+are repeated across the norm rows, as rho is.
+
 resid_rel is not a stability metric. It verifies that the assumed factor
 convention holds for the build that produced the file; if it is not near the
 unit roundoff of the stored precision, the other three columns are meaningless.
@@ -89,9 +112,14 @@ see plotting/block-thomas/plot_growth_factor.py, which consumes the group.
 
 Usage
 -----
+With no index selection every index the file holds is analysed, which is a few
+thousand for a full-resolution sweep. Each one costs an assembly of the global
+factors per (solver, precision) and, unless --no-schur is given, one SVD per
+diagonal block; --stride is the usual way to keep a first pass short.
+
     python growth_factor.py /scratch/yimili/matrices2/hdf5/graphene.h5 --idx 25
-    python growth_factor.py .../graphene.h5 --start 1 --end 400
-    python growth_factor.py .../graphene.h5 --start 1 --end 400 \
+    python growth_factor.py .../graphene.h5 --stride 20
+    python growth_factor.py .../graphene.h5 --start 900 --end 1100 \
         --solvers block-thomas superlu umfpack --dtypes complex128
     python ../plotting/block-thomas/plot_growth_factor.py \
         /scratch/yimili/error-analysis-block-thomas/graphene.h5
@@ -121,7 +149,14 @@ DEFAULT_OUTDIR = cli.BLOCK_THOMAS_DIR
 # Top-level group of the analysis file this script writes.
 GROUP = "growth_factor"
 COLUMNS = ["idx", "solver", "dtype", "norm", "nA", "nL", "nU", "prod",
-           "LU_abs", "rho", "loose", "tight", "resid_rel"]
+           "LU_abs", "rho", "loose", "tight", "resid_rel",
+           "schur_growth", "schur_norm_max", "schur_cond_max", "inv_resid_max"]
+
+# Solvers for which the Schur-complement columns are defined. The other two
+# factor globally and have no block recursion.
+BLOCK_VARIANTS = ("block-thomas", "block-thomas-inv")
+NAN_SCHUR = dict(schur_growth=np.nan, schur_norm_max=np.nan,
+                 schur_cond_max=np.nan, inv_resid_max=np.nan)
 
 
 # ---------------------------------------------------------------------------
@@ -388,8 +423,116 @@ def analyse(A, L, U):
     return out
 
 
-def _fmt_block(solver, dtype_name, res):
-    """Human-readable report of one analyse() result."""
+def _dense_ok(a):
+    """
+    Block promoted to a precision LAPACK accepts.
+
+    float16 has no LAPACK driver, so the half-precision blocks are promoted to
+    float32. The promotion is exact and every Schur quantity reported here is a
+    ratio or a condition number, so it changes no result.
+    """
+    a = np.asarray(a)
+    return a.astype(np.float32) if a.dtype == np.float16 else a
+
+
+def schur_blocks(group, solver):
+    """
+    The modified diagonal blocks S_k of a Block Thomas factorization, and the
+    explicit inverses of them that implementation 2 formed.
+
+    S_1 = A_11, S_k = A_kk - A_{k,k-1} S_{k-1}^-1 A_{k-1,k} is the block
+    Thomas recursion; the S_k are exactly the diagonal blocks of U_global,
+    stored as Dmod. Implementation 1 stores them packed as an LU with pivots
+    and they are rebuilt; implementation 2 stores them explicitly, together
+    with the inverses it actually uses to solve, which for the half-precision
+    variant carry a per-block power-of-two scale t.
+
+    Returns (S, S_inv), with S_inv None for implementation 1.
+    """
+    if solver == "block-thomas":
+        Dlu, Dpiv = load_blocks(group, "Dmod_lu"), load_blocks(group, "Dmod_piv")
+        S = [_reconstruct_dmod(_dense_ok(Dlu[k]), np.asarray(Dpiv[k]))
+             for k in range(len(Dlu))]
+        return S, None
+
+    D_mod, D_inv = load_blocks(group, "Dmod"), load_blocks(group, "Dmod_inv")
+    N = len(D_mod)
+    t = group["inv_scale_t"][:] if "inv_scale_t" in group else np.ones(N)
+    S = [_dense_ok(D_mod[k]) for k in range(N)]
+    S_inv = [_dense_ok(D_inv[k]) / t[k] for k in range(N)]
+    return S, S_inv
+
+
+def _diag_blocks(A_eff, sizes):
+    """Diagonal blocks A_kk of A_eff for the given partition, dense."""
+    off = np.concatenate(([0], np.cumsum(sizes)))
+    return [A_eff[off[k]:off[k + 1], off[k]:off[k + 1]].toarray()
+            for k in range(len(sizes))]
+
+
+def schur_analyse(A_eff, group, solver):
+    """
+    Growth and conditioning of the Schur-complement recursion.
+
+    Block LU is not scalar LU: it pivots only within a diagonal block, so its
+    backward error is governed by the recursion itself rather than by max|U|
+    alone. Two quantities control it, and they are independent of each other
+    and of kappa(A):
+
+        schur_growth    max_k ||S_k||_2 / max_k ||A_kk||_2
+                        the block analogue of the pivot growth factor rho. It
+                        measures whether the recursion amplified the blocks.
+
+        schur_cond_max  max_k kappa_2(S_k)
+                        the conditioning of the pivot blocks. Block LU inherits
+                        this even when the growth is negligible: a near-singular
+                        leading principal block submatrix makes some S_k
+                        near-singular however well conditioned A is.
+
+    For implementation 2 a third quantity is reported. That variant forms
+    S_k^-1 explicitly, and explicit inversion is not backward stable: the
+    computed inverse satisfies only ||S G - I|| <~ c u kappa(S). Hence
+
+        inv_resid_max   max_k ||S_k G_k - I||_2
+
+    which is the factor by which implementation 2 is expected to exceed
+    implementation 1, and is the quantity to read against schur_cond_max: the
+    two should track each other, up to the unit roundoff of the precision.
+
+    All three are 2-norm quantities, taken from one SVD per block, and are
+    therefore norm-label independent; they are repeated across the norm rows
+    exactly as rho is. Returns NAN_SCHUR for the globally factoring solvers.
+    """
+    if solver not in BLOCK_VARIANTS:
+        return dict(NAN_SCHUR)
+
+    S, S_inv = schur_blocks(group, solver)
+    sizes = [np.asarray(s).shape[0] for s in S]
+    A_kk = _diag_blocks(A_eff, sizes)
+
+    s_max, s_cond = [], []
+    for Sk in S:
+        sv = sla.svdvals(Sk)
+        s_max.append(float(sv[0]))
+        s_cond.append(float(sv[0] / sv[-1]) if sv[-1] > 0 else np.inf)
+    a_max = max(float(sla.svdvals(_dense_ok(a))[0]) for a in A_kk)
+
+    inv_resid = np.nan
+    if S_inv is not None:
+        inv_resid = max(
+            float(sla.svdvals(np.asarray(Sk, dtype=Gk.dtype) @ Gk
+                              - np.eye(Gk.shape[0], dtype=Gk.dtype))[0])
+            for Sk, Gk in zip(S, S_inv)
+        )
+
+    return dict(schur_growth=(max(s_max) / a_max) if a_max else np.inf,
+                schur_norm_max=max(s_max),
+                schur_cond_max=max(s_cond),
+                inv_resid_max=inv_resid)
+
+
+def _fmt_block(solver, dtype_name, res, schur=None):
+    """Human-readable report of one analyse() result and its Schur metrics."""
     lines = [f"    {solver} / {dtype_name}"]
     for label in NORMS:
         r = res[label]
@@ -413,15 +556,28 @@ def _fmt_block(solver, dtype_name, res):
         lines.append(
             f"                  (assembly check ||A-LU||/||A|| = {r['resid_rel']:.2e})"
         )
+    if schur and np.isfinite(schur["schur_norm_max"]):
+        lines.append(
+            f"      [schur   ]  max_k ||S_k||/max_k ||A_kk|| = "
+            f"{schur['schur_growth']:.3e}   max_k kappa_2(S_k) = "
+            f"{schur['schur_cond_max']:.3e}"
+        )
+        if np.isfinite(schur["inv_resid_max"]):
+            lines.append(
+                f"                  max_k ||S_k G_k - I|| = "
+                f"{schur['inv_resid_max']:.3e}"
+            )
     return "\n".join(lines)
 
 
-def process_index(f, idx, solvers, dtypes, records):
+def process_index(f, idx, solvers, dtypes, records, with_schur=True):
     """
     Analyse one energy index across the requested solvers and precisions.
 
     Prints a per-combination report and appends one record per (solver, dtype,
-    norm) to `records` in place. Combinations absent from the file are skipped;
+    norm) to `records` in place. With with_schur, the Block Thomas variants
+    additionally report the Schur-complement growth and conditioning of their
+    recursion; see schur_analyse. Combinations absent from the file are skipped;
     a failure to assemble or analyse one combination is reported and does not
     abort the sweep.
     """
@@ -447,19 +603,22 @@ def process_index(f, idx, solvers, dtypes, records):
                 A_dt = A if dt == "complex32" else A.astype(np.dtype(dt))
                 A_eff, L, U = ASSEMBLERS[solver](g, A_dt)
                 res = analyse(A_eff, L, U)
+                schur = (schur_analyse(A_eff, g, solver) if with_schur
+                         else dict(NAN_SCHUR))
             except Exception as exc:            # noqa: BLE001
                 print(f"    {solver} / {dt}: FAILED ({type(exc).__name__}: {exc})")
                 continue
 
             per_key[(solver, dt)] = res
-            print(_fmt_block(solver, dt, res))
+            print(_fmt_block(solver, dt, res, schur))
             for label in NORMS:
                 r = res[label]
                 records.append(dict(idx=idx, solver=solver, dtype=dt, norm=label,
                                     nA=r["nA"], nL=r["nL"], nU=r["nU"],
                                     prod=r["prod"], LU_abs=r["LU_abs"],
                                     rho=r["rho"], loose=r["loose"],
-                                    tight=r["tight"], resid_rel=r["resid_rel"]))
+                                    tight=r["tight"], resid_rel=r["resid_rel"],
+                                    **schur))
 
     # Ratio of the tight growth ratio at single against double precision. The
     # ratio is precision-independent in exact arithmetic, so a value far from
@@ -482,7 +641,7 @@ def process_index(f, idx, solvers, dtypes, records):
 def main():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap)
-    cli.add_index_selection(ap, default_all=False)
+    cli.add_index_selection(ap, default_all=True)
     cli.add_solver_selection(
         ap, choices=SOLVERS, default=SOLVERS,
         help="solvers whose stored factors to analyse; those absent from the "
@@ -492,18 +651,23 @@ def main():
     cli.add_output(ap, material=True, outdir_default=str(DEFAULT_OUTDIR),
                    outdir_help=f"directory holding the analysis file "
                                f"<material>.h5 (default: {DEFAULT_OUTDIR})")
+    ap.add_argument("--no-schur", action="store_true",
+                    help="skip the Schur-complement columns, which cost one "
+                         "SVD per diagonal block of every Block Thomas "
+                         "factorization analysed")
     ap.add_argument("--no-save", action="store_true",
                     help="print the per-index report only, write no HDF5")
     args = ap.parse_args()
 
     h5path = Path(args.h5path)
-    indices = cli.resolve_indices(ap, args)
     material = args.material or h5path.stem
     records = []
 
     with h5py.File(h5path, "r") as f:
+        indices = cli.resolve_indices(ap, args, cli.available_indices(f))
         for idx in indices:
-            process_index(f, idx, args.solvers, args.dtypes, records)
+            process_index(f, idx, args.solvers, args.dtypes, records,
+                          with_schur=not args.no_schur)
 
     if args.no_save:
         return

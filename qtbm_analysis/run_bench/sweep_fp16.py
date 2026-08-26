@@ -58,8 +58,8 @@ plotting/block-thomas/plot_fp16_accuracy.py, which consumes the group.
 
 Usage
 -----
-    python sweep_fp16.py .../carbon-nanotube.h5 --start 0 --end 401
-    python sweep_fp16.py .../graphene.h5 --start 0 --end 401
+    python sweep_fp16.py .../carbon-nanotube.h5 --stride 10
+    python sweep_fp16.py .../graphene.h5
     python sweep_fp16.py .../graphene.h5 --idx 0 25 50 --inv-dtype float16
     python ../plotting/block-thomas/plot_fp16_accuracy.py \
         /scratch/yimili/error-analysis-block-thomas/carbon-nanotube.h5
@@ -235,9 +235,7 @@ def main():
     args.material = args.material or Path(args.h5path).stem
 
     with h5py.File(args.h5path, "r") as f:
-        available = ([int(i) for i in f["metadata/indices"][:]]
-                     if "metadata/indices" in f
-                     else sorted(int(k[2:]) for k in f if k.startswith("E_")))
+        available = cli.available_indices(f)
     indices = cli.resolve_indices(ap, args, available)
     if not indices:
         raise SystemExit("no requested index is present in the file")

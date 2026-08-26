@@ -84,6 +84,7 @@ which every analysis of that material writes its own top-level group.
                     │                                                  │
     block-thomas/growth_factor.py ─► error-analysis-block-thomas/      │
                                        <material>.h5 :/growth_factor   │
+    block-thomas/forward_error.py ─► the same file :/forward_error     │
     run_bench/sweep_fp16.py ───────► error-analysis-block-thomas/ ◄────┘
                                        <material>.h5 :/fp16_sweep
     mixed_prec_ir/mpir.py ─────────► mixed-precision-IR/
@@ -95,6 +96,7 @@ which every analysis of that material writes its own top-level group.
                     ▼
   STAGE 5  PLOT (reads HDF5, writes figures only, into the same directory)
                     plotting/block-thomas/plot_growth_factor.py
+                    plotting/block-thomas/plot_forward_error.py
                     plotting/block-thomas/plot_fp16_accuracy.py
                     plotting/block-thomas/plot_speedup.py
                     plotting/mixed_prec_ir/plot_mpir.py
@@ -224,27 +226,26 @@ cd run_bench && python run_benchmarks.py
 
 # Stage 4: analysis. Read-only with respect to the material file.
 cd ../block-thomas
-python growth_factor.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
-    --start 1 --end 400
+python growth_factor.py /scratch/yimili/matrices2/hdf5/graphene.h5 --stride 20
+python forward_error.py /scratch/yimili/matrices2/hdf5/graphene.h5 --stride 20
 cd ../run_bench
-python sweep_fp16.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
-    --start 0 --end 401 --block-size 416
+python sweep_fp16.py /scratch/yimili/matrices2/hdf5/graphene.h5 --stride 20
 cd ../mixed_prec_ir
 # One invocation per solver and precision under test; each appends a new
 # numbered experiment to mixed-precision-IR/graphene.h5 and never overwrites,
 # so the file records every run made.
 python mpir.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
-    --start 0 --end 401 --solver block-thomas \
+    --stride 20 --solver block-thomas \
     --factor-dtype complex32 --inner gmres
 cd ../non-normal
-python non-normal.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
-    --start 0 --end 401
+python non-normal.py /scratch/yimili/matrices2/hdf5/graphene.h5 --stride 20
 
 # Stage 5: figures, each written beside the data it was drawn from.
 # plotting/ mirrors the same category layout as the scratch directories.
 cd ../plotting/block-thomas
 python plot_speedup.py        /scratch/yimili/matrices2/hdf5/graphene.h5
 python plot_growth_factor.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
+python plot_forward_error.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 python plot_fp16_accuracy.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 cd ../mixed_prec_ir
 python plot_mpir.py           /scratch/yimili/mixed-precision-IR/graphene.h5 --list
@@ -261,6 +262,7 @@ cd ../solvers && python test_pipeline.py
 |---|---|---|
 | `run_benchmarks.py` | stage 2 complete | reads `E_<idx>/M` and `E_<idx>/rhs` |
 | `growth_factor.py` | stage 3 complete | reads the stored factors |
+| `forward_error.py` | stage 3 complete, and `condition_est.py` for the bound columns | reads the stored solutions and backward errors |
 | `sweep_fp16.py` | stage 3 complete | reads `blockthomas/complex128/x` as its reference |
 | `plot_speedup.py` | stage 3 complete | reads the stored timings |
 | every other `plot_*.py` | its stage-4 group | reads that group only |
@@ -277,6 +279,7 @@ re-running one analysis leaves the others intact:
 ```
     /scratch/yimili/error-analysis-block-thomas/graphene.h5
     ├── growth_factor/    idx, solver, dtype, norm, nA, nL, nU, ...
+    ├── forward_error/    idx, solver, dtype, fwd_inf, bound_nw, bound_cw, ...
     └── fp16_sweep/       idx, relres_fp16, ..., cond_full_svd
 ```
 
@@ -353,8 +356,6 @@ dtype and is spelled `float64`, `float32`, `float16`.
 | working precisions | `--dtypes NAME [NAME ...]` | |
 | factorization precision | `--factor-dtype NAME` | `u_f` in the refinement analysis |
 | inverse-formation precision | `--inv-dtype NAME` | real dtype |
-| uniform block size | `--block-size M` | |
-| detected partition | `--auto-blocks` | overrides `--block-size` |
 | output directory | `--outdir DIR` | never `--out`, `--plotdir`, `--out-root` |
 | output label | `--material NAME` | defaults to the input stem |
 | iteration limit | `--max-iter N` | never `--maxiter` |
@@ -362,6 +363,18 @@ dtype and is spelled `float64`, `float32`, `float16`.
 Where a script takes no index selection it takes none; where it takes one, it
 takes exactly this one. `--idx` always accepts several values, so `--idx 25`
 and `--idx 0 25 50` are both valid.
+
+**There is no block-partition option.** Every driver detects the Block Thomas
+partition from the sparsity pattern of the matrix it was given; the analysis
+scripts read back the partition the solver recorded. A uniform block size is
+never assumed and cannot be requested.
+
+**Index ranges are a property of the file, never of a script.** With no index
+selection, a driver sweeps whatever the file holds, resolved through
+`cli.available_indices`, which prefers `metadata/indices` and falls back to
+scanning the `E_<idx>` groups. A full-resolution material is a few thousand
+indices — it follows from the material's `EnergyGrid` and is written down
+nowhere — so `--stride` is how a sweep is shortened, not a hard-coded `--end`.
 
 ### 3.4 Renames from the CSV interface
 
@@ -377,8 +390,7 @@ and `--idx 0 25 50` are both valid.
 
 | Was | Now | Where |
 |---|---|---|
-| `--bs` | `--block-size` | `sweep_fp16`, `single_solve`, `mpir` |
-| `--block-sizes` | `--block-size` | `arnoldi_shift_invert_*` |
+| `--bs`, `--block-sizes`, `--block-size`, `--auto-blocks` | *removed*; the partition is always detected | `sweep_fp16`, `single_solve`, `mpir`, `arnoldi_shift_invert_*` |
 | `--compare-bs` | `--compare-block-size` | `determine_custom_block_size` |
 | `--low-dtype` | `--factor-dtype` | `mpir` |
 | `--factor-dtype c128\|c64` | `--factor-dtype complex128\|complex64` | `arnoldi_shift_invert_*` |

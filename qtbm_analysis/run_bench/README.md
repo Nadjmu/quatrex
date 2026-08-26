@@ -39,25 +39,25 @@ material's own HDF5 file as `E_<idx>/<solver>/<dtype>/`, siblings of
 original must be preserved. Indices whose right-hand side has zero columns are
 skipped, and appear as gaps in the figures produced downstream.
 
-### Choosing the block partition
+### The block partition
 
-`BLOCK_MODE` selects where Block Thomas obtains its partition:
+There is nothing to choose. The Block Thomas partition is **always** detected
+from the sparsity pattern, by `solver_classes.block_sizes_from_matrix`; it is
+never uniform and never read from `cli.MATERIALS`. The exported matrices have a
+ragged block structure, so a uniform partition would either cut a real coupling
+or pad the blocks — which is why no `--block-size` or `--auto-blocks` flag
+exists anywhere in the project.
 
-| Mode | Source | Notes |
-|---|---|---|
-| `"uniform"` | `block_size` of `cli.MATERIALS` | the default |
-| `"custom"` | `blocks` of `cli.MATERIALS` | an error if the material has no entry |
-| `"auto"` | detected per material | from the sparsity pattern |
+The sparsity pattern is identical at every energy index, so the detection runs
+once per material, on the matrix at the first index, and the result is reused
+for the whole sweep. `offband_nnz == 0` is verified before anything runs, and a
+partition that fails it aborts the material rather than producing a plausible
+but wrong solution.
 
-The sparsity pattern is identical at every energy index, so `"auto"` detects
-the partition once per material from the first matrix and reuses it. Both
-non-uniform modes verify `offband_nnz == 0` before anything runs.
-
-To populate the `blocks` field of a material, generate a line and paste it into
-`cli.MATERIALS`:
+To inspect the partition a material will get:
 
 ```bash
-python ../block-thomas/determine_custom_block_size.py <material>.h5 --emit-python
+python ../block-thomas/determine_custom_block_size.py <material>.h5
 ```
 
 ### `EXCLUDE`
@@ -79,10 +79,8 @@ at every stage, and peak RSS alongside the solver-reported factor memory.
 
 ```bash
 python single_solve.py --solvers superlu mumps
-python single_solve.py --solvers block-thomas block-thomas-inv --block-size 104
-python single_solve.py --solvers block-thomas --auto-blocks
-python single_solve.py --solvers block-thomas-inv-fp16 --block-size 32 \
-    --inv-dtype float16
+python single_solve.py --solvers block-thomas block-thomas-inv
+python single_solve.py --solvers block-thomas-inv-fp16 --inv-dtype float16
 python single_solve.py /path/M.npz /path/rhs.npy --solvers superlu umfpack
 ```
 
@@ -91,8 +89,8 @@ solver believes it stores, while the peak RSS delta is what the process
 actually consumed, including workspace and fill-in the solver does not account
 for.
 
-Block solvers require either `--block-size` or `--auto-blocks`; the partition is
-checked with `offband_nnz` and the run **aborts** rather than returning a
+Block solvers take no partition argument: it is detected from the matrix,
+checked with `offband_nnz`, and the run **aborts** rather than returning a
 silently wrong solution. `--inv-dtype` sets the precision in which the
 half-precision explicit-inverse variant forms its inverses; see the
 [solvers README](../solvers/README.md#31-inv_dtype-the-mixed-precision-parameter).
@@ -105,8 +103,8 @@ Accuracy sweep of both half-precision variants across a material's energy
 range, against the stored `complex128` Block Thomas solution as reference.
 
 ```bash
-python sweep_fp16.py .../carbon-nanotube.h5 --start 0 --end 401 --block-size 32
-python sweep_fp16.py .../graphene.h5 --start 0 --end 401 --auto-blocks
+python sweep_fp16.py .../carbon-nanotube.h5 --stride 10
+python sweep_fp16.py .../graphene.h5
 python sweep_fp16.py .../graphene.h5 --idx 0 25 50 --inv-dtype float16
 python ../plotting/block-thomas/plot_fp16_accuracy.py \
     /scratch/yimili/error-analysis-block-thomas/graphene.h5

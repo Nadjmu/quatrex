@@ -38,11 +38,19 @@ not a stability metric: values far above the unit roundoff of the stored
 precision indicate that the assumed factor convention does not hold for the
 build that produced the file, and the other two panels must then be discarded.
 
+Panel 4 onwards, in a second figure, the Schur-complement recursion of the two
+Block Thomas variants: the block growth max_k ||S_k|| / max_k ||A_kk||, the
+pivot conditioning max_k kappa_2(S_k), and, for implementation 2, the residual
+max_k ||S_k G_k - I|| of the explicit inverses. These are what the scalar
+growth factor cannot see, and are drawn only when the analysis file carries
+them; see plot_schur.
+
 Output
 ------
-<outdir>/<material>_growth_factor.png, one row of three panels per norm. The
-default output directory is the analysis file's own directory, so the figure is
-written beside the data it was drawn from.
+<outdir>/<material>_growth_factor.png, one row of three panels per norm, and
+<outdir>/<material>_schur_growth.png, three panels, Block Thomas only. The
+default output directory is the analysis file's own directory, so the figures
+are written beside the data they were drawn from.
 
 Usage
 -----
@@ -141,6 +149,91 @@ def plot(records, attrs, material, norms, out_path):
     save_figure(fig, out_path, dpi=140)
 
 
+# ---------------------------------------------------------------------------
+# Schur-complement recursion, Block Thomas only
+# ---------------------------------------------------------------------------
+SCHUR_COLUMNS = ("schur_growth", "schur_cond_max", "inv_resid_max")
+
+
+def plot_schur(records, attrs, material, out_path):
+    """
+    The three Schur columns against energy, for the Block Thomas variants.
+
+    These are the quantities the scalar growth factor cannot see. Block LU
+    pivots only inside a diagonal block, so its backward error is governed by
+    the recursion S_k = A_kk - A_{k,k-1} S_{k-1}^-1 A_{k-1,k}: by how much the
+    blocks grew (panel 1), by how well conditioned the pivot blocks stayed
+    (panel 2, which enters the block LU bound even when nothing grew), and, for
+    implementation 2 alone, by the accuracy of the explicit inverses it formed
+    of them (panel 3). Inversion is not backward stable, and its error scales
+    with kappa_2(S_k), so panels 2 and 3 are read together: they should differ
+    by roughly the unit roundoff of the precision.
+
+    The values are 2-norm quantities and are stored on every norm row, so one
+    norm is selected to avoid drawing each series twice. Returns False when the
+    file predates these columns.
+    """
+    norm = sorted({r["norm"] for r in records})[0]
+    rows_by_series = defaultdict(list)
+    for record in records:
+        if record["norm"] == norm and record["solver"] in cli.BLOCK_SOLVERS:
+            rows_by_series[(record["solver"], record["dtype"])].append(record)
+    if not rows_by_series:
+        return False
+    sample = next(iter(rows_by_series.values()))[0]
+    if not all(column in sample for column in SCHUR_COLUMNS):
+        return False
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 4.2), squeeze=False)
+    ax_growth, ax_cond, ax_inv = axes[0]
+    have_energy = energies_of(attrs, [0]) is not None
+    drawn_inv = False
+
+    for (solver, dtype), rows in sorted(rows_by_series.items()):
+        rows = sorted(rows, key=lambda r: r["idx"])
+        indices = [r["idx"] for r in rows]
+        x = energies_of(attrs, indices)
+        if x is None:
+            x = indices
+        _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
+        _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
+        tag = f"{solver} ({dtype})"
+        style = dict(marker=".", ms=3, lw=1.1, color=colour, label=tag)
+
+        ax_growth.semilogy(x, [r["schur_growth"] for r in rows], ls, **style)
+        ax_cond.semilogy(x, [r["schur_cond_max"] for r in rows], ls, **style)
+        values = [r["inv_resid_max"] for r in rows]
+        if any(v == v for v in values):
+            ax_inv.semilogy(x, values, ls, **style)
+            drawn_inv = True
+
+    ax_growth.set_title(r"block growth  "
+                        r"$\max_k \|S_k\|_2 / \max_k \|A_{kk}\|_2$")
+    ax_growth.set_ylabel("block growth")
+    ax_cond.set_title(r"pivot conditioning  $\max_k \kappa_2(S_k)$")
+    ax_cond.set_ylabel(r"$\kappa_2(S_k)$")
+    ax_inv.set_title(r"explicit inverse  $\max_k \|S_k G_k - I\|_2$")
+    ax_inv.set_ylabel("inverse residual")
+    if not drawn_inv:
+        ax_inv.text(0.5, 0.5, "implementation 2 not present",
+                    ha="center", va="center", transform=ax_inv.transAxes,
+                    fontsize=9)
+
+    for ax in (ax_growth, ax_cond, ax_inv):
+        ax.set_xlabel(axis_label(have_energy))
+        ax.grid(True, which="both", ls=":", alpha=0.4)
+        if have_energy:
+            mark_band_edges(ax, attrs)
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(fontsize=7)
+
+    fig.suptitle(f"Block Thomas: Schur-complement recursion — {material}",
+                 fontsize=14, y=1.01)
+    fig.tight_layout()
+    save_figure(fig, out_path, dpi=140)
+    return True
+
+
 def main():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap, help=f"analysis file written by "
@@ -172,6 +265,11 @@ def main():
     norms = args.norms or sorted({r["norm"] for r in records})
     plot(records, attrs, material, norms,
          outdir / f"{material}_growth_factor.png")
+
+    if not plot_schur(records, attrs, material,
+                      outdir / f"{material}_schur_growth.png"):
+        print("no Schur columns in this file; rerun growth_factor.py without "
+              "--no-schur for the Schur figure")
 
 
 if __name__ == "__main__":

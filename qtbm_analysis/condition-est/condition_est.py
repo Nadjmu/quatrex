@@ -44,6 +44,24 @@ quantity, while kappa_2 is a converged computation of both singular values;
 the three differ by more than the choice of norm and are reported separately
 rather than reduced to one number.
 
+The two Skeel condition numbers are the componentwise counterparts, and are
+the ones that pair with the componentwise backward error omega:
+
+    ||x - xhat||_inf / ||x||_inf  <~  cond_skeel_x * omega
+
+where kappa_inf would pair with the normwise eta_inf. cond_skeel <= kappa_inf
+always, often by orders of magnitude, because it is invariant under row
+scaling; cond_skeel_x is smaller still, and is the sharpest of the three. Both
+reuse the same factorization: for a nonnegative g,
+
+    || |M^-1| g ||_inf = || M^-1 diag(g) ||_inf = || diag(g) M^-H ||_1,
+
+so each is one further onenormest, with g = |M| e for cond_skeel and
+g = |M| |x| for cond_skeel_x. This is the estimate LAPACK's xyyRFS forms.
+cond_skeel_x needs a solution, so it reads E_<idx>/rhs from the material file
+and solves with the factorization already computed; it is NaN where the
+right-hand side has no columns.
+
 Each row is written as soon as it is produced, so a run may be interrupted and
 continued with --resume; rows already marked valid are not recomputed.
 
@@ -63,6 +81,8 @@ Output
     cond_1           (P,)  norm1 * norm1_inv
     cond_inf         (P,)  norminf * norminf_inv
     cond_2           (P,)  sigma_max / sigma_min
+    cond_skeel       (P,)  || |M^-1| |M| ||_inf, the Skeel condition number
+    cond_skeel_x     (P,)  || |M^-1| |M| |x| ||_inf / ||x||_inf, worst rhs
     seconds          (P,)  wall time of the row
 
 The row dimension P is fixed by the index selection when the group is created;
@@ -75,13 +95,13 @@ Usage
     python condition_est.py
     python condition_est.py --stride 10
     python condition_est.py /scratch/yimili/matrices2/hdf5/graphene.h5 \\
-        --start 0 --end 400 --resume
+        --stride 10 --resume
+    python condition_est.py --material carbon-nanotube --only-skeel
     python ../plotting/condition-est/plot_condition.py
 """
 
 import gc
 import os
-import re
 import sys
 import time
 import warnings
@@ -137,8 +157,16 @@ SCALAR_DATASETS = (
     "cond_1",
     "cond_inf",
     "cond_2",
+    "cond_skeel",
+    "cond_skeel_x",
     "seconds",
 )
+
+# Columns produced by skeel_estimates() alone. They are cheap relative to the
+# rest of a row -- no singular values, no onenormest of M^-1 itself -- so
+# --only-skeel fills them for rows an earlier sweep already marked valid,
+# without recomputing anything else.
+SKEEL_DATASETS = ("cond_skeel", "cond_skeel_x")
 
 DEFAULT_MATERIALS = ("carbon-nanotube", "carbon-chain", "si-bulk", "graphene")
 
@@ -220,6 +248,16 @@ def parse_args():
         help="Delete an existing group and recompute every row.",
     )
 
+    parser.add_argument(
+        "--only-skeel",
+        action="store_true",
+        help="Fill only the Skeel columns of an existing group, for rows "
+             "already marked valid, leaving every other column untouched. "
+             "Implies --resume. One factorization and a few solves per row, "
+             "with no singular values, so an earlier full sweep gains the "
+             "componentwise condition numbers without being repeated.",
+    )
+
     return parser, parser.parse_args()
 
 
@@ -228,22 +266,8 @@ def parse_args():
 # ============================================================
 
 def discover_indices(h5_file):
-    pattern = re.compile(r"^E_(\d+)$")
-    found = []
-
-    for name in h5_file.keys():
-        match = pattern.fullmatch(name)
-
-        if match is None:
-            continue
-
-        if not isinstance(h5_file[name], h5py.Group):
-            continue
-
-        if "M" in h5_file[name]:
-            found.append(int(match.group(1)))
-
-    return sorted(found)
+    """Energy indices holding an M, through the shared cli helper."""
+    return cli.available_indices(h5_file, require="M")
 
 
 def load_csc_matrix(h5_file, group_name):
@@ -329,9 +353,91 @@ def singular_extremes(M, inv, tol, ncv):
     return sigma_max, 1.0 / sigma_max_inv
 
 
-def condition_estimates(M, onenorm_t, svd_tol, svd_ncv):
+def abs_inverse_apply_norm(lu, g, n, dtype, onenorm_t):
     """
-    The three condition numbers of one matrix, as a dict of the datasets in
+    || |M^-1| g ||_inf for a nonnegative vector g, from one factorization.
+
+    |M^-1| g is the vector of row sums of |M^-1 diag(g)|, so its largest entry
+    is || M^-1 diag(g) ||_inf = || diag(g) M^-H ||_1. The operator built here
+    is X = diag(g) M^-H, whose adjoint is M^-1 diag(g); as in
+    inverse_operators(), rmatvec must be the adjoint and not the transpose, or
+    onenormest silently estimates a different operator for complex M.
+
+    Forming |M^-1| explicitly is never necessary, which is the point: this is
+    the estimate LAPACK's xyyRFS makes for its componentwise error bound.
+    """
+    g = np.asarray(g, dtype=np.float64)
+
+    # onenormest hands the operator (n, 1) columns as well as (n,) vectors, and
+    # a column times the (n,) scale would broadcast to (n, n); each input is
+    # therefore flattened before it is scaled.
+    def matvec(v):
+        y = lu.solve(np.asarray(v, dtype=dtype).reshape(-1), trans="H")
+        return g * y
+
+    def rmatvec(v):
+        return lu.solve(g * np.asarray(v, dtype=dtype).reshape(-1), trans="N")
+
+    X = LinearOperator((n, n), matvec=matvec, rmatvec=rmatvec, dtype=dtype)
+    return float(onenormest(X, t=onenorm_t))
+
+
+def skeel_estimates(M, lu, onenorm_t, rhs=None):
+    """
+    The two Skeel condition numbers of M, from an existing factorization.
+
+        cond_skeel    = || |M^-1| |M| ||_inf
+        cond_skeel_x  = || |M^-1| |M| |x| ||_inf / ||x||_inf
+
+    |M^-1| |M| is a nonnegative matrix, so its infinity norm is the largest
+    entry of its action on the vector of ones; the first is therefore the same
+    estimate as the second with g = |M| e in place of g = |M| |x|.
+
+    cond_skeel_x is the worst case over the columns of rhs, and is NaN when no
+    right-hand side is available. Both are lower bounds, from the same
+    Hager-Higham estimator that produces the inverse norms.
+    """
+    n = M.shape[0]
+    absM = abs(M)
+    g_matrix = np.asarray(absM @ np.ones(n), dtype=np.float64)
+    cond_skeel = abs_inverse_apply_norm(lu, g_matrix, n, np.complex128,
+                                        onenorm_t)
+
+    cond_skeel_x = np.nan
+    if rhs is not None and np.size(rhs):
+        B = rhs if np.ndim(rhs) == 2 else np.asarray(rhs)[:, None]
+        worst = 0.0
+        for col in range(B.shape[1]):
+            x = lu.solve(np.asarray(B[:, col], dtype=np.complex128))
+            norm_x = float(np.max(np.abs(x)))
+            if norm_x == 0:
+                continue
+            g = np.asarray(absM @ np.abs(x), dtype=np.float64)
+            worst = max(worst, abs_inverse_apply_norm(
+                lu, g, n, np.complex128, onenorm_t) / norm_x)
+        cond_skeel_x = worst if worst > 0 else np.nan
+
+    return dict(cond_skeel=cond_skeel, cond_skeel_x=cond_skeel_x)
+
+
+def load_rhs(h5_file, group_name):
+    """
+    E_<idx>/rhs as an (n, nrhs) array, or None when it is absent or empty.
+
+    Only cond_skeel_x needs it, and an index whose right-hand side has no
+    columns is skipped by the benchmark drivers too, so its absence is not an
+    error here either.
+    """
+    dataset = h5_file.get(f"{group_name}/rhs")
+    if dataset is None or dataset.shape[-1] == 0:
+        return None
+    rhs = dataset[:]
+    return rhs if rhs.ndim == 2 else rhs[:, None]
+
+
+def condition_estimates(M, onenorm_t, svd_tol, svd_ncv, rhs=None):
+    """
+    The five condition numbers of one matrix, as a dict of the datasets in
     SCALAR_DATASETS other than `seconds`.
     """
     M = M.tocsc().astype(np.complex128)
@@ -358,6 +464,7 @@ def condition_estimates(M, onenorm_t, svd_tol, svd_ncv):
         cond_1=norm1 * norm1_inv,
         cond_inf=norminf * norminf_inv,
         cond_2=sigma_max / sigma_min,
+        **skeel_estimates(M, lu, onenorm_t, rhs),
     )
 
 
@@ -389,6 +496,14 @@ def open_group(h5_file, indices, resume, overwrite, attrs):
                 "The existing group was written for a different index "
                 "selection. Use --overwrite or a different --outdir."
             )
+        # A group written before a column existed is extended rather than
+        # rejected: the new column is created full of NaN and filled by
+        # --only-skeel or by a rerun of the affected rows.
+        for name in SCALAR_DATASETS:
+            if name not in group:
+                group.create_dataset(name, shape=(len(indices),),
+                                     dtype=np.float64, fillvalue=np.nan)
+                print(f"added missing column '{name}' to the existing group")
         return group
 
     group = h5_file.create_group(GROUP)
@@ -459,7 +574,7 @@ def process_material(parser, args, h5_path, material_name):
         group = open_group(
             out_file,
             indices=selected,
-            resume=args.resume,
+            resume=args.resume or args.only_skeel,
             overwrite=args.overwrite,
             attrs=group_attrs,
         )
@@ -469,6 +584,30 @@ def process_material(parser, args, h5_path, material_name):
 
         for row, index in enumerate(selected):
             group_name = f"E_{index}"
+
+            if args.only_skeel:
+                if not valid_dataset[row]:
+                    print(f"[skip] {group_name}: not valid, nothing to fill")
+                    continue
+                try:
+                    M = load_csc_matrix(h5_file, group_name).tocsc().astype(
+                        np.complex128)
+                    skeel = skeel_estimates(
+                        M, splu(M), args.onenorm_t,
+                        rhs=load_rhs(h5_file, group_name))
+                    for name in SKEEL_DATASETS:
+                        group[name][row] = skeel[name]
+                    out_file.flush()
+                    print(f"[{row + 1:>4}/{num_indices}] {group_name}: "
+                          f"cond_skeel={skeel['cond_skeel']:.3e}, "
+                          f"cond_skeel_x={skeel['cond_skeel_x']:.3e}",
+                          flush=True)
+                except Exception as error:
+                    warnings.warn(f"{group_name}: skeel failed: {error}")
+                finally:
+                    del M
+                    gc.collect()
+                continue
 
             if args.resume and valid_dataset[row]:
                 print(f"[skip] {group_name}: already valid")
@@ -491,6 +630,7 @@ def process_material(parser, args, h5_path, material_name):
                     onenorm_t=args.onenorm_t,
                     svd_tol=args.svd_tol,
                     svd_ncv=args.svd_ncv,
+                    rhs=load_rhs(h5_file, group_name),
                 )
                 results["seconds"] = time.time() - row_start
 
@@ -505,6 +645,7 @@ def process_material(parser, args, h5_path, material_name):
                     f"kappa_1={results['cond_1']:.3e}, "
                     f"kappa_inf={results['cond_inf']:.3e}, "
                     f"kappa_2={results['cond_2']:.3e}, "
+                    f"cond={results['cond_skeel']:.3e}, "
                     f"{results['seconds']:.1f}s",
                     flush=True,
                 )

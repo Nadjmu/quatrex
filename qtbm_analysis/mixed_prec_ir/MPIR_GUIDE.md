@@ -84,7 +84,7 @@ python mpir.py <material.h5> --idx <indices> --solver <name> \
 
 ### Selecting indices
 
-`--idx 5 84 254` (explicit list), `--start 0 --end 400` (inclusive range,
+`--idx 5 84 254` (explicit list), `--start 0 --end 1200` (inclusive range,
 optionally `--stride N`), or `--energy 6.1 6.2` (nearest recorded energy —
 mutually exclusive with `--idx`/`--start`).
 
@@ -112,7 +112,7 @@ python mpir.py carbon-nanotube.h5 --idx 84 --solver block-thomas-inv \
     --factor-dtype complex32 --inner gmres --inv-dtype float16
 
 # A sweep — one experiment, many indices
-python mpir.py carbon-nanotube.h5 --start 0 --end 400 --solver block-thomas \
+python mpir.py carbon-nanotube.h5 --stride 10 --solver block-thomas \
     --factor-dtype complex32 --inner gmres
 
 # Loosen the stopping criteria, pick where the file goes

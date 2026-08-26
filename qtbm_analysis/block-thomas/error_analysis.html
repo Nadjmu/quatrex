@@ -1,0 +1,780 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Block Thomas Error Analysis</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,500;0,600;1,400&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; }
+</style>
+</head>
+<body>
+<style>
+  :root {
+    --ground: #f7f7fa;
+    --surface: #ffffff;
+    --surface-sunk: #f0f1f6;
+    --ink: #15171f;
+    --muted: #5c6377;
+    --rule: #e0e3ed;
+    --accent: #3242c8;
+    --accent-soft: #eaecfb;
+    --caution: #8a5a00;
+    --caution-soft: #faf1de;
+    --verified: #0b6f62;
+    --verified-soft: #e4f3ef;
+    --shadow: 0 1px 2px rgba(21, 23, 31, .05), 0 8px 24px -16px rgba(21, 23, 31, .3);
+
+    --display: "Spectral", Georgia, "Times New Roman", serif;
+    --body: "Source Sans 3", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+
+    --measure: 68ch;
+    --wide: 74rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0f1118;
+      --surface: #171a23;
+      --surface-sunk: #12141c;
+      --ink: #e9ebf3;
+      --muted: #99a0b5;
+      --rule: #272b39;
+      --accent: #93a5ff;
+      --accent-soft: #1b2039;
+      --caution: #dca33c;
+      --caution-soft: #241f13;
+      --verified: #4fc7b0;
+      --verified-soft: #10241f;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px -18px rgba(0, 0, 0, .9);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0f1118;
+    --surface: #171a23;
+    --surface-sunk: #12141c;
+    --ink: #e9ebf3;
+    --muted: #99a0b5;
+    --rule: #272b39;
+    --accent: #93a5ff;
+    --accent-soft: #1b2039;
+    --caution: #dca33c;
+    --caution-soft: #241f13;
+    --verified: #4fc7b0;
+    --verified-soft: #10241f;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px -18px rgba(0, 0, 0, .9);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.65;
+    margin: 0;
+    padding: 0 1.5rem 6rem;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page { max-width: var(--wide); margin: 0 auto; }
+  .col { max-width: var(--measure); }
+
+  /* ---------- masthead ---------- */
+  header.masthead {
+    border-bottom: 1px solid var(--rule);
+    padding: 4.5rem 0 2.5rem;
+    margin-bottom: 3.5rem;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 1.25rem;
+  }
+  h1 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(2.3rem, 5.2vw, 3.4rem);
+    line-height: 1.08;
+    letter-spacing: -.015em;
+    text-wrap: balance;
+    margin: 0 0 1rem;
+    max-width: 22ch;
+  }
+  .standfirst {
+    font-size: 1.15rem;
+    color: var(--muted);
+    max-width: 58ch;
+    margin: 0;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.75rem;
+    margin-top: 2.25rem;
+    font-family: var(--mono);
+    font-size: .78rem;
+    color: var(--muted);
+  }
+  .meta b { color: var(--ink); font-weight: 500; }
+
+  /* ---------- sections ---------- */
+  section { margin-bottom: 4rem; }
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+    border-top: 1px solid var(--rule);
+    padding-top: 1.25rem;
+    margin-bottom: 1.75rem;
+  }
+  .section-head .tag {
+    font-family: var(--mono);
+    font-size: .7rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    white-space: nowrap;
+    padding-top: .35rem;
+  }
+  h2 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.75rem;
+    line-height: 1.2;
+    letter-spacing: -.01em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  h3 {
+    font-family: var(--body);
+    font-weight: 600;
+    font-size: 1.05rem;
+    letter-spacing: .005em;
+    margin: 2.25rem 0 .5rem;
+  }
+  p { margin: 0 0 1.1rem; }
+  a { color: var(--accent); text-underline-offset: 3px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+  strong { font-weight: 600; }
+  code {
+    font-family: var(--mono);
+    font-size: .88em;
+    background: var(--surface-sunk);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: .08em .32em;
+  }
+
+  /* ---------- the prompt ---------- */
+  blockquote.prompt {
+    margin: 0;
+    padding: 1.5rem 1.75rem;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    border-radius: 3px;
+    box-shadow: var(--shadow);
+    font-family: var(--display);
+    font-style: italic;
+    font-size: 1.02rem;
+    color: var(--ink);
+  }
+  blockquote.prompt p:last-child { margin-bottom: 0; }
+
+  /* ---------- formula ---------- */
+  .formula {
+    font-family: var(--mono);
+    font-size: .92rem;
+    line-height: 1.9;
+    background: var(--surface-sunk);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 1.1rem 1.35rem;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--ink);
+  }
+  .formula .note { color: var(--muted); }
+
+  /* ---------- tables ---------- */
+  .table-wrap { overflow-x: auto; margin: 1.5rem 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 34rem;
+    font-size: .93rem;
+    font-variant-numeric: tabular-nums;
+  }
+  caption {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding-bottom: .7rem;
+  }
+  th, td {
+    text-align: left;
+    padding: .62rem .9rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  thead th {
+    font-weight: 600;
+    font-size: .78rem;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--ink);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.mono, th.mono { font-family: var(--mono); font-size: .85rem; }
+
+  /* ---------- gap cards ---------- */
+  .gaps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+    gap: 1rem;
+    margin-top: 1.75rem;
+  }
+  .gap {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 1.2rem 1.3rem;
+    box-shadow: var(--shadow);
+  }
+  .gap h4 {
+    font-family: var(--body);
+    font-size: .97rem;
+    font-weight: 600;
+    margin: 0 0 .45rem;
+  }
+  .gap p { font-size: .93rem; color: var(--muted); margin: 0; }
+  .gap p + p { margin-top: .6rem; }
+  .gap .verdict {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: .68rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    padding: .16rem .5rem;
+    border-radius: 2px;
+    margin-bottom: .7rem;
+  }
+  .verdict.fix { background: var(--accent-soft); color: var(--accent); }
+  .verdict.gap { background: var(--caution-soft); color: var(--caution); }
+
+  /* ---------- callout ---------- */
+  .callout {
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--caution);
+    background: var(--caution-soft);
+    border-radius: 3px;
+    padding: 1.1rem 1.35rem;
+    margin: 1.75rem 0;
+    font-size: .95rem;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout .label {
+    font-family: var(--mono);
+    font-size: .7rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--caution);
+    display: block;
+    margin-bottom: .4rem;
+  }
+
+  /* ---------- checks ---------- */
+  .checks { display: grid; gap: .75rem; margin: 1.5rem 0; }
+  .check {
+    display: grid;
+    grid-template-columns: minmax(11rem, 18rem) 1fr;
+    gap: .35rem 1.5rem;
+    align-items: baseline;
+    background: var(--verified-soft);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: .85rem 1.15rem;
+  }
+  .check .what { font-weight: 600; font-size: .93rem; }
+  .check .result {
+    font-family: var(--mono);
+    font-size: .85rem;
+    color: var(--verified);
+  }
+  @media (max-width: 34rem) {
+    .check { grid-template-columns: 1fr; }
+  }
+
+  /* ---------- steps ---------- */
+  ol.steps { counter-reset: step; list-style: none; margin: 1.5rem 0 0; padding: 0; }
+  ol.steps > li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 2.2rem 1fr;
+    gap: 0 1rem;
+    padding-bottom: 1.6rem;
+  }
+  ol.steps > li::before {
+    content: counter(step);
+    font-family: var(--mono);
+    font-size: .8rem;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-radius: 50%;
+    width: 1.8rem;
+    height: 1.8rem;
+    display: grid;
+    place-items: center;
+    margin-top: .1rem;
+  }
+  ol.steps .what { font-weight: 600; margin: 0 0 .4rem; }
+  ol.steps .why { color: var(--muted); font-size: .92rem; margin: .45rem 0 0; }
+  pre.cmd {
+    font-family: var(--mono);
+    font-size: .82rem;
+    line-height: 1.7;
+    background: var(--surface-sunk);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: .8rem 1rem;
+    margin: 0;
+    overflow-x: auto;
+  }
+
+  ul.plain { padding-left: 1.15rem; margin: 0 0 1.1rem; }
+  ul.plain li { margin-bottom: .5rem; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    margin-top: 4rem;
+    padding-top: 1.5rem;
+    font-family: var(--mono);
+    font-size: .76rem;
+    color: var(--muted);
+  }
+</style>
+
+<div class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">Thesis chapter · error analysis</p>
+    <h1>Block Thomas Error Analysis</h1>
+    <p class="standfirst">
+      What the two growth factors actually measure, where the Schur complements
+      enter the bound, and what had to be built before the forward error could be
+      compared against <span style="font-family:var(--mono);font-size:.95em">&kappa; &middot; backward error</span>.
+    </p>
+    <div class="meta">
+      <span><b>Solvers</b> Block Thomas (LU) &middot; Block Thomas (inv) &middot; SuperLU &middot; UMFPACK &middot; MUMPS &middot; cuDSS</span>
+      <span><b>Materials</b> carbon-nanotube, carbon-chain</span>
+      <span><b>Reference</b> Higham, ASNA, ch. 9 &amp; 13</span>
+    </div>
+  </header>
+
+  <section class="col">
+    <div class="section-head">
+      <span class="tag">The ask</span>
+      <h2>The question, as it was put</h2>
+    </div>
+    <blockquote class="prompt">
+      <p>
+        &ldquo;I want to compare my custom implementation of Block Thomas in the LU based
+        and Inverse based to the SuperLU MUMPS and cuDSS solvers. I think I already have
+        a script which computes the growth factor. Explain me there the differences
+        between the two growth factors. I think the one is normwise and the other is
+        componentwise (tighter) but you gave it a weird name.&rdquo;
+      </p>
+      <p>
+        &ldquo;From what I understand LU backward error analysis is mainly bounded by the
+        growth factor and a dimension dependent constant &hellip; The block thomas one
+        shouldn&rsquo;t be as stable as the others due to no pivoting. I then want to compare
+        the forward error and see how well it is bounded by condition &times; backward_error.
+        For the block thomas there is also I think some more growth factors due to the
+        schur complements but I don&rsquo;t understand that so well yet.&rdquo;
+      </p>
+    </blockquote>
+    <p style="margin-top:1.5rem">
+      The premise about the bound is right. Three things in the framing were not, and one
+      quantity the chapter needs did not exist yet.
+    </p>
+  </section>
+
+  <section class="col">
+    <div class="section-head">
+      <span class="tag">Correction 1</span>
+      <h2>Both growth factors are normwise</h2>
+    </div>
+    <p>
+      <code>loose</code> and <code>tight</code> are not a normwise/componentwise pair.
+      That distinction belongs to the two backward errors the benchmark already measures
+      per solve &mdash; <code>eta</code> (Rigal&ndash;Gaches, normwise) and <code>omega</code>
+      (Oettli&ndash;Prager, componentwise). The growth columns differ only in how much of
+      the entrywise theorem each one throws away:
+    </p>
+    <div class="formula">|A &minus; LU|  &le;  &gamma;<sub>n</sub> |L| |U|            <span class="note">entrywise, Higham Thm 9.3</span>
+&rArr;  &#8214;A &minus; LU&#8214;  &le;  &gamma;<sub>n</sub> &#8214; |L||U| &#8214;      <span class="note">any monotone norm  &rarr;  tight</span>
+&rArr;  &#8214;A &minus; LU&#8214;  &le;  &gamma;<sub>n</sub> &#8214;L&#8214; &#8214;U&#8214;        <span class="note">submultiplicativity  &rarr;  loose</span></div>
+    <p>
+      So <code>tight &le; loose</code> always, and it is <code>tight</code> that bounds the
+      backward error of the factorization. <code>loose</code> is kept because it is the form
+      usually quoted, and the gap between the two is itself worth showing.
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <caption>The metric hierarchy, per (index, solver, precision, norm)</caption>
+        <thead>
+          <tr><th>Column</th><th class="mono">Definition</th><th>Role</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">rho</td>
+            <td class="mono">max|U<sub>ij</sub>| / max|A<sub>ij</sub>|</td>
+            <td>Norm-free scalar. The cheap surrogate for Wilkinson&rsquo;s max over all intermediate A<sup>(k)</sup>.</td>
+          </tr>
+          <tr>
+            <td class="mono">tight</td>
+            <td class="mono">&#8214; |L||U| &#8214; / &#8214;A&#8214;</td>
+            <td><strong>The quantity in the bound.</strong> Backward error &lesssim; &gamma;<sub>n</sub> &times; tight.</td>
+          </tr>
+          <tr>
+            <td class="mono">loose</td>
+            <td class="mono">&#8214;L&#8214; &#8214;U&#8214; / &#8214;A&#8214;</td>
+            <td>Upper bound on <code>tight</code>. Never smaller; sometimes by orders of magnitude.</td>
+          </tr>
+          <tr>
+            <td class="mono">resid_rel</td>
+            <td class="mono">&#8214;A &minus; LU&#8214; / &#8214;A&#8214;</td>
+            <td>Not a stability metric. A guard that the assumed factor convention still holds.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <span class="label">Do not conflate</span>
+      <p>
+        Growth is a property of the <em>pivoting</em> and is independent of &kappa;(A). An
+        ill-conditioned A may factor with negligible growth; a well-conditioned A may grow badly.
+        Conditioning bounds the forward error; growth bounds the backward error.
+      </p>
+    </div>
+  </section>
+
+  <section class="col">
+    <div class="section-head">
+      <span class="tag">Correction 2</span>
+      <h2>Where the Schur complements enter</h2>
+    </div>
+    <p>
+      Block Thomas is block LU, and the three columns above only see the assembled global
+      factors, not the recursion that produced them. The recursion is
+    </p>
+    <div class="formula">S<sub>1</sub> = A<sub>11</sub>,    S<sub>k</sub> = A<sub>kk</sub> &minus; A<sub>k,k&minus;1</sub> S<sub>k&minus;1</sub><sup>&minus;1</sup> A<sub>k&minus;1,k</sub>
+
+<span class="note">the S<sub>k</sub> are exactly the diagonal blocks of U_global (stored as Dmod)</span></div>
+    <p>Two facts govern it, and they are independent of each other and of &kappa;(A):</p>
+    <ul class="plain">
+      <li>
+        <strong>Growth.</strong> <code>max<sub>k</sub> &#8214;S<sub>k</sub>&#8214; / max<sub>k</sub> &#8214;A<sub>kk</sub>&#8214;</code> is the block analogue of
+        <code>rho</code>. There is no pivoting across blocks to hold it down.
+      </li>
+      <li>
+        <strong>Conditioning of the pivot blocks.</strong> Block LU&rsquo;s backward error carries
+        <code>&kappa;(S<sub>k</sub>)</code>, not just <code>&#8214;S<sub>k</sub>&#8214;</code>. A near-singular leading principal
+        block submatrix makes some S<sub>k</sub> near-singular however well conditioned A is and
+        however little anything grew. Varah&rsquo;s block diagonal dominance is the classical
+        sufficient condition for this not to happen.
+      </li>
+    </ul>
+
+    <h3>Why the two implementations must separate</h3>
+    <p>
+      Implementation 1 solves with S<sub>k</sub> &mdash; backward stable per block. Implementation 2
+      forms S<sub>k</sub><sup>&minus;1</sup> explicitly, and explicit inversion is <strong>not</strong>
+      backward stable: the computed inverse satisfies only
+    </p>
+    <div class="formula">&#8214; S G &minus; I &#8214;  &lesssim;  c &middot; u &middot; &kappa;(S)</div>
+    <p>
+      So implementation 2 pays a factor <code>max<sub>k</sub> &kappa;(S<sub>k</sub>)</code> that implementation 1 does
+      not. That is the quantitative statement the chapter was missing, and it is now measured
+      directly as <code>inv_resid_max</code>. A synthetic block-tridiagonal check reproduces the
+      theory to within a factor of two:
+    </p>
+    <div class="table-wrap">
+      <table>
+        <caption>&kappa;<sub>2</sub>(S<sub>k</sub>) = 3.1e1, six blocks</caption>
+        <thead><tr><th>Precision</th><th class="mono">u</th><th class="mono">&kappa; &middot; u (predicted)</th><th class="mono">inv_resid_max (measured)</th></tr></thead>
+        <tbody>
+          <tr><td>complex128</td><td class="mono">1.1e-16</td><td class="mono">3.4e-15</td><td class="mono">5.1e-15</td></tr>
+          <tr><td>complex64</td><td class="mono">6.0e-08</td><td class="mono">1.9e-06</td><td class="mono">2.0e-06</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="tag">The gaps</span>
+      <h2>What blocked the chapter as framed</h2>
+    </div>
+    <div class="col">
+      <p>
+        Four obstacles, three of them fixed by new code and one that reshapes how the
+        comparison has to be presented.
+      </p>
+    </div>
+    <div class="gaps">
+      <div class="gap">
+        <span class="verdict gap">Structural</span>
+        <h4>MUMPS and cuDSS expose no factors</h4>
+        <p>
+          python-mumps&rsquo; Context API has no <code>.L</code>/<code>.U</code>, and cuDSS is the same.
+          Neither can appear on a growth-factor plot.
+        </p>
+        <p>
+          The chapter is therefore two comparisons: growth factors for the four solvers that
+          expose factors (UMFPACK replacing MUMPS as the globally pivoting reference), and
+          measured &eta;/&omega; plus forward error for all six.
+        </p>
+      </div>
+      <div class="gap">
+        <span class="verdict fix">Fixed</span>
+        <h4>No valid forward-error reference</h4>
+        <p>
+          The stored <code>vs_base</code> is measured against the SuperLU complex128 solution,
+          which carries an error of the same order as the solutions being judged. At complex128
+          it compares two errors of equal size.
+        </p>
+        <p>
+          Replaced by iterative refinement with an extended-precision residual.
+        </p>
+      </div>
+      <div class="gap">
+        <span class="verdict fix">Fixed</span>
+        <h4>No Skeel condition number</h4>
+        <p>
+          &kappa;<sub>&infin;</sub> pairs with the normwise &eta;. The <em>tight</em> pairing is
+          <code>cond(A,x) &middot; &omega;</code>, and <code>cond(A,x)</code> is often orders of
+          magnitude below &kappa;<sub>&infin;</sub>.
+        </p>
+        <p>
+          Added to the condition sweep, estimated from the LU already computed there.
+        </p>
+      </div>
+      <div class="gap">
+        <span class="verdict fix">Fixed</span>
+        <h4>The recursion was invisible</h4>
+        <p>
+          Nothing measured the Schur complements, so the two Block Thomas variants had no
+          predicted separation to be checked against.
+        </p>
+        <p>
+          Four columns added, computed from factors already on disk.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="col">
+    <div class="section-head">
+      <span class="tag">The bounds</span>
+      <h2>The two pairings the chapter tests</h2>
+    </div>
+    <div class="formula">&#8214;x&#770; &minus; x&#8214;<sub>&infin;</sub> / &#8214;x&#8214;<sub>&infin;</sub>  &lesssim;  &kappa;<sub>&infin;</sub>(A) &middot; &eta;<sub>&infin;</sub>     <span class="note">normwise</span>
+&#8214;x&#770; &minus; x&#8214;<sub>&infin;</sub> / &#8214;x&#8214;<sub>&infin;</sub>  &lesssim;  cond(A,x) &middot; &omega;       <span class="note">componentwise, sharper</span>
+
+<span class="note">cond(A,x) = &#8214; |A<sup>&minus;1</sup>||A||x| &#8214;<sub>&infin;</sub> / &#8214;x&#8214;<sub>&infin;</sub></span></div>
+    <p>
+      Everything on the right already existed. The left-hand side is what the new
+      <code>forward_error.py</code> supplies: a reference solution obtained by refining the
+      complex128 solution with the residual accumulated in <code>np.clongdouble</code>
+      (80-bit, eps = 1.1e-19) and the correction solved with the same double factorization.
+      SciPy has no sparse type in that precision, so <code>A x&#770;</code> is formed from the
+      CSR arrays directly and summed per row with <code>np.add.reduceat</code>.
+    </p>
+    <div class="callout">
+      <span class="label">Known limit, recorded not hidden</span>
+      <p>
+        Refinement in residual precision <code>u_r</code> converges to an error of order
+        <code>&kappa; &middot; u_r</code>, so the reference beats a double solution by about
+        2e3 &mdash; not by the <code>u&sup2;</code> a true double-double residual would give.
+        <code>ref_floor = &kappa;<sub>&infin;</sub> &middot; eps_ext</code> is written per index, and any
+        forward error within an order of magnitude of it measures the reference, not the solver.
+        For complex64 and complex32 the separation is ample; at complex128 it closes once
+        &kappa;<sub>&infin;</sub> approaches 1/eps_ext.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <span class="tag">Delivered</span>
+      <h2>What was built</h2>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <caption>New and changed code</caption>
+        <thead>
+          <tr><th>File</th><th>Change</th><th>Output</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">block-thomas/growth_factor.py</td>
+            <td>Schur columns <code>schur_growth</code>, <code>schur_norm_max</code>,
+                <code>schur_cond_max</code>, <code>inv_resid_max</code>, from one SVD per
+                diagonal block. <code>--no-schur</code> skips them.</td>
+            <td class="mono">:/growth_factor</td>
+          </tr>
+          <tr>
+            <td class="mono">block-thomas/forward_error.py</td>
+            <td><em>New.</em> Extended-precision reference, true forward errors, both bounds
+                and their ratios. Covers all six solvers, since it needs <code>x</code> and
+                never the factors.</td>
+            <td class="mono">:/forward_error</td>
+          </tr>
+          <tr>
+            <td class="mono">condition-est/condition_est.py</td>
+            <td><code>cond_skeel</code> and <code>cond_skeel_x</code> via the Hager estimator
+                on <code>A<sup>&minus;1</sup>diag(g)</code>. <code>--only-skeel</code> fills them into an
+                existing sweep without recomputing singular values.</td>
+            <td class="mono">:/condition</td>
+          </tr>
+          <tr>
+            <td class="mono">plotting/&hellip;/plot_growth_factor.py</td>
+            <td>Second figure for the Schur recursion.</td>
+            <td class="mono">_schur_growth.png</td>
+          </tr>
+          <tr>
+            <td class="mono">plotting/&hellip;/plot_forward_error.py</td>
+            <td><em>New.</em> Error vs energy with the reference floor, ratio-to-bound with
+                unity marked, and error-against-bound with the line y = x.</td>
+            <td class="mono">_forward_error.png</td>
+          </tr>
+          <tr>
+            <td class="mono">solvers/cli.py</td>
+            <td><code>available_indices()</code> &mdash; index sets come from the file
+                (<code>metadata/indices</code>, else the <code>E_&lt;idx&gt;</code> groups), never from a
+                hard-coded range. Three scripts that each had their own copy now call it.</td>
+            <td>&mdash;</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="col">
+      <h3>Verified locally, on a synthetic block-tridiagonal system</h3>
+      <div class="checks">
+        <div class="check">
+          <span class="what">Skeel estimates vs dense truth</span>
+          <span class="result">8.060378e+02 / 2.919592e+02 &mdash; exact to all printed digits</span>
+        </div>
+        <div class="check">
+          <span class="what">Explicit-inverse residual vs &kappa;(S)&middot;u</span>
+          <span class="result">5.1e-15 (c128), 2.0e-06 (c64) &mdash; theory to within 2&times;</span>
+        </div>
+        <div class="check">
+          <span class="what">Reference accuracy, &kappa;<sub>&infin;</sub> = 5e3</span>
+          <span class="result">double 6.3e-14 &rarr; refined 1.1e-18</span>
+        </div>
+        <div class="check">
+          <span class="what">Both bounds on every stored solution</span>
+          <span class="result">ratios 0.02 &ndash; 0.05, i.e. they hold and are ~20&times; pessimistic</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="col">
+    <div class="section-head">
+      <span class="tag">Run order</span>
+      <h2>How to produce the chapter</h2>
+    </div>
+    <p>
+      Per material. Steps 1 and 2 are independent of each other; 3 needs both. No step takes
+      a block size &mdash; the partition is detected from the sparsity pattern &mdash; and none
+      takes an index range: with no selection each sweeps whatever the file holds, so
+      <code>--stride</code> is how a first pass is shortened.
+    </p>
+    <ol class="steps">
+      <li>
+        <div>
+          <p class="what">Skeel columns onto the existing condition sweep</p>
+          <pre class="cmd">python condition-est/condition_est.py --material carbon-nanotube --only-skeel</pre>
+          <p class="why">Reuses the valid rows; no singular values, so it is far cheaper than a full rerun.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <p class="what">Growth factors, including the Schur recursion</p>
+          <pre class="cmd">python block-thomas/growth_factor.py .../carbon-nanotube.h5 --stride 10 \
+    --solvers block-thomas block-thomas-inv superlu umfpack</pre>
+          <p class="why">Cost scales with block size: one SVD per diagonal block per (solver, precision).</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <p class="what">Forward errors, all six solvers</p>
+          <pre class="cmd">python block-thomas/forward_error.py .../carbon-nanotube.h5 --stride 10</pre>
+          <p class="why">One factorization and a few refinement steps per index. Try <code>--idx 25 --no-save</code> first to time it.</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <p class="what">Figures</p>
+          <pre class="cmd">python plotting/block-thomas/plot_growth_factor.py .../carbon-nanotube.h5
+python plotting/block-thomas/plot_forward_error.py .../carbon-nanotube.h5</pre>
+          <p class="why">Written beside the data they were drawn from, in <code>error-analysis-block-thomas/</code>.</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <section class="col">
+    <div class="section-head">
+      <span class="tag">Open</span>
+      <h2>Two calls left to make</h2>
+    </div>
+    <ul class="plain">
+      <li>
+        Whether UMFPACK earns its place as the second globally pivoting reference. It is
+        excluded from the si-bulk benchmark for speed, so including it means a partial column
+        in that comparison.
+      </li>
+      <li>
+        Whether the near-band-edge indices, where <code>&kappa;<sub>&infin;</sub> &middot; eps_ext</code>
+        approaches the double solutions&rsquo; own error, should be dropped from the complex128
+        panel of the forward-error figure or kept with the floor line as the caveat.
+      </li>
+    </ul>
+  </section>
+
+  <footer>
+    Pipeline: run_benchmarks &rarr; condition_est &rarr; growth_factor + forward_error &rarr; plotting.
+    All analysis is read-only with respect to the material files.
+  </footer>
+
+</div>
+
+</body>
+</html>

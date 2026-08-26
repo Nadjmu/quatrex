@@ -1,16 +1,26 @@
 # `block-thomas/` — stability and spectral analysis
 
-Post-hoc analysis. These scripts **read** factors that
+Post-hoc analysis. These scripts **read** what
 [`../run_bench/`](../run_bench/) has already written into the material HDF5
-files; none of them solves a system or modifies that file. They write an
-analysis HDF5 file, never figures; the corresponding figures are produced by
+files, and none of them modifies that file. They write an analysis HDF5 file,
+never figures; the corresponding figures are produced by
 [`../plotting/`](../plotting/).
+
+`forward_error.py` is the one exception to "solves nothing": it needs a
+solution more accurate than any the benchmark produced, so it factorizes once
+per index and refines. It repeats none of the benchmark's own solves.
 
 | Script | Question addressed |
 |---|---|
 | `growth_factor.py` | is the factorization backward stable, and by how much did the factors grow? |
+| `forward_error.py` | how close is the computed solution to the true one, and do the classical bounds predict it? |
 | `determine_custom_block_size.py` | what non-uniform block partition does this matrix have? |
 | `arnoldi_shift_invert_cpu.py` / `_gpu.py` | extreme eigenvalues, singular values, and the condition number |
+
+`error_analysis.html` is the chapter write-up that accompanies the first two:
+what the growth columns measure, where the Schur complements enter the block LU
+bound, and which quantity pairs with which backward error. Open it in a browser;
+it is a standalone file and pulls in nothing but its fonts.
 
 ---
 
@@ -50,6 +60,59 @@ Per `(index, solver, dtype, norm)`, for both the 1-norm and the infinity norm:
 | tight ratio | `|| |L| |U| || / ||A_eff||` — the quantity that enters the bound |
 | `rho` | `max|U_ij| / max|A_eff_ij|` — the pivot growth factor, norm-free |
 | `resid_rel` | `||A_eff - L U|| / ||A_eff||` — reconstruction guard |
+
+All three growth columns are **normwise**. They are not a normwise/componentwise
+pair — that distinction belongs to the backward errors `eta` and `omega` that
+`solvers/bench_all.py` measures per solve. The three differ only in how much of
+the entrywise theorem each discards:
+
+```
+    |A - LU| <= gamma_n |L| |U|          entrywise, Higham ASNA Thm 9.3
+ => ||A - LU|| <= gamma_n || |L||U| ||   any monotone norm      -> tight ratio
+ => ||A - LU|| <= gamma_n ||L|| ||U||    submultiplicativity    -> loose ratio
+```
+
+so `tight <= loose` always, and it is `tight` that bounds the backward error of
+the factorization. `loose` is reported because it is the form usually quoted,
+and the gap between the two is itself worth showing. `rho` is the norm-free
+scalar; `max|U|` is the standard cheap surrogate for Wilkinson's maximum over
+all intermediate `A^(k)`.
+
+### 1.2.1 The Schur-complement columns
+
+Block Thomas is block LU, and the three columns above do not describe it fully:
+they see the assembled global factors, not the recursion that produced them.
+For `block-thomas` and `block-thomas-inv`, four further columns are reported,
+from one SVD per diagonal block (`--no-schur` skips them):
+
+| Metric | Definition |
+|---|---|
+| `schur_growth` | `max_k ||S_k||_2 / max_k ||A_kk||_2` — the block analogue of `rho` |
+| `schur_norm_max` | `max_k ||S_k||_2` |
+| `schur_cond_max` | `max_k kappa_2(S_k)` — conditioning of the pivot blocks |
+| `inv_resid_max` | `max_k ||S_k G_k - I||_2` — implementation 2 only |
+
+`S_1 = A_11`, `S_k = A_kk - A_{k,k-1} S_{k-1}^-1 A_{k-1,k}` is the recursion,
+and the `S_k` are exactly the diagonal blocks of `U_global` (`Dmod` on disk).
+Two facts make these the decisive columns of the chapter:
+
+- Block LU's backward error carries `kappa(S_k)`, not only `||S_k||`. A leading
+  principal block submatrix that is near-singular makes some `S_k`
+  near-singular however well conditioned `A` is and however little anything
+  grew, and there is no pivoting across blocks to prevent it. Varah's block
+  diagonal dominance is the classical sufficient condition for this not to
+  happen.
+- Implementation 2 forms `S_k^-1` explicitly, and explicit inversion is **not**
+  backward stable: the computed inverse satisfies only
+  `||S G - I|| <~ c u kappa(S)`. `inv_resid_max` measures exactly that, and is
+  the term implementation 1 does not pay. Read it against `schur_cond_max`: the
+  two should differ by roughly the unit roundoff of the precision, and a
+  synthetic check reproduces this to within a factor of two
+  (`kappa_2 = 3.1e1`, `inv_resid = 5.1e-15` at complex128 and `2.0e-06` at
+  complex64).
+
+All four are 2-norm quantities and are therefore repeated across both norm
+rows, exactly as `rho` is.
 
 `resid_rel` is **not** a stability metric. It verifies that the assumed factor
 convention holds for the build that produced the file. If it is not near the
@@ -100,13 +163,27 @@ list, and both are indexed identically.
 
 ```bash
 python growth_factor.py /scratch/yimili/matrices2/hdf5/graphene.h5 --idx 25
-python growth_factor.py .../graphene.h5 --start 1 --end 400
-python growth_factor.py .../graphene.h5 --start 1 --end 400 \
+python growth_factor.py .../graphene.h5 --stride 20
+python growth_factor.py .../graphene.h5 --start 900 --end 1100 \
     --solvers block-thomas superlu umfpack --dtypes complex128
+
+python growth_factor.py .../graphene.h5 --stride 20 --no-schur
 
 python ../plotting/block-thomas/plot_growth_factor.py \
     /scratch/yimili/error-analysis-block-thomas/graphene.h5
 ```
+
+With no index selection every index the file holds is analysed. A
+full-resolution sweep is a few thousand indices — the count follows from the
+material's `EnergyGrid`, and is stated nowhere — and each index costs one
+assembly of the global factors per (solver, precision) plus, unless
+`--no-schur` is given, one SVD per diagonal block. `--stride` is the usual way
+to keep a first pass short. The partition is never given on the command line:
+it is read back from the `block_sizes` dataset each Block Thomas group carries,
+so the analysis uses exactly the partition the solver used.
+
+The plotting script writes two figures: `<material>_growth_factor.png` and,
+when the Schur columns are present, `<material>_schur_growth.png`.
 
 Writes the `growth_factor` group of `<outdir>/<material>.h5`, with `--outdir`
 defaulting to `cli.BLOCK_THOMAS_DIR`. The file is opened in append mode and
@@ -123,7 +200,80 @@ results is correct.
 
 ---
 
-## 2. `determine_custom_block_size.py`
+## 2. `forward_error.py`
+
+### 2.1 The question
+
+Backward stability says the computed `xhat` solves a nearby problem exactly. It
+says nothing about `||xhat - x||`. The two classical bounds close that gap:
+
+```
+    ||xhat - x||_inf / ||x||_inf  <~  kappa_inf(A) * eta_inf     normwise
+    ||xhat - x||_inf / ||x||_inf  <~  cond(A, x)   * omega       componentwise
+```
+
+Every quantity on the right already exists: `eta_inf` and `omega` are measured
+per solve by `bench_all.backward_errors` and stored in the material file;
+`kappa_inf` and the Skeel `cond(A, x)` come from
+[`../condition-est/condition_est.py`](../condition-est/). What was missing is
+the left-hand side, and that is what this script computes.
+
+The stored `vs_base` column cannot serve as the forward error. Its reference is
+the SuperLU complex128 solution, which carries an error of the same order as
+the solutions being judged; at complex128 it compares two errors of equal size.
+
+### 2.2 The reference solution
+
+Iterative refinement of the SuperLU complex128 solution, with the residual
+accumulated in `np.clongdouble` (80-bit on x86-64, `eps = 1.1e-19`) and the
+correction solved with the same double-precision factorization. SciPy has no
+sparse type in that precision, so `A xhat` is formed from the CSR arrays
+directly, elementwise in extended precision and summed per row with
+`np.add.reduceat`. The iterate is carried in extended precision too: rounded
+back to double at every step it could never become more accurate than the
+solutions it is meant to judge.
+
+Refinement in a residual precision `u_r` converges to a relative error of order
+`kappa * u_r`, so the reference beats a double-precision solution by roughly
+`eps_double / eps_ext = 2e3`, not by the `u^2` a true double-double residual
+would give. That limit is recorded rather than hidden: `ref_floor =
+kappa_inf * eps_ext` is written per index, and a measured forward error within
+an order of magnitude of it is a measurement of the reference, not of the
+solver. On a synthetic system with `kappa_inf = 5e3` and an exactly represented
+right-hand side, the double solve reaches `6.3e-14` and the reference `1.1e-18`.
+
+### 2.3 Coverage
+
+Unlike `growth_factor.py`, this script needs only `x`, never the factors, so
+**MUMPS and cuDSS are included**: they store a solution like every other solver
+even though python-mumps and cuDSS expose no `L` and `U`. The growth-factor
+comparison covers the four solvers of `cli.FACTOR_SOLVERS`; the forward-error
+and backward-error comparison covers all of them.
+
+### 2.4 Usage
+
+```bash
+python forward_error.py /scratch/yimili/matrices2/hdf5/carbon-nanotube.h5
+python forward_error.py .../carbon-chain.h5 --stride 10
+python forward_error.py .../carbon-nanotube.h5 --idx 25 --no-save
+
+python ../plotting/block-thomas/plot_forward_error.py \
+    /scratch/yimili/error-analysis-block-thomas/carbon-nanotube.h5
+```
+
+Writes the `forward_error` group of `<outdir>/<material>.h5`, beside the
+`growth_factor` and `fp16_sweep` groups; the file is opened in append mode and
+only that group is rewritten. The condition file defaults to
+`cli.CONDITION_DIR/<material>.h5` and is optional: without it the forward
+errors are still recorded and only the bound columns are NaN.
+`cond_skeel_x` requires `condition_est.py` to have been run with the Skeel
+columns present — an older condition file gains them from
+`condition_est.py --only-skeel`, which reuses the valid rows and recomputes
+nothing else.
+
+---
+
+## 3. `determine_custom_block_size.py`
 
 Derives a non-uniform block partition from the sparsity pattern by growing a
 reach frontier row by row, declaring a boundary wherever the frontier stops
@@ -147,8 +297,15 @@ cost that determines whether a custom partition is worthwhile — and
 **`offband_nnz`**, exiting with status 1 if that is nonzero.
 `--compare-block-size`
 reports the same figures for a uniform partition and their storage ratio.
-`--emit-python` prints a line to paste into the `blocks` field of the material's
-entry in `cli.MATERIALS`.
+`--emit-python` prints a line in the form of the `blocks` field of
+`cli.MATERIALS`.
+
+**This script is diagnostic only.** No driver takes a partition from a
+material entry or from the command line any more: every one of them detects it
+from the sparsity pattern of the matrix at hand, through the same
+`block_sizes_from_matrix` this script wraps. What it is for is inspecting a new
+material's structure — how many blocks, how ragged, and what the dense
+block-storage cost would be — before a sweep is started.
 
 Two properties of the detector, both benign for QTBM matrices, must be kept in
 mind. It looks **forward only**, so its partition is guaranteed block
@@ -160,7 +317,7 @@ block 0.
 
 ---
 
-## 3. Arnoldi and shift-invert
+## 4. Arnoldi and shift-invert
 
 `arnoldi_shift_invert_cpu.py` (MUMPS, Block Thomas, SuperLU) and
 `arnoldi_shift_invert_gpu.py` (cuDSS). The interface is identical; the GPU
@@ -196,7 +353,6 @@ a mixed-precision refinement scheme can converge; see
 | `--max-iter` | — | ARPACK restarts or power iterations |
 | `--no-shift-invert` | off | attack the small end of `A` directly; slow, for comparison |
 | `--no-fallback` | off | do not retry a PROPACK failure with ARPACK |
-| `--block-size` | detected | uniform Block Thomas block size |
 
 ```bash
 python arnoldi_shift_invert_cpu.py MATRIX --quantity condition
