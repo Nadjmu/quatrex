@@ -21,10 +21,15 @@ mixed_prec_ir/README.md). For each bucket, the index, energy and both
 condition numbers of every row falling in it, in index order, unless
 --max-per-bin caps it.
 
+The listing is written to --out as well as printed, so a full (uncapped)
+sweep over 2000+ indices stays usable without scrolling back through the
+terminal.
+
 Usage
 -----
     python list_by_kappa.py /scratch/yimili/condition-est/carbon-nanotube.h5
     python list_by_kappa.py .../si-bulk.h5 --first-edge 1000 --max-per-bin 20
+    python list_by_kappa.py .../si-bulk.h5 --out si-bulk_by_kappa.txt
 """
 
 import sys
@@ -62,7 +67,20 @@ def main():
     ap.add_argument("--max-per-bin", type=int, default=None, metavar="N",
                     help="cap on rows listed per bucket (default: no cap, "
                          "show every row)")
+    ap.add_argument("--out", type=str, default=None, metavar="PATH",
+                    help="text file the listing is written to, besides being "
+                         "printed (default: <material>_by_kappa.txt beside "
+                         "the input file)")
     args = ap.parse_args()
+
+    out_path = Path(args.out) if args.out else \
+        Path(args.h5path).with_name(f"{Path(args.h5path).stem}_by_kappa.txt")
+    print(f"[output] writing listing to {out_path}")
+    out_fh = out_path.open("w")
+
+    def emit(line=""):
+        print(line)
+        print(line, file=out_fh)
 
     with h5py.File(args.h5path, "r") as f:
         if GROUP not in f:
@@ -83,39 +101,43 @@ def main():
             return None
         return grid_energy_min + resolution * idx
 
-    indices, cond_2, cond_inf = indices[valid], cond_2[valid], cond_inf[valid]
-    if indices.size == 0:
-        print("no valid rows")
-        return
-
-    if valence is not None and conduction is not None:
-        energies = np.array([energy_of(int(i)) for i in indices])
-        in_gap = (energies >= valence) & (energies <= conduction)
-        indices, cond_2, cond_inf = indices[~in_gap], cond_2[~in_gap], cond_inf[~in_gap]
+    try:
+        indices, cond_2, cond_inf = indices[valid], cond_2[valid], cond_inf[valid]
         if indices.size == 0:
-            print("no valid rows outside the band gap "
-                  f"[{valence:.4f}, {conduction:.4f}] eV")
+            emit("no valid rows")
             return
-    else:
-        print("[warning] no band edges recorded; showing all indices")
 
-    order = np.argsort(indices)
-    indices, cond_2, cond_inf = indices[order], cond_2[order], cond_inf[order]
+        if valence is not None and conduction is not None:
+            energies = np.array([energy_of(int(i)) for i in indices])
+            in_gap = (energies >= valence) & (energies <= conduction)
+            indices, cond_2, cond_inf = \
+                indices[~in_gap], cond_2[~in_gap], cond_inf[~in_gap]
+            if indices.size == 0:
+                emit("no valid rows outside the band gap "
+                     f"[{valence:.4f}, {conduction:.4f}] eV")
+                return
+        else:
+            emit("[warning] no band edges recorded; showing all indices")
 
-    edges = bin_edges(args.first_edge, cond_2.max())
-    for lo, hi in zip(edges[:-1], edges[1:]):
-        in_bin = np.flatnonzero((cond_2 >= lo) & (cond_2 < hi))
-        if in_bin.size == 0:
-            continue
-        shown = in_bin[:args.max_per_bin]
-        print(f"kappa_2 in [{lo:.2e}, {hi:.2e}): {in_bin.size} rows"
-              f"{f', showing {shown.size}' if shown.size < in_bin.size else ''}")
-        for i in shown:
-            idx = int(indices[i])
-            e = energy_of(idx)
-            e_str = f"{e:.4f} eV" if e is not None else "unknown"
-            print(f"  idx={idx:<6} E={e_str:<14} kappa_2={cond_2[i]:.3e}  "
-                  f"kappa_inf={cond_inf[i]:.3e}")
+        order = np.argsort(indices)
+        indices, cond_2, cond_inf = indices[order], cond_2[order], cond_inf[order]
+
+        edges = bin_edges(args.first_edge, cond_2.max())
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            in_bin = np.flatnonzero((cond_2 >= lo) & (cond_2 < hi))
+            if in_bin.size == 0:
+                continue
+            shown = in_bin[:args.max_per_bin]
+            emit(f"kappa_2 in [{lo:.2e}, {hi:.2e}): {in_bin.size} rows"
+                 f"{f', showing {shown.size}' if shown.size < in_bin.size else ''}")
+            for i in shown:
+                idx = int(indices[i])
+                e = energy_of(idx)
+                e_str = f"{e:.4f} eV" if e is not None else "unknown"
+                emit(f"  idx={idx:<6} E={e_str:<14} kappa_2={cond_2[i]:.3e}  "
+                     f"kappa_inf={cond_inf[i]:.3e}")
+    finally:
+        out_fh.close()
 
 
 if __name__ == "__main__":
