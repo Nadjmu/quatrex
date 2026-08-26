@@ -151,68 +151,78 @@ class ElectronSolver(SubsystemSolver):
         ]
         orbital_coordinates = np.repeat(atom_coordinates, orbitals_per_atom, axis=0)
 
+        left_band_edge_info = xp.empty(3, dtype=float)
         if comm.block.rank == 0:
             # Quantities related to the left contact.
-            (
-                self.left_fermi_level,
-                self.left_mid_gap_energy,
-                self.left_delta_fermi_level_conduction_band,
-            ) = self._configure_contact_band_edges(
+            left_band_edge_info = self._configure_contact_band_edges(
                 config=config,
                 hamiltonian=self.hamiltonian,
                 overlap=self.overlap,
                 coordinates=orbital_coordinates[: self.block_sizes[0]],
                 side="left",
             )
-            self.left_voltage = config.electron.left_contact.voltage
-            self.left_mid_gap_energy -= self.left_voltage
 
-            self.left_temperature = config.electron.left_contact.temperature
+        comm.block.bcast(left_band_edge_info, root=0)
 
-            mu_left = self.left_fermi_level - self.left_voltage
-            self.left_occupancies = fermi_dirac(
-                self.local_energies - mu_left, self.left_temperature
+        (
+            self.left_fermi_level,
+            self.left_mid_gap_energy,
+            self.left_delta_fermi_level_conduction_band,
+        ) = left_band_edge_info
+        self.left_voltage = config.electron.left_contact.voltage
+        self.left_mid_gap_energy -= self.left_voltage
+
+        self.left_temperature = config.electron.left_contact.temperature
+
+        mu_left = self.left_fermi_level - self.left_voltage
+        self.left_occupancies = fermi_dirac(
+            self.local_energies - mu_left, self.left_temperature
+        )
+
+        if comm.rank == 0:
+            print(
+                f"Left contact: \n"
+                f"  Fermi level: {self.left_fermi_level} eV\n"
+                f"  Mid-gap energy: {self.left_mid_gap_energy} eV\n"
+                f"  Conduction band edge - Fermi level: {self.left_delta_fermi_level_conduction_band} eV\n",
+                flush=True,
             )
 
-            if comm.stack.rank == 0:
-                print(
-                    f"Left contact: \n"
-                    f"  Fermi level: {self.left_fermi_level} eV\n"
-                    f"  Mid-gap energy: {self.left_mid_gap_energy} eV\n"
-                    f"  Conduction band edge - Fermi level: {self.left_delta_fermi_level_conduction_band} eV\n",
-                    flush=True,
-                )
-
+        right_band_edge_info = xp.empty(3, dtype=float)
         if comm.block.rank == comm.block.size - 1:
             # Quantities related to the right contact.
-            (
-                self.right_fermi_level,
-                self.right_mid_gap_energy,
-                self.right_delta_fermi_level_conduction_band,
-            ) = self._configure_contact_band_edges(
+            right_band_edge_info = self._configure_contact_band_edges(
                 config=config,
                 hamiltonian=self.hamiltonian,
                 overlap=self.overlap,
                 coordinates=orbital_coordinates[-self.block_sizes[-1] :],
                 side="right",
             )
-            self.right_voltage = config.electron.right_contact.voltage
-            self.right_mid_gap_energy -= self.right_voltage
-            self.right_temperature = config.electron.right_contact.temperature
-            # Compute contact chemical potentials and occupancies.
-            mu_right = self.right_fermi_level - self.right_voltage
-            self.right_occupancies = fermi_dirac(
-                self.local_energies - mu_right, self.right_temperature
-            )
 
-            if comm.stack.rank == 0:
-                print(
-                    f"Right contact: \n"
-                    f"  Fermi level: {self.right_fermi_level} eV\n"
-                    f"  Mid-gap energy: {self.right_mid_gap_energy} eV\n"
-                    f"  Conduction band edge - Fermi level: {self.right_delta_fermi_level_conduction_band} eV\n",
-                    flush=True,
-                )
+        comm.block.bcast(right_band_edge_info, root=comm.block.size - 1)
+        (
+            self.right_fermi_level,
+            self.right_mid_gap_energy,
+            self.right_delta_fermi_level_conduction_band,
+        ) = right_band_edge_info
+
+        self.right_voltage = config.electron.right_contact.voltage
+        self.right_mid_gap_energy -= self.right_voltage
+        self.right_temperature = config.electron.right_contact.temperature
+        # Compute contact chemical potentials and occupancies.
+        mu_right = self.right_fermi_level - self.right_voltage
+        self.right_occupancies = fermi_dirac(
+            self.local_energies - mu_right, self.right_temperature
+        )
+
+        if comm.rank == 0:
+            print(
+                f"Right contact: \n"
+                f"  Fermi level: {self.right_fermi_level} eV\n"
+                f"  Mid-gap energy: {self.right_mid_gap_energy} eV\n"
+                f"  Conduction band edge - Fermi level: {self.right_delta_fermi_level_conduction_band} eV\n",
+                flush=True,
+            )
 
         # Prepare Buffers for OBC.
         self.obc_blocks = OBCBlocks(num_blocks=self.system_matrix.num_local_blocks)
@@ -801,8 +811,8 @@ class ElectronSolver(SubsystemSolver):
             with profiler.profile_range(
                 label="ElectronSolver: Band edges", level="default", comm=comm
             ):
-                left_band_edges = None
-                right_band_edges = None
+                left_band_edges = xp.empty(2, dtype=float)
+                right_band_edges = xp.empty(2, dtype=float)
 
                 if comm.block.rank == 0:
                     left_band_edges = find_renormalized_eigenvalues(
@@ -818,6 +828,7 @@ class ElectronSolver(SubsystemSolver):
                         upper_inds=(0, 1),
                         band_edge_config=self.config.compute.band_edge,
                     )
+                comm.block.bcast(left_band_edges, root=0)
 
                 if comm.block.rank == comm.block.size - 1:
                     n = self.hamiltonian.num_local_blocks - 1
@@ -836,6 +847,7 @@ class ElectronSolver(SubsystemSolver):
                         order="reverse",
                         band_edge_config=self.config.compute.band_edge,
                     )
+                comm.block.bcast(right_band_edges, root=comm.block.size - 1)
 
                 self._update_fermi_levels(left_band_edges, right_band_edges)
 
