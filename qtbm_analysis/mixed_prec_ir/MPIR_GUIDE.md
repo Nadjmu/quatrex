@@ -1,0 +1,379 @@
+# `mpir.py` — a practical guide
+
+This is a self-contained reference for `mpir.py`: what it does, how to run it,
+what ends up in the HDF5 file, and what the plotting script draws from it. The
+module docstring (`python mpir.py --help`) carries the same material inline
+with the code; this document exists to be read start to finish once, rather
+than grepped.
+
+---
+
+## 1. What it measures
+
+Iterative refinement solves `A x = b` by factorizing `A` at a low precision,
+then repeatedly correcting the solution using residuals computed at a higher
+one:
+
+```
+1. Factorize A at u_f (the low precision under test).
+2. x = solve(b) at u_f, promoted to u (complex128).
+3. r = b - A x, computed at complex128.
+4. Solve A dx = r for the correction (see below).
+5. x = x + dx. Repeat from 3 until a stopping criterion fires.
+```
+
+Step 4 is where the two variants differ:
+
+| Variant | `--inner` | Step 4 | Effective solve precision `u_s` |
+|---|---|---|---|
+| **LU-IR** | `direct` | one triangular substitution through the low-precision factors | `u_f` |
+| **GMRES-IR** | `gmres` | GMRES on `A` at complex128, preconditioned by the low-precision factors | `u` (complex128) |
+
+LU-IR is cheaper per step but bound by the factorization precision: it
+converges only while `kappa_inf(A) * u_f < 1`. GMRES-IR relaxes that bound
+because the correction is solved at the working precision — the low-precision
+factors only ever act as a preconditioner, never as the thing whose accuracy
+limits the answer. This is why GMRES-IR is the variant that matters once
+`kappa_inf(A) * u_f` exceeds 1, which happens routinely for QTBM matrices near
+a band edge at `complex32`, and even at `complex64` for the worst-conditioned
+indices.
+
+**Every run measures three variants of the same solver family**, never just
+one, so the comparison isolates precision and refinement from the solver
+implementation:
+
+1. `<solver>` at `u_f` **with** refinement — the method under test
+2. `<solver>` at `complex128`, no refinement — the accuracy ceiling
+3. `<solver>` at `u_f`, no refinement — the lower bound refinement must beat
+
+### The three precisions
+
+| Precision | Available for | Note |
+|---|---|---|
+| `complex128` | every solver | the accuracy ceiling |
+| `complex64` | every solver except `umfpack` | UMFPACK has no single-precision build |
+| `complex32` | `block-thomas`, `block-thomas-inv` only | not a NumPy dtype — see below |
+
+`complex32` is a **storage label**, not a real dtype: there is no complex half
+format, so `BlockThomasFP16` / `BlockThomasExplicitInvFP16` embed each complex
+block into a real one of twice the dimension and hold that in `float16`. Two
+consequences that show up directly in the output:
+
+- Vectors entering a `complex32` solver are cast to `complex128` on the way
+  in, not to something narrower — the cast is then lossless and all rounding
+  happens inside the solver, where the embedding is applied. This is why
+  `u_f` for the `kappa_inf * u_f` bound is read off `float16`'s roundoff, not
+  off the cast dtype.
+- `complex32` does **not** halve memory again relative to `complex64`. The
+  real embedding stores each of the two real components of an entry twice, so
+  an entry costs 8 bytes either way — the same as `complex64`.
+
+`--solver` picks the implementation, `--factor-dtype` picks the precision
+independently; not every combination exists (`solver_dtypes()` checks this
+before anything is factored, and the parser rejects an unsupported pairing
+immediately rather than raising minutes into a run).
+
+---
+
+## 2. Running it
+
+```bash
+python mpir.py <material.h5> --idx <indices> --solver <name> \
+    --factor-dtype <precision> [--inner gmres] [options...]
+```
+
+### Selecting indices
+
+`--idx 5 84 254` (explicit list), `--start 0 --end 400` (inclusive range,
+optionally `--stride N`), or `--energy 6.1 6.2` (nearest recorded energy —
+mutually exclusive with `--idx`/`--start`).
+
+### Examples
+
+```bash
+# Basic: one solver, one precision, LU-IR (the default inner solve)
+python mpir.py carbon-nanotube.h5 --idx 5 --solver superlu --factor-dtype complex64
+
+# GPU
+python mpir.py si-bulk.h5 --idx 254 --solver cudss --factor-dtype complex64
+
+# GMRES-IR, once LU-IR's kappa_inf * u_f < 1 bound is exceeded
+python mpir.py si-bulk.h5 --idx 254 --solver mumps --factor-dtype complex64 \
+    --inner gmres --gmres-tol 1e-8 --gmres-restart 30 --gmres-max-iter 50
+
+# Half precision (complex32) — CPU only, Block Thomas family.
+# LU-IR is too weak at these condition numbers; GMRES-IR is the point.
+python mpir.py carbon-nanotube.h5 --idx 84 --solver block-thomas \
+    --factor-dtype complex32 --inner gmres
+
+# The explicit-inverse implementation, inverse formed at float16
+# (factorization becomes half precision throughout, at some accuracy cost)
+python mpir.py carbon-nanotube.h5 --idx 84 --solver block-thomas-inv \
+    --factor-dtype complex32 --inner gmres --inv-dtype float16
+
+# A sweep — one experiment, many indices
+python mpir.py carbon-nanotube.h5 --start 0 --end 400 --solver block-thomas \
+    --factor-dtype complex32 --inner gmres
+
+# Loosen the stopping criteria, pick where the file goes
+python mpir.py si-bulk.h5 --idx 254 --solver cudss --factor-dtype complex64 \
+    --inner gmres --rho-thresh 0.9 --max-iter 30 --k-max 0 --outdir ./scratch
+
+# List what's already in a file, without running anything
+python mpir.py carbon-nanotube.h5 --list-experiments
+```
+
+### Every option
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--idx` / `--start` `--end` `--stride` / `--energy` | — | which energy indices to run (one experiment can sweep many) |
+| `--solver` | — | `superlu`, `umfpack`, `mumps`, `block-thomas`, `block-thomas-inv`, `cudss` |
+| `--factor-dtype` | `complex64` | `u_f`: `complex128`, `complex64`, or `complex32` (Block Thomas only) |
+| `--inv-dtype` | `float32` | `block-thomas-inv` + `complex32` only: precision the explicit inverse is formed in before rounding to `float16` |
+| `--inner` | `direct` | `direct` = LU-IR, `gmres` = GMRES-IR |
+| `--rho-thresh` | `0.5` | stopping condition 2 threshold (§3) |
+| `--max-iter` | `10` | stopping condition 3: max outer steps |
+| `--k-max` | `ceil(0.1n)` | stopping condition 4: max inner GMRES iterations in one step (`--inner gmres` only; `0` disables) |
+| `--repeats` | `1` | repeats per variant; the median is reported |
+| `--reference-solver` | `mumps` | supplies `x_true` and the reference corrections `phi_solve` is measured against |
+| `--gmres-tol`, `--gmres-restart`, `--gmres-max-iter` | `1e-8`, `30`, `50` | inner GMRES parameters (`--inner gmres` only) |
+| `--outdir` | `cli.MIXED_PREC_DIR` | where the analysis file is written |
+| `--material` | derived from the input path | label used in the file name and figure titles |
+| `--no-save` | off | print the report, append no experiment |
+| `--list-experiments` | off | list the file's experiments and exit |
+
+---
+
+## 3. Stopping criteria
+
+There is **no fixed residual tolerance**. On these systems the residual
+reaches the working precision long before the forward error does, so a
+residual tolerance would declare convergence while the solution is still
+wrong — and it cannot tell slow convergence from divergence at all. Instead
+the loop uses the four criteria of Oktay and Carson (2021), section 2.1.1,
+all read from quantities the loop produces anyway, so none of them costs an
+extra solve:
+
+| # | Condition | Meaning |
+|---|---|---|
+| 1 | `‖d_{i+1}‖/‖x_i‖ ≤ u` | the correction no longer moves the iterate |
+| 2 | `‖d_{i+1}‖/‖d_i‖ ≥ ρ_thresh` | corrections stopped shrinking geometrically (a ratio `> 1` is divergence) |
+| 3 | `iter ≥ max_iter` | |
+| 4 | `k_GMRES ≥ k_max` | one step now costs about what refactorizing would (GMRES-IR only) |
+
+`u` here is always the **working precision** (complex128), never `u_f` — the
+question is whether refinement reached the accuracy the working precision can
+hold, and asking it at `u_f` would accept a solution only as good as the
+factorization itself.
+
+Convergence is declared on Demmel's normwise error estimate:
+
+```
+phi = z / (1 - rho_max)      z = ‖d_{i+1}‖/‖x_i‖
+                              rho_max = max_j ‖d_{j+1}‖/‖d_j‖  (over j <= i)
+
+converged  <=>  0 <= phi <= sqrt(n) * u
+```
+
+Both bounds matter: `phi < 0` means `rho_max > 1`, i.e. some correction grew —
+that is divergence, not a small error.
+
+**What a healthy run usually looks like:** it converges, then one step later
+condition 2 fires (the next correction fails to shrink relative to an already
+tiny one) and the loop stops — often one step after accuracy stopped
+improving. A run can also report *did not converge* while sitting at the
+reference-solution floor, if that floor is above `sqrt(n) * u`; the reference
+solver's own backward error is reported alongside so this is visible rather
+than silently misread as failure.
+
+---
+
+## 4. Convergence metrics
+
+Beyond the stopping decision, every experiment reconstructs the quantities of
+Carson and Higham's Corollary 3.3 — the right-hand panels of their numerical
+experiments — **after** the run, from the iterates/corrections/residuals the
+loop retained. Nothing here is computed inside the timed loop: it would
+corrupt the very timing and memory figures the report exists to give.
+
+```
+phi_i = 2 u_s min(cond(A), kappa_inf(A) mu_i)   +   u_s ||E_i||_inf
+        \__________________ phi_cond __________/   \___ phi_solve ___/
+```
+
+| Quantity | Meaning |
+|---|---|
+| `ferr_ref` | `‖x_ref − x_i‖_∞ / ‖x_ref‖_∞` — forward error **relative to the reference solution**, not a certified forward error |
+| `rho` | `ferr_ref[i+1] / ferr_ref[i]`, the contraction actually observed |
+| `mu_hat` | `‖A(x_ref − x_i)‖_∞ / (‖A‖_∞ ‖x_ref − x_i‖_∞)` — small exactly when the error points along directions `A` damps, which is what lets refinement work past the plain bound |
+| `phi_cond_hat` | `2 u_s kappa_inf(A) mu_hat` |
+| `phi_solve_hat` | `‖d_i − d_i^ref‖_∞ / ‖d_i^ref‖_∞`, against a reference solve of the *same* retained residual |
+| `phi_hat` | `phi_cond_hat + phi_solve_hat`, the estimate of Corollary 3.3's `phi_i` |
+
+`u_s` is `u_f` for LU-IR and `u` for GMRES-IR — the whole reason GMRES-IR
+tolerates condition numbers LU-IR cannot.
+
+Three honest caveats, all visible in the output rather than hidden:
+
+- **Everything here is an estimate.** `x_ref` is a numerical reference
+  solution, not the exact one, so `ferr_ref` and everything derived from it
+  inherit its error. Its own backward error is printed and saved
+  (`reference_nbe`) so the floor is visible.
+- **`phi_cond` drops the `min` against `cond(A)`.** `cond(A) = ‖|A⁻¹||A|‖_∞`
+  needs the inverse and isn't among the condition-est pipeline's outputs.
+  Dropping the `min` can only overstate `phi_cond` — conservative, and
+  recorded per row as `phi_cond_form`.
+- **`phi_solve` is directional**, not the worst case. It measures
+  `u_s ‖E_i d_i‖/‖d_i‖`, the error along the direction the correction actually
+  took, which is a lower estimate of the worst-case `u_s ‖E_i‖_∞` the
+  Corollary bounds with.
+
+---
+
+## 5. The HDF5 file
+
+**One invocation is one experiment, and every experiment is kept.** Nothing
+is ever overwritten — each run appends the next numbered group:
+
+```
+<outdir>/<material>.h5
+└── experiments/
+    ├── 0001/          attrs: the whole run configuration
+    │   ├── runs        one row per (index, variant)
+    │   └── iterations  one row per (index, outer step)
+    ├── 0002/
+    └── 0003/
+```
+
+The number is zero-padded (HDF5 sorts keys as strings — unpadded, `10` would
+sort before `2`) and is the lowest unused one, so deleting an experiment by
+hand doesn't leave a permanent gap.
+
+**Why numbered experiments rather than one rewritten table**, unlike every
+other analysis in this pipeline: the interesting mpir runs *differ* in
+precision, inner solver and stopping thresholds, and comparing them is the
+point — so each is kept beside the configuration that produced it, rather than
+the last run silently replacing the previous one.
+
+### Experiment attributes
+
+Everything needed to say what a run was, on the experiment group itself:
+`material`, `source`, `timestamp`, `command`, `solver`, `factor_dtype`,
+`inv_dtype`, `inner`, `inner_label`, `working_dtype`, `residual_dtype`,
+`working_u`, `rho_thresh`, `max_iter`, `k_max`, `gmres_tol`, `gmres_restart`,
+`gmres_max_iter`, `reference_solver`, `repeats`, `indices`, `n_requested`,
+`n_skipped`, `criteria`, `convergence_factor`, plus the material's band edges
+and energy grid.
+
+### `runs` — one row per (index, variant)
+
+```
+idx, energy, n, nnz, n_rhs, n_blocks, solver, factor_dtype, inner, variant,
+is_refined, u_f, u, u_s, kappa_2, kappa_inf, lu_ir_bound,
+relres, ferr_ref, eta1, eta2, etainf, omega,
+outer_iters, converged, rho_max, phi_final, stop_reason,
+gmres_total, wall_s, factor_s, factor_symbolic_s, factor_numeric_s, inner_s,
+factor_mb, working_mb, reference_solver, reference_nbe
+```
+
+All three measured variants appear here (three rows per index).
+
+### `iterations` — one row per (index, outer step)
+
+```
+idx, energy, n, nnz, solver, factor_dtype, inner, variant, outer_iteration,
+relres, residual_norm_inf, ferr_ref, rho, etainf, omega,
+mu_hat, phi_cond_hat, phi_solve_hat, phi_hat, phi_cond_form,
+z, v, rho_max, phi_demmel,
+correction_norm_inf, reference_correction_norm_inf,
+gmres_inner_iterations, gmres_inner_max, note
+```
+
+Only the refinement variant performs outer steps, so only it appears here.
+`z`, `v`, `rho_max`, `phi_demmel` are the stopping-criteria quantities
+themselves — a figure can show not only that a run stopped but which
+condition was about to fire and how close the others were.
+
+Both tables carry `idx`, so either joins back to the other when a figure needs
+both. Raw iterate/correction/residual **vectors are not stored** — `O(n)` per
+step per index would run to gigabytes over a sweep, and every quantity a
+figure needs is already reduced to a scalar per step. A study that needs the
+vectors themselves has to re-run the single index it cares about.
+
+### Reading it back
+
+```python
+import mpir
+mpir.experiment_names(path)                    # ['0001', '0002', ...]
+name, attrs, runs, iters = mpir.load_experiment(path)             # last one
+name, attrs, runs, iters = mpir.load_experiment(path, 2)          # by number
+```
+
+`runs` and `iters` are the column dicts `factor_io.load_table` returns (one
+NumPy array per column); `factor_io.table_rows(...)` turns either into a list
+of per-row dicts.
+
+---
+
+## 6. Plotting
+
+`plotting/mixed_prec_ir/plot_mpir.py` draws one experiment, in the layout of
+Carson and Higham's numerical experiments.
+
+```bash
+python plot_mpir.py <material.h5> --list                    # what's in the file
+python plot_mpir.py <material.h5>                            # plot the latest experiment
+python plot_mpir.py <material.h5> --experiment 3              # a specific one
+python plot_mpir.py <material.h5> --experiment 3 --idx 84 254 # only these indices
+python plot_mpir.py <material.h5> --summary-only              # skip per-index figures
+```
+
+### Per-index figure — `<material>_exp<NNNN>_E<idx>.png`
+
+One per energy index (capped by `--max-figures`, default 12, unless `--idx`
+names specific ones). Two panels:
+
+- **Left — convergence history.** `ferr_ref` (red), `nbe = etainf` (blue),
+  `cbe = omega` (green) against the outer refinement step, log scale, with a
+  dotted line at the working precision `u`.
+- **Right — convergence-factor analysis (Corollary 3.3).** `phi_cond_hat`,
+  `phi_solve_hat`, `phi_hat`, and the observed `rho`, log scale, dotted line
+  at 1. `phi_hat` is drawn wide and pale *because* it's the sum of the other
+  two — whichever term dominates coincides with it exactly and would
+  otherwise be invisible underneath a line of equal weight.
+
+The title carries the material, the energy, `kappa_inf`, the method, and the
+stopping decision (converged or not, in how many steps, and why).
+
+### Summary figure — `<material>_exp<NNNN>_summary.png`
+
+One figure covering the whole swept experiment, three panels against energy
+(or index, if the file has no energy grid), with band edges marked:
+
+1. Final `ferr_ref` for all three variants — refined, `complex128` direct,
+   and unrefined low precision — so the recovery is visible at a glance.
+2. Outer iteration count per index, with indices that did not converge marked.
+3. Total inner GMRES iterations per index (LU-IR has none, and the panel says
+   so rather than drawing an empty axis).
+
+This is the figure to read for a sweep of many indices; the per-index panels
+are for the specific ones worth looking at closely.
+
+---
+
+## References
+
+- E. Carson and N. J. Higham, *Accelerating the solution of linear systems by
+  iterative refinement in three precisions*, SIAM J. Sci. Comput. 40(2), 2018.
+  — Corollary 3.3, the convergence factor.
+- E. Carson and N. J. Higham, *A new analysis of iterative refinement and its
+  application to accurate solution of ill-conditioned sparse linear systems*,
+  SIAM J. Sci. Comput. 39(6), 2017. — GMRES-IR.
+- E. Oktay and E. Carson, *Multistage mixed precision iterative refinement*,
+  Numer. Linear Algebra Appl. 29(4), 2022; arXiv:2107.06200. — section 2.1.1,
+  the stopping criteria.
+- J. Demmel et al., *Error bounds from extra-precise iterative refinement*,
+  ACM TOMS 32(2), 2006. — the `phi` convergence-test estimate.
+- A. Buttari et al., *Mixed precision iterative refinement techniques for the
+  solution of dense linear systems*, IJHPCA 21(4), 2007. — LU-IR.

@@ -13,7 +13,8 @@ All scripts here take the canonical option names; see
 | `sparse.py` | the earlier standalone study: fp32 SuperLU with fp64 refinement |
 | `dense.py` | the earlier standalone study: fp32 LAPACK with fp64 refinement |
 
-Nothing is written to disk and no figures are produced.
+`mpir.py` writes its results into the `mpir` group of the analysis file; see
+[section 6](#6-output). No figures are produced here.
 
 ---
 
@@ -151,12 +152,21 @@ python mpir.py .../si-bulk.h5 --idx 254 --solver cudss \
     --factor-dtype complex64 --repeats 5
 ```
 
-A different reference solver for the forward error — `--reference-solver`
-defaults to `superlu`.
+A different reference solver — `--reference-solver` defaults to `mumps` and
+supplies both `x_true` and the reference corrections `phi_solve` is measured
+against.
 
 ```bash
 python mpir.py .../si-bulk.h5 --idx 254 --solver cudss \
-    --factor-dtype complex64 --reference-solver mumps
+    --factor-dtype complex64 --reference-solver cudss
+```
+
+Loosening the stopping criteria, and writing the tables somewhere else.
+
+```bash
+python mpir.py .../si-bulk.h5 --idx 254 --solver cudss \
+    --factor-dtype complex64 --inner gmres \
+    --rho-thresh 0.9 --max-iter 30 --k-max 0 --outdir ./scratch
 ```
 
 Three variants of the **same** solver family are measured, so the comparison
@@ -171,6 +181,89 @@ Reported per variant: relative residual, forward error against the reference
 solution, the normwise and componentwise backward errors, wall time split into
 factorization and solve, factor memory, the outer convergence history, and, for
 GMRES-IR, the inner iteration counts.
+
+### Stopping criteria
+
+The loop does **not** stop on a fixed residual tolerance. It uses the four
+criteria of [Oktay and Carson, section 2.1.1](#references), which read the
+corrections the loop already produces and so cost nothing extra:
+
+| # | Condition | Option | Meaning |
+|---|---|---|---|
+| 1 | `‖d_{i+1}‖ / ‖x_i‖ ≤ u` | — | the correction no longer moves the iterate |
+| 2 | `‖d_{i+1}‖ / ‖d_i‖ ≥ ρ_thresh` | `--rho-thresh` (0.5) | corrections stopped shrinking geometrically; a ratio above 1 is divergence |
+| 3 | `iter ≥ i_max` | `--max-iter` (10) | |
+| 4 | `k_GMRES ≥ k_max` | `--k-max` (`ceil(0.1n)`) | one outer step now costs about what refactorizing would; GMRES-IR only, `0` disables |
+
+Convergence itself is declared on the normwise error estimate of Demmel et al.
+that Oktay and Carson carry alongside them,
+
+```
+phi = z / (1 - rho_max),   z = ‖d_{i+1}‖/‖x_i‖,  rho_max = max_j ‖d_{j+1}‖/‖d_j‖
+```
+
+with convergence when `0 ≤ phi ≤ sqrt(n) u`. Both bounds matter: `phi` is
+negative exactly when `rho_max > 1`, that is when a correction grew, and that
+is divergence rather than a small error.
+
+`u` here is the **working** precision for every variant, never `u_f`. The
+question the criteria answer is whether refinement reached the accuracy the
+working precision can hold; asking it at `u_f` would accept a solution only as
+good as the factorization refinement exists to improve on. `u_f` enters the
+metrics below as `u_s`, and the stopping test never.
+
+Two consequences are worth expecting rather than being surprised by. Condition
+2 is what normally ends a healthy run: refinement reaches the floor set by
+rounding and the reference solution, the next correction fails to shrink, and
+the loop stops — often one step after the accuracy stopped improving. And a run
+that has genuinely converged to the reference floor may still report *did not
+converge* when that floor sits above `sqrt(n) u`, since the reference solution
+is itself only accurate to its own backward error, which is reported beside it.
+
+### Convergence metrics
+
+The refinement variant is reported through the quantities of [Carson and
+Higham, Corollary 3.3](#references) — the right-hand panels of their numerical
+experiments:
+
+```
+phi_i = 2 u_s min(cond(A), kappa_inf(A) mu_i)  +  u_s ‖E_i‖_inf
+        └────────── phi_cond ──────────────┘     └── phi_solve ──┘
+```
+
+| Metric | Meaning |
+|---|---|
+| `ferr_ref` | `‖x_ref − x_i‖_∞ / ‖x_ref‖_∞`, the forward error **relative to the reference solution**; not a certified forward error |
+| `rho` | `ferr_ref[i+1] / ferr_ref[i]`, the contraction actually observed |
+| `mu_hat` | `‖A(x_ref − x_i)‖_∞ / (‖A‖_∞ ‖x_ref − x_i‖_∞)`; small exactly when the error points along the directions `A` damps, which is what lets refinement converge past the plain bound |
+| `phi_cond_hat` | `2 u_s kappa_inf(A) mu_hat` |
+| `phi_solve_hat` | `‖d_i − d_i^ref‖_∞ / ‖d_i^ref‖_∞`, against a reference solve of the *same* retained residual |
+| `phi_hat` | their sum, the estimate of the Corollary's `phi_i` |
+
+`u_s` is the effective precision of the correction solve: `u_f` for LU-IR,
+whose correction is whatever the low-precision factors return, and `u` for
+GMRES-IR, whose inner solve runs at the working precision. That difference is
+the whole reason GMRES-IR tolerates condition numbers LU-IR cannot.
+
+Three honest caveats, all recorded in the output rather than hidden:
+
+- **Everything is an estimate.** `x_ref` is a numerical reference, not the
+  exact solution, so `ferr_ref` and everything derived from it inherit its
+  error. Its own backward error is reported so the floor is visible.
+- **`phi_cond` drops the `min` against `cond(A)`.** `cond(A) = ‖|A⁻¹||A|‖_∞`
+  needs the inverse and is not among the condition-est pipeline's outputs.
+  Dropping the `min` can only overstate `phi_cond`, so the estimate is
+  conservative; the form used is recorded per row as `phi_cond_form`.
+- **`phi_solve` is directional.** Under `d̂ = (I + u_s E) d` it measures
+  `u_s ‖E_i d_i‖/‖d_i‖`, the error along the direction the correction actually
+  took, not the worst case `u_s ‖E_i‖_∞` the Corollary bounds with. It is
+  therefore a lower estimate.
+
+**None of this is computed inside the refinement loop.** The loop retains its
+iterates, corrections and residual vectors and nothing else; every metric is
+reconstructed afterwards by `refinement_metrics`. The loop is timed and its
+memory is measured, so a diagnostic solve performed there would corrupt exactly
+the figures the report exists to give.
 
 ### The precisions, and which solver has which
 
@@ -279,10 +372,99 @@ and are reached here as `--factor-dtype complex32`.
 
 ## 6. Output
 
-`mpir.py` writes nothing to disk. Its report is the console table, the
-convergence history and the inner iteration counts, and for a sweep it is run
-once per index. There is no plotting script or saved table for this study yet;
-add one against whichever variants and metrics the thesis figure needs.
+**One invocation is one experiment, and every experiment is kept.** Each run
+appends a new numbered group to `<outdir>/<material>.h5` — `--outdir` defaults
+to `cli.MIXED_PREC_DIR` — rather than overwriting the last, so the file becomes
+a record of what was actually run. `--no-save` suppresses the write;
+`--list-experiments` prints what a file already holds.
+
+```
+<outdir>/<material>.h5
+└── experiments/
+    ├── 0001/          attrs: the whole run configuration
+    │   ├── runs        one row per (index, variant)
+    │   └── iterations  one row per (index, outer step)
+    ├── 0002/
+    └── ...
+```
+
+The number is zero-padded because HDF5 orders keys as strings: unpadded, `10`
+would sort before `2` and a listing would come out in the wrong order. The
+lowest unused number is taken, so an experiment deleted by hand is reused
+rather than leaving a gap.
+
+Every other analysis in this pipeline rewrites its one group in place, which is
+right for a sweep reproducible from its inputs. Refinement is not: the
+interesting runs differ in precision, inner solver and stopping thresholds, and
+comparing them **is** the point, so each is kept beside the configuration that
+produced it.
+
+### The experiment group's attributes
+
+Everything needed to say what a run was, in one place: `material`, `source`,
+`timestamp`, `command`, `solver`, `factor_dtype`, `inv_dtype`, `inner` and
+`inner_label`, `working_dtype`, `residual_dtype`, `working_u`, `rho_thresh`,
+`max_iter`, `k_max`, `gmres_tol`, `gmres_restart`, `gmres_max_iter`,
+`reference_solver`, `repeats`, `indices`, `n_requested`, `n_skipped`,
+`criteria`, `convergence_factor`, plus the material's band edges and energy
+grid. They sit on the experiment group and not on the two tables, so a reader
+looks in one place.
+
+### The two tables
+
+They are two rather than one because they have different lengths. A figure of
+final accuracy against energy reads `runs` alone; a convergence trajectory or a
+`phi` panel reads `iterations` alone. Both carry `idx`, so either joins back to
+the other. All three variants appear in `runs`; only the refinement variant
+performs outer steps, so only it appears in `iterations`.
+
+**`runs`** — what each variant achieved and what it cost:
+`idx`, `energy`, `n`, `nnz`, `n_rhs`, `n_blocks`, `solver`, `factor_dtype`,
+`inner`, `variant`, `is_refined`, `u_f`, `u`, `u_s`, `kappa_2`, `kappa_inf`,
+`lu_ir_bound`, `relres`, `ferr_ref`, `eta1`, `eta2`, `etainf`, `omega`,
+`outer_iters`, `converged`, `rho_max`, `phi_final`, `stop_reason`,
+`gmres_total`, `wall_s`, `factor_s`, `factor_symbolic_s`, `factor_numeric_s`,
+`inner_s`, `factor_mb`, `working_mb`, `reference_solver`, `reference_nbe`.
+
+**`iterations`** — the convergence trajectory and the quantities Corollary 3.3
+is stated in: `outer_iteration`, `relres`, `residual_norm_inf`, `ferr_ref`,
+`rho`, `etainf`, `omega`, `mu_hat`, `phi_cond_hat`, `phi_solve_hat`,
+`phi_hat`, `phi_cond_form`, `z`, `v`, `rho_max`, `phi_demmel`,
+`correction_norm_inf`, `reference_correction_norm_inf`,
+`gmres_inner_iterations`, `gmres_inner_max`, `note`, alongside the same
+identifying columns.
+
+`z`, `v`, `rho_max` and `phi_demmel` are the stopping-criteria quantities
+themselves, so a figure can show not only that a run stopped but which
+condition was about to fire and how close the others were.
+
+Raw iterate, correction and residual **vectors are not stored**: they are
+`O(n)` per step per index and a sweep would run to gigabytes, while every
+quantity a figure needs is already reduced to a scalar per step here. A study
+that needs the vectors themselves should re-run the single index it cares
+about.
+
+### Reading it back
+
+`mpir.load_experiment(path, experiment=None)` returns
+`(name, attrs, runs, iterations)` for one experiment, the last by default, with
+the two tables as the column dicts `factor_io.load_table` returns.
+`mpir.experiment_names(path)` lists what is there. The plotting script uses
+exactly these.
+
+### Plotting
+
+[`../plotting/mixed_prec_ir/plot_mpir.py`](../plotting/mixed_prec_ir/) draws one
+experiment in the layout of Carson and Higham's numerical experiments: a
+two-panel figure per energy index — convergence history on the left, the `phi`
+decomposition on the right — and one summary figure across the sweep.
+
+```bash
+python ../plotting/mixed_prec_ir/plot_mpir.py \
+    /scratch/yimili/mixed-precision-IR/carbon-nanotube.h5 --list
+python ../plotting/mixed_prec_ir/plot_mpir.py \
+    /scratch/yimili/mixed-precision-IR/carbon-nanotube.h5 --experiment 3 --idx 84
+```
 
 ---
 
@@ -296,3 +478,9 @@ add one against whichever variants and metrics the thesis figure needs.
   *SIAM J. Sci. Comput.* 39(6), 2017.
 - E. Carson and N. J. Higham, Accelerating the solution of linear systems by
   iterative refinement in three precisions, *SIAM J. Sci. Comput.* 40(2), 2018.
+  Corollary 3.3 is the source of the convergence factor reported here.
+- E. Oktay and E. Carson, Multistage mixed precision iterative refinement,
+  *Numer. Linear Algebra Appl.* 29(4), 2022; arXiv:2107.06200. Section 2.1.1 is
+  the source of the stopping criteria.
+- J. Demmel et al., Error bounds from extra-precise iterative refinement,
+  *ACM TOMS* 32(2), 2006. The `phi` estimate the convergence test uses.

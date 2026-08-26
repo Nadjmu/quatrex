@@ -14,7 +14,9 @@ Input
     --inv-dtype        for block-thomas-inv at complex32 only, the precision
                        its explicit block inverses are formed in
     --inner            the inner correction solve, direct or gmres
-    --tol, --max-iter  the outer convergence criterion
+    --rho-thresh, --max-iter, --k-max
+                       the outer stopping criteria; see Stopping below
+    --outdir           where the analysis file is written
 
 The solver family and the factorization precision are chosen independently:
 --solver selects the implementation and --factor-dtype the precision it runs
@@ -79,8 +81,50 @@ Both variants share the outer loop and differ only in step 4.
            precision; only the preconditioner applications are cheap
            low-precision solves, and they reuse the same factorization.
 
-    5. x = x + dx. Repeat from 3 until ||r|| / ||b|| < tol or max_iter is
-       reached.
+    5. x = x + dx. Repeat from 3 until a stopping criterion fires.
+
+Stopping
+--------
+The loop does not stop on a fixed residual tolerance. It uses the four
+criteria of Oktay and Carson, section 2.1.1, which read the corrections the
+loop already produces and so cost nothing extra:
+
+    1. ||d_{i+1}|| / ||x_i||  <= u              the correction no longer moves
+                                                the iterate
+    2. ||d_{i+1}|| / ||d_i||  >= --rho-thresh   corrections stopped shrinking
+                                                geometrically; > 1 is divergence
+    3. iter >= --max-iter
+    4. inner GMRES iterations of one step >= --k-max     GMRES-IR only
+
+Convergence itself is declared on the normwise error estimate of Demmel et
+al. that Oktay and Carson carry alongside them,
+
+    phi = z / (1 - rho_max),   z = ||d_{i+1}|| / ||x_i||,
+                               rho_max = max over j <= i of ||d_{j+1}||/||d_j||
+
+with convergence when 0 <= phi <= sqrt(n) u. A negative phi means rho_max > 1,
+that is a correction grew, and is divergence rather than a small error, which
+is why both bounds are tested. See RefinementMonitor.
+
+A residual tolerance is the wrong criterion here: on these systems the
+residual reaches the working precision long before the forward error does,
+so it would declare convergence while the solution is still wrong, and it
+cannot distinguish slow convergence from divergence at all.
+
+Metrics
+-------
+The refinement variant's convergence is reported through the quantities of
+Carson and Higham's Corollary 3.3, the right-hand panels of their numerical
+experiments:
+
+    phi_i = 2 u_s min(cond(A), kappa_inf(A) mu_i) + u_s ||E_i||_inf
+
+split into a conditioning term and a correction-solver term, together with the
+contraction actually observed. All of them are reconstructed after the run,
+from the iterates, corrections and residuals the loop retained, and never
+inside it: the loop is timed and its memory is measured, so a diagnostic solve
+performed there would corrupt the figures the report exists to give. See
+refinement_metrics, which also states which of these are estimates and why.
 
 The preconditioner in the GMRES variant requires only the action of the
 factorization as an operator, never explicit access to L and U. That is what
@@ -145,10 +189,27 @@ is therefore performed before any variant is measured; see _warm_up_gpu.
 
 Output
 ------
-A table of relative residual, forward error against a reference solution,
-backward errors, wall time and factor memory per variant, the outer convergence
-history, and, for the GMRES variant, the inner iteration counts. Nothing is
-written to disk.
+A console report: the per-variant table of residual, forward error against the
+reference solution, backward errors, wall time and factor memory, then the
+convergence history and the convergence-factor panel described above.
+
+Each invocation appends one numbered experiment to <outdir>/<material>.h5,
+holding its whole configuration and both result tables, unless --no-save is
+given. Nothing is ever overwritten, so the file records every run made:
+
+    experiments/0001/runs        one row per (index, variant)
+    experiments/0001/iterations  one row per (index, outer step)
+
+--list-experiments prints what a file already holds. See the Result file
+section below.
+
+References
+----------
+E. Oktay and E. Carson, Multistage mixed precision iterative refinement,
+    Numer. Linear Algebra Appl. 29(4), 2022; arXiv:2107.06200. Section 2.1.1
+    is the source of the stopping criteria used here.
+J. Demmel et al., Error bounds from extra-precise iterative refinement,
+    ACM TOMS 32(2), 2006. The phi estimate the convergence test uses.
 
 Usage
 -----
@@ -184,7 +245,10 @@ E. Carson and N. J. Higham, Accelerating the solution of linear systems by
 """
 
 import argparse
+import datetime
 import gc
+import itertools
+import math
 import sys
 import time
 import warnings
@@ -203,12 +267,136 @@ from solver_classes import (
     extract_blocks_sparse, block_sizes_from_matrix, offband_nnz,
 )
 from bench_all import backward_errors, _matrix_norm, NORMWISE_ORDS
+# _attr_value is factor_io's own coercion of a Python value into something
+# h5py will store, including the list-of-strings case that NumPy cannot hold.
+# Imported rather than repeated so that both writers agree on what an attribute
+# becomes on disk.
+from factor_io import save_table, load_table, material_metadata, _attr_value
 
 warnings.filterwarnings("ignore", category=sp.SparseEfficiencyWarning)
 
 # The working and residual precision, u and u_r in the analysis. Both are
 # complex128; only the factorization precision u_f is varied.
 HIGH_DTYPE = np.complex128
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Result file
+#
+# One invocation of this script is one experiment, and every experiment is kept.
+# Each run appends a new numbered group rather than overwriting the last, so the
+# analysis file becomes a record of what was actually run:
+#
+#   <outdir>/<material>.h5
+#   └── experiments/
+#       ├── 0001/          attrs: the whole run configuration; see main
+#       │   ├── runs        one row per (index, variant)
+#       │   └── iterations  one row per (index, outer step)
+#       ├── 0002/
+#       └── ...
+#
+# The name is zero-padded because HDF5 orders keys as strings: unpadded, "10"
+# would sort before "2" and a listing would come out in the wrong order.
+#
+# Every other analysis in this pipeline rewrites its one group in place, which
+# is right for a sweep that is reproducible from its inputs. Refinement is not:
+# the interesting runs differ in precision, inner solver and stopping
+# thresholds, and comparing them is the point, so each is kept beside the
+# configuration that produced it.
+#
+# The two tables are split rather than joined because they have different
+# lengths. A figure of final accuracy against energy reads runs alone; a
+# convergence trajectory or a phi panel reads iterations alone. Both carry idx,
+# so either joins back to the other. All three variants appear in runs; only
+# the refinement variant performs outer steps, so only it appears in iterations.
+# ─────────────────────────────────────────────────────────────────────────────
+
+EXPERIMENTS_GROUP = "experiments"
+
+RUN_COLUMNS = [
+    "idx", "energy", "n", "nnz", "n_rhs", "n_blocks",
+    "solver", "factor_dtype", "inner", "variant", "is_refined",
+    "u_f", "u", "u_s", "kappa_2", "kappa_inf", "lu_ir_bound",
+    "relres", "ferr_ref", "eta1", "eta2", "etainf", "omega",
+    "outer_iters", "converged", "rho_max", "phi_final", "stop_reason",
+    "gmres_total", "wall_s", "factor_s", "factor_symbolic_s",
+    "factor_numeric_s", "inner_s", "factor_mb", "working_mb",
+    "reference_solver", "reference_nbe",
+]
+
+ITERATION_COLUMNS = [
+    "idx", "energy", "n", "nnz", "solver", "factor_dtype", "inner", "variant",
+    "outer_iteration", "relres", "residual_norm_inf", "ferr_ref", "rho",
+    "etainf", "omega",
+    "mu_hat", "phi_cond_hat", "phi_solve_hat", "phi_hat", "phi_cond_form",
+    "z", "v", "rho_max", "phi_demmel",
+    "correction_norm_inf", "reference_correction_norm_inf",
+    "gmres_inner_iterations", "gmres_inner_max", "note",
+]
+
+
+def experiment_names(path):
+    """Existing experiment group names, in order. [] if the file has none."""
+    path = Path(path)
+    if not path.exists():
+        return []
+    with h5py.File(path, "r") as f:
+        if EXPERIMENTS_GROUP not in f:
+            return []
+        return sorted(f[EXPERIMENTS_GROUP].keys())
+
+
+def save_experiment(path, attrs, run_rows, iter_rows):
+    """
+    Append one experiment to the analysis file and return its name.
+
+    The number is the lowest unused one, so an experiment deleted by hand is
+    reused rather than leaving a gap. The configuration is attached to the
+    experiment group itself and not to the two tables, so that a reader looks
+    in one place for what a run was.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(path, "a") as f:
+        root = f.require_group(EXPERIMENTS_GROUP)
+        used = {int(k) for k in root.keys() if k.isdigit()}
+        number = next(i for i in itertools.count(1) if i not in used)
+        name = f"{number:04d}"
+        g = root.create_group(name)
+        for key, value in attrs.items():
+            if value is not None:
+                g.attrs[key] = _attr_value(value)
+    base = f"{EXPERIMENTS_GROUP}/{name}"
+    save_table(path, f"{base}/runs", run_rows, columns=RUN_COLUMNS)
+    save_table(path, f"{base}/iterations", iter_rows, columns=ITERATION_COLUMNS)
+    return name
+
+
+def load_experiment(path, experiment=None):
+    """
+    (name, attrs, runs, iterations) for one experiment, the last by default.
+
+    runs and iterations are the column dicts load_table returns. `experiment`
+    accepts either the padded name or the bare number.
+    """
+    names = experiment_names(path)
+    if not names:
+        raise SystemExit(f"{path} holds no experiments; run mpir.py first")
+    if experiment is None:
+        name = names[-1]
+    else:
+        name = f"{int(experiment):04d}" if str(experiment).isdigit() \
+            else str(experiment)
+        if name not in names:
+            raise SystemExit(f"{path} has no experiment {name}; it holds "
+                             f"{', '.join(names)}")
+    with h5py.File(path, "r") as f:
+        attrs = {k: (v.decode() if isinstance(v, bytes) else v)
+                 for k, v in f[f"{EXPERIMENTS_GROUP}/{name}"].attrs.items()}
+    base = f"{EXPERIMENTS_GROUP}/{name}"
+    runs, _ = load_table(path, f"{base}/runs")
+    iters, _ = load_table(path, f"{base}/iterations")
+    return name, attrs, runs, iters
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -553,11 +741,171 @@ def load_condition_numbers(h5path, idx):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Stopping criteria
+#
+# The outer loop stops on the four conditions of Oktay and Carson, section
+# 2.1.1, rather than on a fixed residual tolerance. All four are monitored from
+# the corrections the loop already produces, so none of them costs an extra
+# solve or an extra matrix product; see RefinementMonitor.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Threshold on the ratio of successive corrections, condition 2. Oktay and
+# Carson distinguish a 'cautious' setting of 0.5, which is Wilkinson's, from an
+# 'aggressive' 0.9 that runs longer on the hardest problems. The cautious
+# setting is used throughout their experiments and is the default here.
+DEFAULT_RHO_THRESH = 0.5
+
+
+def _inf_norm(X):
+    """
+    max |x_i| over every entry, which is the vector infinity norm and, for a
+    multi-column right-hand side, the largest of its columns' infinity norms.
+
+    The criteria below are stated for a single right-hand side. Aggregating
+    across columns this way makes the stopping decision the one the worst
+    column would have made on its own, so no column is declared converged on
+    the strength of the others.
+    """
+    X = np.asarray(X)
+    return float(np.abs(X).max()) if X.size else 0.0
+
+
+class RefinementMonitor:
+    """
+    The stopping criteria of Oktay and Carson, section 2.1.1, and the
+    convergence test that accompanies them.
+
+    The loop stops as soon as any of
+
+        1. z     = ||d_{i+1}||_inf / ||x_i||_inf  <= u
+                   the correction changes the solution too little to matter
+        2. v     = ||d_{i+1}||_inf / ||d_i||_inf  >= rho_thresh
+                   successive corrections stopped shrinking fast enough
+        3. iter  >= max_iter
+        4. k_gmres >= k_max
+                   one inner GMRES solve became as expensive as refactorizing;
+                   GMRES-IR only, and skipped when k_max is None
+
+    holds, or as soon as the convergence test below is met. Conditions 1 and 2
+    are the interesting ones: 1 says refinement has reached the point where it
+    no longer moves the iterate, and 2 that it has stopped converging
+    geometrically, either because rounding error now dominates or because the
+    problem is too ill conditioned for u_f. Note that v > 1 is divergence,
+    which condition 2 catches on the first step it happens.
+
+    Convergence is declared on the normwise relative error estimate of Demmel
+    et al., which Oktay and Carson carry in phi_i:
+
+        phi_i = z / (1 - rho_max),   rho_max = max over j <= i of v_j
+
+    with convergence when 0 <= phi_i <= sqrt(n) u. Both halves matter: phi_i is
+    negative exactly when rho_max > 1, that is when some correction grew, and a
+    negative phi_i signals divergence rather than a small error. It is set to
+    -inf when rho_max == 1, where the geometric sum the estimate comes from
+    does not converge at all.
+
+    The criteria are one iteration behind, as the paper notes: whether step i
+    converged is only known once the correction of step i + 1 has been formed.
+    A run therefore performs at least two steps before stopping, unless
+    condition 4 fires, which is visible within the step it happens.
+
+    This object only decides and records. It never touches the iterate, so the
+    accuracy of the returned solution does not depend on it.
+    """
+
+    def __init__(self, u, n, rho_thresh=DEFAULT_RHO_THRESH, max_iter=10,
+                 k_max=None):
+        # u is the working precision in both conditions that use it, condition
+        # 1 and the sqrt(n) u convergence level, and is complex128 here for
+        # every variant. It is deliberately not u_s: the question the criteria
+        # answer is whether refinement reached the accuracy the working
+        # precision can hold, and asking it at u_f would pass a solution that
+        # is only as good as the factorization refinement set out to improve.
+        self.u = float(u)
+        self.limit = math.sqrt(n) * float(u)      # sqrt(n) u, the convergence level
+        self.rho_thresh = float(rho_thresh)
+        self.max_iter = int(max_iter)
+        self.k_max = k_max
+        # d_0 = inf, as in the paper's initialization, so that v = 0 on the
+        # first step and condition 2 cannot fire before two corrections exist.
+        self._d_prev = math.inf
+        self.rho_max = 0.0
+        self.iter = 0
+        self.converged = False
+        self.reasons = []
+        # Per-step history, all recorded whether or not the loop stopped.
+        self.z_history = []
+        self.v_history = []
+        self.rho_max_history = []
+        self.phi_history = []
+
+    def update(self, d, x_prev, gmres_iters=None):
+        """
+        Record the step that produced correction `d` from iterate `x_prev`, and
+        report whether the loop should stop.
+
+        gmres_iters is the per-column inner iteration count of this step, or
+        None for LU-IR. Returns True when any condition fired; self.converged
+        then says which kind of stop it was.
+        """
+        self.iter += 1
+        d_norm = _inf_norm(d)
+        x_norm = _inf_norm(x_prev)
+
+        z = d_norm / x_norm if x_norm > 0 else math.inf
+        v = d_norm / self._d_prev if self._d_prev > 0 else math.inf
+        self._d_prev = d_norm
+        self.rho_max = max(self.rho_max, v)
+
+        denom = 1.0 - self.rho_max
+        phi = z / denom if denom != 0.0 else -math.inf
+
+        self.z_history.append(z)
+        self.v_history.append(v)
+        self.rho_max_history.append(self.rho_max)
+        self.phi_history.append(phi)
+
+        # The convergence test is checked first, so that a step which both
+        # converged and tripped a stopping condition is reported as converged.
+        self.converged = bool(0.0 <= phi <= self.limit)
+        reasons = []
+        if self.converged:
+            reasons.append(f"converged (phi={phi:.2e} <= sqrt(n) u={self.limit:.2e})")
+        if z <= self.u:
+            reasons.append(f"correction too small (z={z:.2e} <= u={self.u:.2e})")
+        if v >= self.rho_thresh:
+            reasons.append(f"convergence slowed (v={v:.2e} >= "
+                           f"rho_thresh={self.rho_thresh:.2f})")
+        if self.iter >= self.max_iter:
+            reasons.append(f"iteration limit (iter={self.iter} >= "
+                           f"max_iter={self.max_iter})")
+        if self.k_max is not None and gmres_iters:
+            k = max(gmres_iters)
+            if k >= self.k_max:
+                reasons.append(f"inner GMRES too long (k={k} >= "
+                               f"k_max={self.k_max})")
+        self.reasons = reasons
+        return bool(reasons)
+
+    def summary(self):
+        """The stopping decision, for the report and the result table."""
+        return {
+            "converged": self.converged,
+            "outer_iters": self.iter,
+            "rho_max": self.rho_max,
+            "phi_final": self.phi_history[-1] if self.phi_history else None,
+            "stop_reason": "; ".join(self.reasons) if self.reasons
+                           else "loop ended without a condition firing",
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # The refinement variants
 # ─────────────────────────────────────────────────────────────────────────────
 
-def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
-                   normA=None, inv_dtype=DEFAULT_INV_DTYPE):
+def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
+                   normA=None, inv_dtype=DEFAULT_INV_DTYPE,
+                   rho_thresh=DEFAULT_RHO_THRESH):
     """
     LU-IR: iterative refinement whose correction solve is a single
     low-precision triangular substitution.
@@ -566,6 +914,11 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
     iteration; the residual is formed in complex128. Convergence requires
     approximately kappa_inf(A) * u_f < 1, so this variant is the one that fails
     first as the matrix becomes ill-conditioned. See the module docstring.
+
+    The loop stops on the criteria of RefinementMonitor, not on a residual
+    tolerance. Its effective solve precision is u_s = u_f: the correction is
+    whatever the low-precision factors return, so refinement is limited by the
+    precision the factorization was computed at.
 
     Parameters
     ----------
@@ -579,11 +932,15 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
         flow, so it cannot perturb the residual, timing or memory figures.
     inv_dtype : passed to the builder; read only by block-thomas-inv at
         complex32.
+    rho_thresh : threshold of stopping condition 2.
 
     Returns
     -------
-    (x, extra) with extra carrying the residual history, the forward-error
-    history and the factor footprint.
+    (x, extra). Besides the residual history and the factor footprint, extra
+    carries the iterates, the corrections and the residual vectors the
+    correction solver was handed, from which refinement_metrics reconstructs
+    every convergence quantity afterwards. Nothing derived is computed inside
+    the timed region; see the module docstring.
     """
     b_high = np.asarray(b, dtype=HIGH_DTYPE)
     A_high = A.tocsc().astype(HIGH_DTYPE)
@@ -593,6 +950,16 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
     history = []
     true_err_history = []
     x_history = []
+    d_history = []
+    r_history = []
+
+    # The criteria are stated at the working precision, not at u_f: refinement
+    # is asked whether it reached the accuracy u can represent, and answering
+    # that at u_f would accept a solution good only to the factorization
+    # precision, which is what refinement exists to improve on. u_f enters the
+    # metrics as u_s, never the stopping test. See RefinementMonitor.
+    monitor = RefinementMonitor(float(np.finfo(HIGH_DTYPE).eps), A_high.shape[0],
+                                rho_thresh=rho_thresh, max_iter=max_iter)
 
     t0 = time.perf_counter()
     solver = SOLVER_BUILDERS[solver_name](A, low_dtype, bs, b, inv_dtype)
@@ -603,8 +970,7 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
 
     for _ in range(max_iter):
         r = b_high - A_high @ x
-        rel = np.linalg.norm(r) / norm_b
-        history.append(rel)
+        history.append(np.linalg.norm(r) / norm_b)
         if x_true is not None:
             true_err_history.append(np.linalg.norm(x - x_true) / norm_x_true)
         # No copy: the update below rebinds x to a new array rather than
@@ -612,15 +978,27 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
         # Keep it that way -- an in-place `x +=` here would silently corrupt
         # every stored iterate.
         x_history.append(x)
-        if rel < tol:
+        # The residual is retained in complex128, before the cast into the
+        # solver. That is the system the correction equation poses; how the
+        # tested method rounds it on the way in is part of what is measured.
+        r_history.append(r)
+
+        d = solver.solve(r.astype(cast)).astype(HIGH_DTYPE)
+        d_history.append(d)
+        x_next = x + d
+        stop = monitor.update(d, x)
+        x = x_next
+        if stop:
             break
-        x = x + solver.solve(r.astype(cast)).astype(HIGH_DTYPE)
     inner_s = time.perf_counter() - t0
 
     extra = {
         "history": history,
         "true_err_history": true_err_history,
         "x_history": x_history,
+        "d_history": d_history,
+        "r_history": r_history,
+        "monitor": monitor,
         "mem_bytes": solver.factor_nbytes(),
         "factor_s": factor_s,
         "inner_s": inner_s,
@@ -653,6 +1031,156 @@ def _backward_error_histories(A_high, b_high, x_history, normA):
     return etainf_history, omega_history
 
 
+def refinement_metrics(A_high, x_true, extra, u_s, kappa_inf, ref_solve=None):
+    """
+    The per-iteration convergence quantities of Carson and Higham, Corollary
+    3.3, reconstructed from the arrays a refinement run retained.
+
+    Every quantity here is computed after the fact, from x_history, d_history
+    and r_history, and never inside the refinement loop: the loop is timed and
+    the memory rows are read off it, so a diagnostic solve or an extra matrix
+    product performed there would inflate the very figures the report exists to
+    give. Nothing in this function can change the solution either.
+
+    Corollary 3.3 states that the forward error contracts by roughly
+
+        phi_i = 2 u_s min(cond(A), kappa_inf(A) mu_i)  +  u_s ||E_i||_inf
+              = phi_cond                               +  phi_solve
+
+    per iteration, and that refinement converges while phi_i is comfortably
+    below 1. The two terms separate the two things that can stop it: the left
+    one is conditioning together with the direction the current error points
+    in, the right one is how accurately the correction equation was solved.
+
+    What is estimated, and why
+    --------------------------
+    x_true is a numerical reference, not the exact solution, so every quantity
+    below is an estimate and is named with a hat in the output. In particular:
+
+    ferr_ref   ||x_true - x_i||_inf / ||x_true||_inf, the forward error
+               relative to the reference solution. It is not a certified
+               forward error.
+    rho        ferr_ref[i+1] / ferr_ref[i], the contraction actually observed.
+               This is the measurement phi_hat is a prediction of; the two
+               need not agree closely, since phi_hat is built from estimated
+               and directional quantities.
+    mu_hat     ||A (x_true - x_i)||_inf / (||A||_inf ||x_true - x_i||_inf), the
+               factor of Carson and Higham (3.1). It lies between
+               1/kappa_inf(A) and 1 and is small exactly when the error points
+               along the directions A damps, which is what lets refinement
+               converge at condition numbers the plain bound forbids.
+    phi_cond   2 u_s kappa_inf(A) mu_hat. The min against cond(A) of the
+               Corollary is not taken: cond(A) = || |A^-1| |A| ||_inf needs the
+               inverse and is not among the condition-est pipeline's outputs.
+               Dropping the min can only overstate phi_cond, so the estimate is
+               conservative; the form used is recorded as phi_cond_form.
+    phi_solve  ||d_i - d_i_ref||_inf / ||d_i_ref||_inf, where d_i_ref solves
+               A d = r_i for the same retained residual r_i with the reference
+               solver. Under d_hat = (I + u_s E) d this measures
+               u_s ||E_i d_i|| / ||d_i||, the error in the direction the
+               correction actually took, rather than the worst case
+               u_s ||E_i||_inf that the Corollary bounds with. It is therefore
+               a lower estimate of the true term.
+
+    Parameters
+    ----------
+    u_s : effective precision of the correction solve; u_f for LU-IR and u for
+          GMRES-IR, set by whichever driver produced `extra`.
+    kappa_inf : kappa_inf(A) from the condition-est pipeline, or None.
+    ref_solve : callable solving A d = r at the working precision, used for
+          phi_solve. None skips that term, and phi_hat is then phi_cond alone.
+
+    Returns a list of per-iteration dicts, one per outer step.
+    """
+    x_history = extra.get("x_history", [])
+    d_history = extra.get("d_history", [])
+    r_history = extra.get("r_history", [])
+    gmres_hist = extra.get("gmres_iters_history", [])
+    residuals = extra.get("history", [])
+    # Per-iterate backward errors, already reconstructed by benchmark_solver
+    # from the same retained iterates; carried through here so that one row per
+    # step holds everything a convergence figure needs.
+    etainf_hist = extra.get("etainf_history", [])
+    omega_hist = extra.get("omega_history", [])
+    monitor = extra.get("monitor")
+    if not x_history:
+        return []
+
+    normA_inf = _matrix_norm(A_high, np.inf)
+    norm_x_true = _inf_norm(x_true) if x_true is not None else None
+
+    rows = []
+    for i, x_i in enumerate(x_history):
+        row = {
+            "outer_iteration": i,
+            "relres": residuals[i] if i < len(residuals) else None,
+            "residual_norm_inf": _inf_norm(r_history[i]) if i < len(r_history) else None,
+            "correction_norm_inf": _inf_norm(d_history[i]) if i < len(d_history) else None,
+            "etainf": etainf_hist[i] if i < len(etainf_hist) else None,
+            "omega": omega_hist[i] if i < len(omega_hist) else None,
+        }
+
+        # Forward error against the reference, and the factor mu it implies.
+        if x_true is not None and norm_x_true:
+            err = x_true - (x_i if x_i.ndim == x_true.ndim else x_i[:, 0])
+            ferr = _inf_norm(err) / norm_x_true
+            row["ferr_ref"] = ferr
+            norm_err = _inf_norm(err)
+            if norm_err > 0 and normA_inf:
+                row["mu_hat"] = _inf_norm(A_high @ err) / (normA_inf * norm_err)
+
+        # The conditioning term. Recorded as None rather than 0 when kappa is
+        # unavailable, so that a missing input is never read as a small one.
+        mu = row.get("mu_hat")
+        if kappa_inf is not None and mu is not None:
+            row["phi_cond_hat"] = 2.0 * u_s * kappa_inf * mu
+            row["phi_cond_form"] = "2*u_s*kappa_inf*mu_hat"
+        else:
+            row["phi_cond_hat"] = None
+            row["phi_cond_form"] = "unavailable"
+
+        # The correction-solver term, against a reference solve of the same
+        # residual this step actually posed.
+        if ref_solve is not None and i < len(r_history) and i < len(d_history):
+            try:
+                d_ref = ref_solve(r_history[i])
+                norm_d_ref = _inf_norm(d_ref)
+                row["reference_correction_norm_inf"] = norm_d_ref
+                if norm_d_ref > 0:
+                    row["phi_solve_hat"] = _inf_norm(d_history[i] - d_ref) / norm_d_ref
+            except (ImportError, TypeError, RuntimeError, ValueError) as e:
+                row["phi_solve_hat"] = None
+                row["note"] = f"reference correction failed: {type(e).__name__}: {e}"
+
+        parts = [row.get("phi_cond_hat"), row.get("phi_solve_hat")]
+        row["phi_hat"] = sum(p for p in parts if p is not None) \
+            if any(p is not None for p in parts) else None
+
+        # The stopping-criteria quantities of this step, from the monitor that
+        # made the decision; see RefinementMonitor.
+        if monitor is not None and i < len(monitor.z_history):
+            row["z"] = monitor.z_history[i]
+            row["v"] = monitor.v_history[i]
+            row["rho_max"] = monitor.rho_max_history[i]
+            row["phi_demmel"] = monitor.phi_history[i]
+
+        if i < len(gmres_hist):
+            iters = gmres_hist[i]
+            row["gmres_inner_iterations"] = int(sum(iters))
+            row["gmres_inner_max"] = int(max(iters)) if iters else 0
+
+        rows.append(row)
+
+    # Observed contraction, which needs the next step's forward error and so is
+    # filled in once the whole history exists.
+    for i, row in enumerate(rows):
+        this, nxt = row.get("ferr_ref"), rows[i + 1].get("ferr_ref") \
+            if i + 1 < len(rows) else None
+        if this and nxt is not None:
+            row["rho"] = nxt / this
+    return rows
+
+
 def _gmres_solve(A_op, rhs, M_op, tol, restart, maxiter, callback):
     """
     Call scipy.sparse.linalg.gmres compatibly across SciPy versions.
@@ -668,9 +1196,10 @@ def _gmres_solve(A_op, rhs, M_op, tol, restart, maxiter, callback):
                           maxiter=maxiter, callback=callback, callback_type="pr_norm")
 
 
-def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
+def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
                    gmres_tol=1e-8, gmres_restart=30, gmres_max_iter=50,
-                   normA=None, inv_dtype=DEFAULT_INV_DTYPE):
+                   normA=None, inv_dtype=DEFAULT_INV_DTYPE,
+                   rho_thresh=DEFAULT_RHO_THRESH, k_max=None):
     """
     GMRES-IR: iterative refinement whose correction solve is preconditioned
     GMRES at the working precision.
@@ -694,6 +1223,12 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
     low-precision solve and the residual and error bookkeeping remain
     vectorized.
 
+    The loop stops on the criteria of RefinementMonitor. Its effective solve
+    precision is u_s = u, the working precision: GMRES iterates on the
+    preconditioned system in complex128, so the correction is as accurate as
+    the working precision allows however low u_f is. That is the whole reason
+    this variant tolerates condition numbers LU-IR cannot.
+
     Parameters
     ----------
     low_dtype, inv_dtype : as in solve_mixed_ir. At complex32 the
@@ -701,11 +1236,15 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
         factorization is touched, and each vector reaches it cast losslessly to
         complex128; see cast_dtype.
     x_true : as in solve_mixed_ir; recorded for reporting only.
+    rho_thresh : threshold of stopping condition 2.
+    k_max : threshold of stopping condition 4, on the inner iteration count of
+        a single outer step. None disables it.
 
     Returns
     -------
-    (x, extra) with extra carrying the residual history, the forward-error
-    history, the inner GMRES iteration counts and the factor footprint.
+    (x, extra) with extra carrying the residual history, the iterates, the
+    corrections, the residual vectors handed to the correction solve, the inner
+    GMRES iteration counts and the factor footprint.
     """
     b_high = np.asarray(b, dtype=HIGH_DTYPE)
     orig_ndim = b_high.ndim
@@ -724,7 +1263,15 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
     history = []
     true_err_history = []
     x_history = []
+    d_history = []
+    r_history = []
     gmres_iters_history = []   # list (per outer iter) of lists (per rhs column)
+
+    # At the working precision, as in solve_mixed_ir; u_f never enters the
+    # stopping test.
+    monitor = RefinementMonitor(float(np.finfo(HIGH_DTYPE).eps), n,
+                                rho_thresh=rho_thresh, max_iter=max_iter,
+                                k_max=k_max)
 
     t0 = time.perf_counter()
     solver = SOLVER_BUILDERS[solver_name](A, low_dtype, bs, b, inv_dtype)
@@ -741,15 +1288,14 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
 
     for _ in range(max_iter):
         r2 = b2 - A_high @ x2
-        rel = np.linalg.norm(r2) / norm_b
-        history.append(rel)
+        history.append(np.linalg.norm(r2) / norm_b)
         if x_true2 is not None:
             true_err_history.append(np.linalg.norm(x2 - x_true2) / norm_x_true)
         # No copy; see the note in solve_mixed_ir. x2 = x2 + d2 below rebinds
         # rather than writing in place, so the retained reference stays valid.
         x_history.append(x2)
-        if rel < tol:
-            break
+        # Retained in complex128, before any cast; see solve_mixed_ir.
+        r_history.append(r2)
 
         d2 = np.zeros_like(x2)
         iters_this_round = []
@@ -769,7 +1315,13 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
             d2[:, j] = dj
             iters_this_round.append(counter[0])
         gmres_iters_history.append(iters_this_round)
-        x2 = x2 + d2
+        d_history.append(d2)
+
+        x_next = x2 + d2
+        stop = monitor.update(d2, x2, gmres_iters=iters_this_round)
+        x2 = x_next
+        if stop:
+            break
     inner_s = time.perf_counter() - t0
 
     x = x2 if orig_ndim == 2 else x2[:, 0]
@@ -778,6 +1330,9 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter, x_true=None,
         "history": history,
         "true_err_history": true_err_history,
         "x_history": x_history,
+        "d_history": d_history,
+        "r_history": r_history,
+        "monitor": monitor,
         "gmres_iters_history": gmres_iters_history,
         "mem_bytes": solver.factor_nbytes(),
         "factor_s": factor_s,
@@ -943,10 +1498,12 @@ def benchmark_solver(fn, A_high, b_high, repeats, x_true=None, normA=None):
 
         # Per-iteration backward errors, from the iterates the refinement loop
         # retained. Done here rather than in the loop so that neither the wall
-        # timer above nor the loop's own inner_s is charged for them.
+        # timer above nor the loop's own inner_s is charged for them. The
+        # iterates are kept rather than popped: refinement_metrics reads them
+        # again, also outside the timed region.
         extra["etainf_history"], extra["omega_history"] = \
             _backward_error_histories(A_high, b_high,
-                                      extra.pop("x_history", []), normA)
+                                      extra.get("x_history", []), normA)
 
         true_err = None
         if x_true is not None:
@@ -968,10 +1525,11 @@ def benchmark_solver(fn, A_high, b_high, repeats, x_true=None, normA=None):
     return records
 
 
-def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repeats,
+def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
                    reference_solver=None, inner="direct",
                    gmres_tol=1e-8, gmres_restart=30, gmres_max_iter=50,
-                   inv_dtype=DEFAULT_INV_DTYPE):
+                   inv_dtype=DEFAULT_INV_DTYPE,
+                   rho_thresh=DEFAULT_RHO_THRESH, k_max=None):
     A, b = load_system(h5path, idx)
     A_high = A.tocsc().astype(HIGH_DTYPE)
     b_high = np.asarray(b, dtype=HIGH_DTYPE)
@@ -1043,20 +1601,34 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
         print(f"Condition number: not available (no valid entry for idx={idx} "
               f"in {cond_path})")
 
+    # The reference solver provides x_true and, kept alive afterwards, the
+    # reference corrections phi_solve is measured against; see
+    # refinement_metrics. Its own backward error is reported, since every
+    # "forward error" here is relative to it and is only as meaningful as it is.
     x_true = None
+    ref = None
+    ref_eta = None
     if reference_solver is not None:
         print(f"Reference: x_true = {reference_solver} complex128", flush=True)
         try:
             ref = SOLVER_BUILDERS[reference_solver](A, HIGH_DTYPE, bs, b,
                                                     DEFAULT_INV_DTYPE)
             x_true = ref.solve(b_high).astype(HIGH_DTYPE)
-            if hasattr(ref, "free"):
-                ref.free()
             ref_res = np.linalg.norm(A_high @ x_true - b_high) / np.linalg.norm(b_high)
-            print(f"           ||A@x_true - b|| / ||b|| for x_true itself: {ref_res:.2e}")
-            print(f"           x_true (shape {x_true.shape}, dtype {x_true.dtype}):")
+            _, ref_etas, _ = backward_errors(A_high, x_true, b_high, normA)
+            ref_eta = ref_etas[np.inf]
+            print(f"           ||A@x_true - b|| / ||b|| for x_true itself: {ref_res:.2e}"
+                  f"   nbe_inf: {ref_eta:.2e}")
         except (ImportError, TypeError, RuntimeError) as e:
             raise SystemExit(f"--reference-solver {reference_solver} failed: {e}")
+
+    def ref_solve(r):
+        """Reference correction for a retained residual; see refinement_metrics."""
+        return ref.solve(np.asarray(r, dtype=HIGH_DTYPE)).astype(HIGH_DTYPE)
+
+    print(f"Stopping: Oktay-Carson criteria  [rho_thresh={rho_thresh:.2f}  "
+          f"max_iter={max_iter}"
+          f"{f'  k_max={k_max}' if k_max is not None else ''}]")
 
     if repeats == 1:
         print("Runs    : 1 per variant\n")
@@ -1067,16 +1639,23 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     # is not charged to whichever variant happens to run first.
     _warm_up_gpu(solver_name, A, b, bs, low_dtype, inv_dtype)
 
+    # u_s, the effective precision of the correction solve: u_f for LU-IR,
+    # whose correction is whatever the low-precision factors return, and u for
+    # GMRES-IR, whose inner solve runs at the working precision. It sets the
+    # scale of the whole convergence factor; see refinement_metrics.
     if inner == "gmres":
-        ir_fn = lambda: solve_gmres_ir(solver_name, A, b, bs, low_dtype, tol, max_iter,
+        u_s = float(np.finfo(HIGH_DTYPE).eps)
+        ir_fn = lambda: solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter,
                                        x_true=x_true, gmres_tol=gmres_tol,
                                        gmres_restart=gmres_restart,
                                        gmres_max_iter=gmres_max_iter,
-                                       normA=normA, inv_dtype=inv_dtype)
+                                       normA=normA, inv_dtype=inv_dtype,
+                                       rho_thresh=rho_thresh, k_max=k_max)
     else:
-        ir_fn = lambda: solve_mixed_ir(solver_name, A, b, bs, low_dtype, tol, max_iter,
+        u_s = unit_roundoff(low_dtype)
+        ir_fn = lambda: solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter,
                                        x_true=x_true, normA=normA,
-                                       inv_dtype=inv_dtype)
+                                       inv_dtype=inv_dtype, rho_thresh=rho_thresh)
 
     # The third entry of each variant records what that method must hold
     # besides its factorization, for the working-set row of the report:
@@ -1226,14 +1805,14 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     # replace, so it is the denominator that makes each saving readable. The
     # ratio is printed beside its own value rather than on a row of its own, so
     # that one column holds everything about one variant.
-    ref = next((nm for nm in names if "complex128 (direct)" in nm), None)
+    mem_ref = next((nm for nm in names if "complex128 (direct)" in nm), None)
 
     def mem_row(label, size):
         vals = []
         for nm in names:
             cell = f"{size[nm]/MIB:.2f}"
-            if ref is not None and size.get(ref) and size[nm]:
-                cell += f" ({size[nm]/size[ref]:.2f}x)"
+            if mem_ref is not None and size.get(mem_ref) and size[nm]:
+                cell += f" ({size[nm]/size[mem_ref]:.2f}x)"
             vals.append(cell)
         print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
 
@@ -1254,36 +1833,65 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
                     line += f"   ||x-x_true||/||x_true|| = {per_err[j]:.3e}"
                 print(line)
 
+    # ---- the refinement variant's convergence, and the metrics behind it ----
+    #
+    # Everything below is reconstructed from the arrays the loop retained, in
+    # the same pass that will write them out; see refinement_metrics.
     ir_name = names[0]
-    history = all_records[ir_name][0]["extra"].get("history", [])
-    true_err_history = all_records[ir_name][0]["extra"].get("true_err_history", [])
-    etainf_history = all_records[ir_name][0]["extra"].get("etainf_history", [])
-    omega_history = all_records[ir_name][0]["extra"].get("omega_history", [])
-    gmres_iters_history = all_records[ir_name][0]["extra"].get("gmres_iters_history", [])
-    if history:
-        converged = history[-1] < tol
-        if converged:
-            print(f"\n  Converged in {len(history)} outer iteration"
-                  f"{'s' if len(history) != 1 else ''} "
-                  f"(||r||/||b|| = {history[-1]:.2e} < tol {tol:.0e})")
-        else:
-            print(f"\n  Did NOT converge within {max_iter} outer iterations "
-                  f"(||r||/||b|| = {history[-1]:.2e}, tol {tol:.0e})")
-        print(f"  IR convergence history (first run, {ir_name}):")
-        for i, rel in enumerate(history):
-            tag = "  <- converged" if i == len(history) - 1 and rel < tol else ""
-            line = f"    iter {i}: ||r||/||b|| = {rel:.3e}"
-            if i < len(true_err_history):
-                line += f"   ferr = {true_err_history[i]:.3e}"
+    ir_extra = all_records[ir_name][0]["extra"]
+    metrics = refinement_metrics(A_high, x_true, ir_extra, u_s, kappa["inf"],
+                                 ref_solve=ref_solve if ref is not None else None)
+    monitor = ir_extra.get("monitor")
+    etainf_history = ir_extra.get("etainf_history", [])
+    omega_history = ir_extra.get("omega_history", [])
+
+    if monitor is not None:
+        summary = monitor.summary()
+        verdict = "CONVERGED" if summary["converged"] else "did NOT converge"
+        print(f"\n  {verdict} after {summary['outer_iters']} outer iteration"
+              f"{'s' if summary['outer_iters'] != 1 else ''}")
+        print(f"    stop: {summary['stop_reason']}")
+        if summary["phi_final"] is not None:
+            print(f"    phi = z/(1-rho_max) = {summary['phi_final']:.3e}   "
+                  f"rho_max = {summary['rho_max']:.3e}   "
+                  f"sqrt(n)*u = {monitor.limit:.3e}")
+
+    if metrics:
+        print(f"\n  Convergence history (first run, {ir_name}):")
+        for i, m in enumerate(metrics):
+            line = f"    iter {i}:"
+            if m.get("relres") is not None:
+                line += f" ||r||/||b|| = {m['relres']:.3e}"
+            if m.get("ferr_ref") is not None:
+                line += f"   ferr_ref = {m['ferr_ref']:.3e}"
             if i < len(etainf_history):
                 line += f"   nbe_inf = {etainf_history[i]:.3e}"
             if i < len(omega_history):
                 line += f"   cbe = {omega_history[i]:.3e}"
-            if i < len(gmres_iters_history):
-                iters = gmres_iters_history[i]
-                iters_str = iters[0] if len(iters) == 1 else iters
-                line += f"   inner GMRES iters = {iters_str}"
-            print(line + tag)
+            if m.get("gmres_inner_iterations") is not None:
+                line += f"   gmres = {m['gmres_inner_iterations']}"
+            print(line)
+
+        # The convergence-factor panel: the right-hand plots of Carson and
+        # Higham's numerical experiments, as a table.
+        print(f"\n  Convergence factor (u_s = {u_s:.2e}, "
+              f"{'u (GMRES-IR)' if inner == 'gmres' else 'u_f (LU-IR)'}):")
+        head = (f"    {'iter':<6}{'rho (obs)':>12}{'mu_hat':>12}"
+                f"{'phi_cond':>12}{'phi_solve':>12}{'phi_hat':>12}")
+        print(head)
+        print("    " + "─" * (len(head) - 4))
+        for i, m in enumerate(metrics):
+            def cell(key):
+                v = m.get(key)
+                return f"{v:>12.3e}" if v is not None else f"{'n/a':>12}"
+            print(f"    {i:<6}" + cell("rho") + cell("mu_hat")
+                  + cell("phi_cond_hat") + cell("phi_solve_hat") + cell("phi_hat"))
+        if kappa["inf"] is None:
+            print("    phi_cond is n/a: kappa_inf was not available for this "
+                  "index; run condition-est/condition_est.py first")
+        if ref is None:
+            print("    phi_solve is n/a: no --reference-solver, so no reference "
+                  "correction to compare against")
 
     probe_idx = 100
     if A.shape[0] > probe_idx:
@@ -1307,7 +1915,82 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, tol, max_iter, repea
     # embedding stores each real component of an entry twice. See ITEMSIZE.
     print(f"    Index arrays (shared): ~{idx_mib:.3f} MiB")
 
-    return all_records
+    if ref is not None and hasattr(ref, "free"):
+        ref.free()
+
+    # ---- the two result tables --------------------------------------------
+    #
+    # One run row per variant, and one iteration row per outer step of the
+    # refinement variant. Both are keyed by (idx, variant) so that a sweep
+    # concatenates cleanly and either table can be read on its own.
+    u_f = unit_roundoff(low_dtype)
+    u_work = float(np.finfo(HIGH_DTYPE).eps)
+    n_blocks = len(block_sizes_from_matrix(A)) \
+        if solver_name.startswith("block-thomas") else -1
+    common = dict(idx=int(idx), n=int(n), nnz=nnz, n_rhs=int(n_rhs),
+                  n_blocks=int(n_blocks),
+                  energy=float(energy) if energy is not None else float("nan"),
+                  solver=solver_name, factor_dtype=low_name, inner=inner)
+    run_rows = []
+    for nm in names:
+        recs = all_records[nm]
+        extra0 = recs[0]["extra"]
+        mon = extra0.get("monitor")
+        summary = mon.summary() if mon is not None else {}
+        gm = extra0.get("gmres_iters_history", [])
+        breakdown = extra0.get("factor_breakdown")
+        run_rows.append(dict(
+            common, variant=nm,
+            is_refined=int(mon is not None),
+            u_f=float(u_f), u=u_work,
+            u_s=float(u_s) if mon is not None else float("nan"),
+            kappa_2=kappa[2] if kappa[2] is not None else float("nan"),
+            kappa_inf=kappa["inf"] if kappa["inf"] is not None else float("nan"),
+            lu_ir_bound=(kappa["inf"] * u_f) if kappa["inf"] is not None
+                        else float("nan"),
+            relres=med(nm, "residual"),
+            ferr_ref=med_opt(nm, "true_err") if have_x_true else float("nan"),
+            eta1=med_opt(nm, "eta1") if med_opt(nm, "eta1") is not None else float("nan"),
+            eta2=med_opt(nm, "eta2") if med_opt(nm, "eta2") is not None else float("nan"),
+            etainf=med_opt(nm, "etainf") if med_opt(nm, "etainf") is not None else float("nan"),
+            omega=med_opt(nm, "omega") if med_opt(nm, "omega") is not None else float("nan"),
+            outer_iters=int(summary.get("outer_iters", 0)),
+            converged=int(bool(summary.get("converged", False))),
+            rho_max=float(summary.get("rho_max", float("nan"))),
+            phi_final=float(summary["phi_final"]) if summary.get("phi_final") is not None
+                      else float("nan"),
+            stop_reason=summary.get("stop_reason", "no refinement"),
+            gmres_total=int(sum(sum(g) for g in gm)) if gm else -1,
+            wall_s=med(nm, "wall_s"),
+            factor_s=med_extra(nm, "factor_s") or float("nan"),
+            factor_symbolic_s=float(breakdown[0]) if breakdown else float("nan"),
+            factor_numeric_s=float(breakdown[1]) if breakdown else float("nan"),
+            inner_s=med_extra(nm, "inner_s") or float("nan"),
+            factor_mb=mem[nm] / MIB,
+            working_mb=working[nm] / MIB,
+            reference_solver=reference_solver or "",
+            reference_nbe=float(ref_eta) if ref_eta is not None else float("nan"),
+        ))
+
+    iter_rows = []
+    for m in metrics:
+        row = dict(common, variant=ir_name)
+        for key in ITERATION_COLUMNS:
+            if key in row:
+                continue
+            value = m.get(key)
+            row[key] = (float("nan") if value is None and key not in
+                        ("phi_cond_form", "note", "gmres_inner_iterations",
+                         "gmres_inner_max", "outer_iteration")
+                        else value)
+        row.setdefault("phi_cond_form", "unavailable")
+        row.setdefault("note", "")
+        for key in ("gmres_inner_iterations", "gmres_inner_max"):
+            if row.get(key) is None:
+                row[key] = -1
+        iter_rows.append(row)
+
+    return all_records, run_rows, iter_rows
 
 
 def main():
@@ -1333,16 +2016,32 @@ def main():
                          "a single low-precision triangular solve; 'gmres' is "
                          "GMRES-IR, GMRES in complex128 preconditioned by the "
                          "low-precision factorization")
-    ap.add_argument("--tol", type=float, default=1e-14,
-                    help="outer convergence tolerance on ||r||/||b||")
+    # Stopping criteria, Oktay and Carson section 2.1.1. Conditions 1 and 2
+    # need no option: condition 1 compares against u, which is fixed by the
+    # working precision, and condition 2 against --rho-thresh.
+    ap.add_argument("--rho-thresh", type=float, default=DEFAULT_RHO_THRESH,
+                    metavar="RHO",
+                    help="stopping condition 2: stop once a correction is at "
+                         "least this fraction of the previous one, i.e. "
+                         "convergence has slowed. 0.5 is the 'cautious' "
+                         "setting of Oktay and Carson and Wilkinson's; 0.9 is "
+                         f"their 'aggressive' one (default: {DEFAULT_RHO_THRESH})")
     ap.add_argument("--max-iter", type=int, default=10, metavar="N",
-                    help="maximum outer refinement iterations")
+                    help="stopping condition 3: maximum outer refinement "
+                         "iterations (default: 10)")
+    ap.add_argument("--k-max", type=int, default=None, metavar="K",
+                    help="stopping condition 4: stop once one outer step needs "
+                         "this many inner GMRES iterations, at which point the "
+                         "step costs about what refactorizing would. Defaults "
+                         "to ceil(0.1 n), the value Oktay and Carson use. "
+                         "--inner gmres only; 0 disables the condition")
     ap.add_argument("--repeats", type=int, default=1,
                     help="repeats per variant; the median is reported")
-    ap.add_argument("--reference-solver", choices=["superlu", "mumps"],
-                    default="superlu", metavar="NAME",
-                    help="compute x_true with this solver at complex128 and "
-                         "report ||x - x_true||/||x_true|| for every variant")
+    ap.add_argument("--reference-solver", choices=["superlu", "mumps", "cudss"],
+                    default="mumps", metavar="NAME",
+                    help="compute x_true with this solver at complex128, and "
+                         "the reference corrections phi_solve is measured "
+                         "against (default: mumps)")
     ap.add_argument("--gmres-tol", type=float, default=1e-8,
                     help="relative tolerance of the inner GMRES solve "
                          "(--inner gmres only)")
@@ -1351,7 +2050,35 @@ def main():
     ap.add_argument("--gmres-max-iter", type=int, default=50,
                     help="maximum inner GMRES iterations per outer step "
                          "(--inner gmres only)")
+    cli.add_output(ap, outdir_default=str(cli.MIXED_PREC_DIR),
+                   outdir_help=f"directory holding the analysis file "
+                               f"<material>.h5, to which each run appends one "
+                               f"numbered experiment "
+                               f"(default: {cli.MIXED_PREC_DIR})")
+    ap.add_argument("--no-save", action="store_true",
+                    help="print the report but append no experiment")
+    ap.add_argument("--list-experiments", action="store_true",
+                    help="list the experiments already in the analysis file "
+                         "and exit, without running anything")
     args = ap.parse_args()
+
+    if args.list_experiments:
+        material = args.material or Path(args.h5path).stem
+        out_path = cli.analysis_h5(args.outdir, material)
+        names = experiment_names(out_path)
+        if not names:
+            print(f"{out_path} holds no experiments")
+            return
+        print(f"{out_path}")
+        for nm in names:
+            _, attrs, runs, iters = load_experiment(out_path, nm)
+            idxs = attrs.get("indices", [])
+            print(f"  {nm}  {attrs.get('timestamp', '?'):<26} "
+                  f"{attrs.get('solver', '?')} {attrs.get('factor_dtype', '?')} "
+                  f"{attrs.get('inner_label', '?'):<9} "
+                  f"{len(idxs)} idx  {len(runs.get('idx', []))} runs  "
+                  f"{len(iters.get('idx', []))} iters")
+        return
 
     h5path = Path(args.h5path)
     if args.energy is not None:
@@ -1377,16 +2104,79 @@ def main():
                     else np.dtype(args.factor_dtype))
     inv_dtype = np.dtype(args.inv_dtype)
 
+    all_runs, all_iters, skipped = [], [], []
     for idx in indices:
         if len(indices) > 1:
             print("=" * 78)
-        run_benchmarks(h5path, idx, args.solver, None,
-                       factor_dtype, args.tol, args.max_iter, args.repeats,
-                       reference_solver=args.reference_solver,
-                       inner=args.inner, gmres_tol=args.gmres_tol,
-                       gmres_restart=args.gmres_restart,
-                       gmres_max_iter=args.gmres_max_iter,
-                       inv_dtype=inv_dtype)
+        # k_max defaults to ceil(0.1 n), so it needs n and is resolved per
+        # index rather than at parse time; 0 disables condition 4.
+        k_max = args.k_max
+        if args.inner != "gmres":
+            k_max = None
+        elif k_max is None:
+            with h5py.File(h5path, "r") as f:
+                k_max = math.ceil(0.1 * int(f[f"E_{idx}/M"]["indptr"].shape[0] - 1))
+        elif k_max <= 0:
+            k_max = None
+        try:
+            _records, run_rows, iter_rows = run_benchmarks(
+                h5path, idx, args.solver, None,
+                factor_dtype, args.max_iter, args.repeats,
+                reference_solver=args.reference_solver,
+                inner=args.inner, gmres_tol=args.gmres_tol,
+                gmres_restart=args.gmres_restart,
+                gmres_max_iter=args.gmres_max_iter,
+                inv_dtype=inv_dtype, rho_thresh=args.rho_thresh, k_max=k_max)
+            all_runs.extend(run_rows)
+            all_iters.extend(iter_rows)
+        except SystemExit as e:              # a bad index, from load_system
+            skipped.append((idx, str(e)))
+            print(f"\nE_{idx}: skipped ({e})")
+
+    if args.no_save or not all_runs:
+        return
+
+    material = args.material or h5path.stem
+    out_path = cli.analysis_h5(args.outdir, material)
+    attrs = dict(
+        material=material,
+        source=str(h5path),
+        timestamp=datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        command=" ".join(sys.argv),
+        solver=args.solver,
+        factor_dtype=args.factor_dtype,
+        inv_dtype=args.inv_dtype,
+        inner=args.inner,
+        inner_label="GMRES-IR" if args.inner == "gmres" else "LU-IR",
+        working_dtype=np.dtype(HIGH_DTYPE).name,
+        residual_dtype=np.dtype(HIGH_DTYPE).name,
+        # u itself, so that a figure can draw the level refinement aims at
+        # without having to know what complex128 rounds to.
+        working_u=float(np.finfo(HIGH_DTYPE).eps),
+        rho_thresh=float(args.rho_thresh),
+        max_iter=int(args.max_iter),
+        k_max=int(args.k_max) if args.k_max is not None else -1,
+        gmres_tol=float(args.gmres_tol),
+        gmres_restart=int(args.gmres_restart),
+        gmres_max_iter=int(args.gmres_max_iter),
+        reference_solver=args.reference_solver,
+        repeats=int(args.repeats),
+        indices=np.asarray(indices, dtype=np.int64),
+        n_requested=len(indices),
+        n_skipped=len(skipped),
+        criteria="Oktay and Carson 2021, section 2.1.1",
+        convergence_factor="Carson and Higham 2018, Corollary 3.3",
+        **material_metadata(h5path),
+    )
+    if skipped:
+        attrs["skipped_idx"] = np.asarray([i for i, _ in skipped], dtype=np.int64)
+        attrs["skipped_reason"] = [message for _, message in skipped]
+    name = save_experiment(out_path, attrs, all_runs, all_iters)
+    print(f"\nwrote {out_path}:/{EXPERIMENTS_GROUP}/{name}")
+    print(f"  runs        {len(all_runs)} rows (one per index and variant)")
+    print(f"  iterations  {len(all_iters)} rows (one per index and outer step)")
+    print(f"  plot with: python ../plotting/mixed_prec_ir/plot_mpir.py "
+          f"{out_path} --experiment {int(name)}")
 
 
 if __name__ == "__main__":

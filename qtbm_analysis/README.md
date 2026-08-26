@@ -86,6 +86,9 @@ which every analysis of that material writes its own top-level group.
                                        <material>.h5 :/growth_factor   │
     run_bench/sweep_fp16.py ───────► error-analysis-block-thomas/ ◄────┘
                                        <material>.h5 :/fp16_sweep
+    mixed_prec_ir/mpir.py ─────────► mixed-precision-IR/
+                                       <material>.h5 :/experiments/<NNNN>/
+                                                        runs, iterations
     non-normal/non-normal.py ──────► non-normal/
                                        <material>.h5 :/non_normality
                     │
@@ -94,6 +97,7 @@ which every analysis of that material writes its own top-level group.
                     plotting/block-thomas/plot_growth_factor.py
                     plotting/block-thomas/plot_fp16_accuracy.py
                     plotting/block-thomas/plot_speedup.py
+                    plotting/mixed_prec_ir/plot_mpir.py
                     plotting/non-normal/plot_non_normal.py
                     plotting/matrices2/plot_qtbm_spectra.py
                     plotting/materials/bandstructure.py
@@ -226,8 +230,9 @@ cd ../run_bench
 python sweep_fp16.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
     --start 0 --end 401 --block-size 416
 cd ../mixed_prec_ir
-# Console report only; nothing is written. One invocation per solver and
-# precision under test.
+# One invocation per solver and precision under test; each appends a new
+# numbered experiment to mixed-precision-IR/graphene.h5 and never overwrites,
+# so the file records every run made.
 python mpir.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
     --start 0 --end 401 --solver block-thomas \
     --factor-dtype complex32 --inner gmres
@@ -241,6 +246,8 @@ cd ../plotting/block-thomas
 python plot_speedup.py        /scratch/yimili/matrices2/hdf5/graphene.h5
 python plot_growth_factor.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 python plot_fp16_accuracy.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
+cd ../mixed_prec_ir
+python plot_mpir.py           /scratch/yimili/mixed-precision-IR/graphene.h5 --list
 cd ../non-normal
 python plot_non_normal.py     /scratch/yimili/non-normal/graphene.h5
 
@@ -712,7 +719,16 @@ pairings exist is read from `cli.SOLVERS` and checked at the parser; see
 
 The evidence for whether half-precision preconditioning works is the
 convergence history and the inner iteration counts, not any single final
-number; both are printed per index.
+number; both are printed per index and written to the experiment's
+`iterations` table.
+
+The outer loop stops on the four criteria of Oktay and Carson rather than on a
+residual tolerance, and its convergence is reported through the factor of
+Carson and Higham's Corollary 3.3, split into a conditioning term and a
+correction-solver term. Every one of those quantities is reconstructed after
+the run from the arrays the loop retained, never inside it, so the timing and
+memory rows measure only refinement itself; see
+[`mixed_prec_ir/README.md`](mixed_prec_ir/README.md).
 
 ---
 

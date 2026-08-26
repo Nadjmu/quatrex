@@ -24,7 +24,8 @@ plotting/
 │   └── plot_condition.py
 ├── non-normal/
 │   └── plot_non_normal.py
-├── mixed_prec_ir/             no plotting script yet; see mixed_prec_ir/README.md
+├── mixed_prec_ir/
+│   └── plot_mpir.py
 ├── matrices2/
 │   ├── plot_qtbm_spectra.py
 │   └── plot_rhs.py
@@ -38,6 +39,7 @@ plotting/
 | `block-thomas/plot_growth_factor.py` | analysis file, `growth_factor` | `<material>_growth_factor.png` |
 | `block-thomas/plot_fp16_accuracy.py` | analysis file, `fp16_sweep` | `_relres_fwderr.png`, `_forward_accuracy.png`, `_error_vs_condition.png` |
 | `condition-est/plot_condition.py` | analysis file, `condition` | `<material>_condition.png`, `condition_all.png` |
+| `mixed_prec_ir/plot_mpir.py` | analysis file, one `experiments/<NNNN>` | `_exp<NNNN>_E<idx>.png`, `_exp<NNNN>_summary.png` |
 | `non-normal/plot_non_normal.py` | analysis file, `non_normality` | `<material>_frames/E_*.png`, `<material>_non_normal.gif` |
 | `matrices2/plot_qtbm_spectra.py` | a `main3.py` output directory | `_spectrum.png`, `_condition.png`, `_singular_values.png` |
 | `matrices2/plot_rhs.py` | material file, `E_<idx>/rhs` | `<material>_rhs.png` |
@@ -108,6 +110,8 @@ block-thomas/growth_factor.py    ─► error-analysis-block-thomas/            
                                      <material>.h5 :/growth_factor
 run_bench/sweep_fp16.py          ─► the same file :/fp16_sweep              ─► block-thomas/plot_fp16_accuracy.py
 condition-est/condition_est.py   ─► condition-est/<material>.h5 :/condition ─► condition-est/plot_condition.py
+mixed_prec_ir/mpir.py            ─► mixed-precision-IR/<material>.h5        ─► mixed_prec_ir/plot_mpir.py
+                                     :/experiments/<NNNN>/{runs,iterations}
 non-normal/non-normal.py         ─► non-normal/<material>.h5                ─► non-normal/plot_non_normal.py
                                      :/non_normality
 main3.py / main3_gpu.py          ─► matrices2/<material>/energies.npy, ...  ─► matrices2/plot_qtbm_spectra.py
@@ -119,8 +123,10 @@ timings it needs are already stored there and no intermediate artefact is
 required. Its figure is written to the Block Thomas analysis directory, beside
 the stability and accuracy figures drawn from the same solver runs.
 
-`mixed_prec_ir/mpir.py` writes nothing to disk yet (console report only), so
-`plotting/mixed_prec_ir/` has no script; see
+`mixed_prec_ir/plot_mpir.py` is the one script here that reads a *numbered
+experiment* rather than a single fixed group: `mpir.py` appends one per
+invocation and never overwrites, so `--experiment` selects which run to draw
+and defaults to the last. `--list` prints what a file holds. See
 [`../mixed_prec_ir/README.md`](../mixed_prec_ir/README.md#6-output).
 
 ---
@@ -136,6 +142,10 @@ python plot_fp16_accuracy.py  /scratch/yimili/error-analysis-block-thomas/graphe
 
 cd ../condition-est
 python plot_condition.py      /scratch/yimili/condition-est/graphene.h5
+
+cd ../mixed_prec_ir
+python plot_mpir.py           /scratch/yimili/mixed-precision-IR/graphene.h5 --list
+python plot_mpir.py           .../graphene.h5 --experiment 3 --idx 84 254
 
 cd ../non-normal
 python plot_non_normal.py     /scratch/yimili/non-normal/carbon-chain.h5 --ping-pong
@@ -182,6 +192,21 @@ rest on a norm estimate that is a lower bound and may sit slightly below the
 exact value; `kappa_2` comes from both extreme singular values directly. Where
 the three curves diverge beyond the factor-of-`n` equivalence of norms, it is
 the shape of `M^-1` rather than the conditioning that differs between them.
+
+**`mixed_prec_ir/plot_mpir.py`.** One experiment of a mixed-precision
+refinement study, in the layout of Carson and Higham's numerical experiments.
+Per energy index, two panels: on the left the convergence history — forward
+error against the reference solution, and the normwise and componentwise
+backward errors — with a dotted line at the working precision `u`; on the right
+the convergence factor of Corollary 3.3, split into its conditioning term
+`phi_cond` and its correction-solver term `phi_solve`, with the observed
+contraction `rho` beside them and a dotted line at 1. Refinement converges
+while `phi` stays comfortably below that line, and the split says which of the
+two is binding. `phi` is drawn wide and pale because it is the sum of the other
+two: whichever dominates coincides with it exactly and would otherwise be
+hidden underneath. One summary figure then covers the whole sweep — what
+refinement recovered against what the unrefined low-precision solve reached,
+the outer iteration counts, and the inner GMRES counts.
 
 **`non-normal/plot_non_normal.py`.** Its panels are per rank rather than per
 energy, so it has no energy axis to mark; the energy of the frame appears in
