@@ -809,6 +809,15 @@ DEFAULT_RHO_THRESH = 0.5
 # no further improvement is possible once ferr stops decreasing.
 DEFAULT_FERR_THRESH = 0.97
 
+# Cap on outer refinement steps, condition 3. It is a safety net, not a
+# convergence criterion: a healthy run stops on condition 1, 2 or 5 well
+# before it, and hitting it means refinement was still contracting when the
+# loop was cut off. 15 rather than 10 because a low-precision factorization
+# near the LU-IR bound contracts by only an order of magnitude per step, and
+# ten steps left such runs short of the working precision they were still
+# approaching.
+DEFAULT_MAX_ITER = 15
+
 
 def _inf_norm(X):
     """
@@ -886,7 +895,8 @@ class RefinementMonitor:
     accuracy of the returned solution does not depend on it.
     """
 
-    def __init__(self, u, n, rho_thresh=DEFAULT_RHO_THRESH, max_iter=10,
+    def __init__(self, u, n, rho_thresh=DEFAULT_RHO_THRESH,
+                 max_iter=DEFAULT_MAX_ITER,
                  k_max=None, ferr_thresh=DEFAULT_FERR_THRESH):
         # u is the working precision in both conditions that use it, condition
         # 1 and the sqrt(n) u convergence level, and is complex128 here for
@@ -2150,9 +2160,10 @@ def main():
                          "convergence has slowed. 0.5 is the 'cautious' "
                          "setting of Oktay and Carson and Wilkinson's; 0.9 is "
                          f"their 'aggressive' one (default: {DEFAULT_RHO_THRESH})")
-    ap.add_argument("--max-iter", type=int, default=10, metavar="N",
+    ap.add_argument("--max-iter", type=int, default=DEFAULT_MAX_ITER,
+                    metavar="N",
                     help="stopping condition 3: maximum outer refinement "
-                         "iterations (default: 10)")
+                         f"iterations (default: {DEFAULT_MAX_ITER})")
     ap.add_argument("--k-max", type=int, default=None, metavar="K",
                     help="stopping condition 4: stop once one outer step needs "
                          "this many inner GMRES iterations, at which point the "
