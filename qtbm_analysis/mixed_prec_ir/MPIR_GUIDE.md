@@ -138,7 +138,7 @@ python mpir.py carbon-nanotube.h5 --list-experiments
 | `--repeats` | `1` | repeats per variant; the median is reported |
 | `--reference-solver` | `mumps` | supplies `x_true` and the reference corrections `phi_solve` is measured against |
 | `--gmres-tol`, `--gmres-restart`, `--gmres-max-iter` | `1e-8`, `30`, `50` | inner GMRES parameters (`--inner gmres` only) |
-| `--outdir` | `cli.MIXED_PREC_DIR` | where the analysis file is written |
+| `--outdir` | `cli.MIXED_PREC_DIR` | the analysis file is written to `<outdir>/<material>/<material>.h5` |
 | `--material` | derived from the input path | label used in the file name and figure titles |
 | `--no-save` | off | print the report, append no experiment |
 | `--list-experiments` | off | list the file's experiments and exit |
@@ -234,10 +234,13 @@ Three honest caveats, all visible in the output rather than hidden:
 ## 5. The HDF5 file
 
 **One invocation is one experiment, and every experiment is kept.** Nothing
-is ever overwritten — each run appends the next numbered group:
+is ever overwritten — each run appends the next numbered group. And the file
+lives in a directory of its own per material, not as a bare file, because the
+plotting script's figures go into that same directory (§6) — the whole
+material, data and figures together, is then one thing to `scp -r`:
 
 ```
-<outdir>/<material>.h5
+<outdir>/<material>/<material>.h5
 └── experiments/
     ├── 0001/          attrs: the whole run configuration
     │   ├── runs        one row per (index, variant)
@@ -319,7 +322,16 @@ of per-row dicts.
 ## 6. Plotting
 
 `plotting/mixed_prec_ir/plot_mpir.py` draws one experiment, in the layout of
-Carson and Higham's numerical experiments.
+Carson and Higham's numerical experiments. Figures are written into
+`exp<NNNN>/` beside the analysis file by default:
+
+```
+<outdir>/<material>/
+├── <material>.h5
+└── exp0001/
+    ├── <material>_summary.png
+    └── <material>_E<idx>.png
+```
 
 ```bash
 python plot_mpir.py <material.h5> --list                    # what's in the file
@@ -329,7 +341,7 @@ python plot_mpir.py <material.h5> --experiment 3 --idx 84 254 # only these indic
 python plot_mpir.py <material.h5> --summary-only              # skip per-index figures
 ```
 
-### Per-index figure — `<material>_exp<NNNN>_E<idx>.png`
+### Per-index figure — `exp<NNNN>/<material>_E<idx>.png`
 
 One per energy index (capped by `--max-figures`, default 12, unless `--idx`
 names specific ones). Two panels:
@@ -343,10 +355,10 @@ names specific ones). Two panels:
   two — whichever term dominates coincides with it exactly and would
   otherwise be invisible underneath a line of equal weight.
 
-The title carries the material, the energy, `kappa_inf`, the method, and the
-stopping decision (converged or not, in how many steps, and why).
+The title carries the material, the energy, `kappa_inf`, the method, the outer
+iteration count, and why the loop stopped.
 
-### Summary figure — `<material>_exp<NNNN>_summary.png`
+### Summary figure — `exp<NNNN>/<material>_summary.png`
 
 One figure covering the whole swept experiment, three panels against energy
 (or index, if the file has no energy grid), with band edges marked:

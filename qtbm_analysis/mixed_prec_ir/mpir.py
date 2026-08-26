@@ -193,9 +193,10 @@ A console report: the per-variant table of residual, forward error against the
 reference solution, backward errors, wall time and factor memory, then the
 convergence history and the convergence-factor panel described above.
 
-Each invocation appends one numbered experiment to <outdir>/<material>.h5,
-holding its whole configuration and both result tables, unless --no-save is
-given. Nothing is ever overwritten, so the file records every run made:
+Each invocation appends one numbered experiment to
+<outdir>/<material>/<material>.h5, holding its whole configuration and both
+result tables, unless --no-save is given. Nothing is ever overwritten, so the
+file records every run made:
 
     experiments/0001/runs        one row per (index, variant)
     experiments/0001/iterations  one row per (index, outer step)
@@ -287,7 +288,7 @@ HIGH_DTYPE = np.complex128
 # Each run appends a new numbered group rather than overwriting the last, so the
 # analysis file becomes a record of what was actually run:
 #
-#   <outdir>/<material>.h5
+#   <outdir>/<material>/<material>.h5
 #   └── experiments/
 #       ├── 0001/          attrs: the whole run configuration; see main
 #       │   ├── runs        one row per (index, variant)
@@ -295,8 +296,15 @@ HIGH_DTYPE = np.complex128
 #       ├── 0002/
 #       └── ...
 #
-# The name is zero-padded because HDF5 orders keys as strings: unpadded, "10"
-# would sort before "2" and a listing would come out in the wrong order.
+# One directory per material, not the flat <outdir>/<material>.h5 of
+# cli.analysis_h5: plot_mpir.py writes its figures into a subdirectory of that
+# same material directory (exp0001/, exp0002/, ...), so the whole material --
+# the data and every figure ever drawn from it -- is one directory, `scp -r`
+# able as a unit. See analysis_path.
+#
+# The experiment name is zero-padded because HDF5 orders keys as strings:
+# unpadded, "10" would sort before "2" and a listing would come out in the
+# wrong order.
 #
 # Every other analysis in this pipeline rewrites its one group in place, which
 # is right for a sweep that is reproducible from its inputs. Refinement is not:
@@ -333,6 +341,21 @@ ITERATION_COLUMNS = [
     "correction_norm_inf", "reference_correction_norm_inf",
     "gmres_inner_iterations", "gmres_inner_max", "note",
 ]
+
+
+def analysis_path(outdir, material):
+    """
+    <outdir>/<material>/<material>.h5, the analysis file for one material.
+
+    One directory per material rather than cli.analysis_h5's flat
+    <outdir>/<material>.h5: an experiment also has figures (see
+    plotting/mixed_prec_ir/plot_mpir.py), and every figure a run produces goes
+    into a subdirectory of this one. The whole material -- the data and every
+    experiment run against it -- is then one directory, `scp -r`-able as a
+    unit instead of as a scatter of same-prefixed files.
+    """
+    outdir = Path(outdir)
+    return outdir / material / f"{material}.h5"
 
 
 def experiment_names(path):
@@ -1626,9 +1649,13 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
         """Reference correction for a retained residual; see refinement_metrics."""
         return ref.solve(np.asarray(r, dtype=HIGH_DTYPE)).astype(HIGH_DTYPE)
 
-    print(f"Stopping: Oktay-Carson criteria  [rho_thresh={rho_thresh:.2f}  "
-          f"max_iter={max_iter}"
-          f"{f'  k_max={k_max}' if k_max is not None else ''}]")
+    u_work = float(np.finfo(HIGH_DTYPE).eps)
+    k_max_str = f"k_gmres >= {k_max}" if k_max is not None else "disabled"
+    print(f"Stopping: any of  "
+          f"(1) |d|/|x| <= u={u_work:.2e}  |  "
+          f"(2) |d_i+1|/|d_i| >= rho_thresh={rho_thresh:.2f}  |  "
+          f"(3) iter >= max_iter={max_iter}  |  "
+          f"(4, gmres only) {k_max_str}")
 
     if repeats == 1:
         print("Runs    : 1 per variant\n")
@@ -1847,10 +1874,8 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
 
     if monitor is not None:
         summary = monitor.summary()
-        verdict = "CONVERGED" if summary["converged"] else "did NOT converge"
-        print(f"\n  {verdict} after {summary['outer_iters']} outer iteration"
-              f"{'s' if summary['outer_iters'] != 1 else ''}")
-        print(f"    stop: {summary['stop_reason']}")
+        print(f"\n  Outer iterations: {summary['outer_iters']}   "
+              f"(stopped: {summary['stop_reason']})")
         if summary["phi_final"] is not None:
             print(f"    phi = z/(1-rho_max) = {summary['phi_final']:.3e}   "
                   f"rho_max = {summary['rho_max']:.3e}   "
@@ -2064,7 +2089,7 @@ def main():
 
     if args.list_experiments:
         material = args.material or Path(args.h5path).stem
-        out_path = cli.analysis_h5(args.outdir, material)
+        out_path = analysis_path(args.outdir, material)
         names = experiment_names(out_path)
         if not names:
             print(f"{out_path} holds no experiments")
@@ -2137,7 +2162,7 @@ def main():
         return
 
     material = args.material or h5path.stem
-    out_path = cli.analysis_h5(args.outdir, material)
+    out_path = analysis_path(args.outdir, material)
     attrs = dict(
         material=material,
         source=str(h5path),

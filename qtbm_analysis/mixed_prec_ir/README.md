@@ -216,9 +216,14 @@ Two consequences are worth expecting rather than being surprised by. Condition
 2 is what normally ends a healthy run: refinement reaches the floor set by
 rounding and the reference solution, the next correction fails to shrink, and
 the loop stops — often one step after the accuracy stopped improving. And a run
-that has genuinely converged to the reference floor may still report *did not
-converge* when that floor sits above `sqrt(n) u`, since the reference solution
-is itself only accurate to its own backward error, which is reported beside it.
+that has genuinely converged to the reference floor may still fail the `phi`
+convergence test when that floor sits above `sqrt(n) u`, since the reference
+solution is itself only accurate to its own backward error, which is reported
+beside it. The console reports the plain outer-iteration count and the reason
+the loop stopped rather than a converged/failed verdict, since which stopping
+condition fired is more informative than a binary label, and the count is what
+you need to compute an average convergence rate over a sweep. `converged` is
+still recorded as its own column in `runs` for filtering.
 
 ### Convergence metrics
 
@@ -373,13 +378,13 @@ and are reached here as `--factor-dtype complex32`.
 ## 6. Output
 
 **One invocation is one experiment, and every experiment is kept.** Each run
-appends a new numbered group to `<outdir>/<material>.h5` — `--outdir` defaults
-to `cli.MIXED_PREC_DIR` — rather than overwriting the last, so the file becomes
-a record of what was actually run. `--no-save` suppresses the write;
-`--list-experiments` prints what a file already holds.
+appends a new numbered group to `<outdir>/<material>/<material>.h5` —
+`--outdir` defaults to `cli.MIXED_PREC_DIR` — rather than overwriting the last,
+so the file becomes a record of what was actually run. `--no-save` suppresses
+the write; `--list-experiments` prints what a file already holds.
 
 ```
-<outdir>/<material>.h5
+<outdir>/<material>/<material>.h5
 └── experiments/
     ├── 0001/          attrs: the whole run configuration
     │   ├── runs        one row per (index, variant)
@@ -388,10 +393,17 @@ a record of what was actually run. `--no-save` suppresses the write;
     └── ...
 ```
 
-The number is zero-padded because HDF5 orders keys as strings: unpadded, `10`
-would sort before `2` and a listing would come out in the wrong order. The
-lowest unused number is taken, so an experiment deleted by hand is reused
-rather than leaving a gap.
+`mpir.py` writes into a *directory* per material, `<material>/<material>.h5`,
+rather than the flat `<material>.h5` of `cli.analysis_h5`:
+`plotting/mixed_prec_ir/plot_mpir.py` writes its figures into a subdirectory
+of that same directory, one per experiment (`exp0001/`, `exp0002/`, ...), so
+the whole material — the data and every figure ever drawn from it — is one
+directory, `scp -r`-able as a unit. See Plotting below.
+
+The experiment number is zero-padded because HDF5 orders keys as strings:
+unpadded, `10` would sort before `2` and a listing would come out in the wrong
+order. The lowest unused number is taken, so an experiment deleted by hand is
+reused rather than leaving a gap.
 
 Every other analysis in this pipeline rewrites its one group in place, which is
 right for a sweep reproducible from its inputs. Refinement is not: the
@@ -457,13 +469,27 @@ exactly these.
 [`../plotting/mixed_prec_ir/plot_mpir.py`](../plotting/mixed_prec_ir/) draws one
 experiment in the layout of Carson and Higham's numerical experiments: a
 two-panel figure per energy index — convergence history on the left, the `phi`
-decomposition on the right — and one summary figure across the sweep.
+decomposition on the right — and one summary figure across the sweep. Figures
+are written into `exp<NNNN>/` beside the analysis file by default, so a
+material's directory ends up holding the data and every experiment's figures
+together:
+
+```
+mixed-precision-IR/carbon-nanotube/
+├── carbon-nanotube.h5
+├── exp0001/
+│   ├── carbon-nanotube_summary.png
+│   └── carbon-nanotube_E84.png
+└── exp0002/
+    └── ...
+```
 
 ```bash
 python ../plotting/mixed_prec_ir/plot_mpir.py \
-    /scratch/yimili/mixed-precision-IR/carbon-nanotube.h5 --list
+    /scratch/yimili/mixed-precision-IR/carbon-nanotube/carbon-nanotube.h5 --list
 python ../plotting/mixed_prec_ir/plot_mpir.py \
-    /scratch/yimili/mixed-precision-IR/carbon-nanotube.h5 --experiment 3 --idx 84
+    /scratch/yimili/mixed-precision-IR/carbon-nanotube/carbon-nanotube.h5 \
+    --experiment 3 --idx 84
 ```
 
 ---

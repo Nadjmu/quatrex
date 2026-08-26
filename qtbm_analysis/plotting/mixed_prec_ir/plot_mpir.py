@@ -50,17 +50,29 @@ individually.
 
 Output
 ------
-    <outdir>/<material>_exp<NNNN>_E<idx>.png     one per index
-    <outdir>/<material>_exp<NNNN>_summary.png    the sweep
+    <outdir>/<material>_E<idx>.png     one per index
+    <outdir>/<material>_summary.png    the sweep
 
-The default output directory is the analysis file's own directory, so the
-figures are written beside the data they were drawn from. A sweep of many
-indices would produce one file per index, so per-index figures are capped by
---max-figures and can be restricted with --idx.
+The default output directory is exp<NNNN>/ beside the analysis file, i.e. one
+subdirectory per experiment inside the material's own directory:
+
+    mixed-precision-IR/<material>/
+    ├── <material>.h5
+    ├── exp0001/
+    │   ├── <material>_summary.png
+    │   └── <material>_E<idx>.png
+    └── exp0002/
+        └── ...
+
+so that the whole material -- the data and every figure ever drawn from it --
+is one directory, `scp -r`-able as a unit; the experiment number is not
+repeated in the filename since the directory already carries it. A sweep of
+many indices would produce one file per index, so per-index figures are capped
+by --max-figures and can be restricted with --idx.
 
 Usage
 -----
-    python plot_mpir.py /scratch/yimili/mixed-precision-IR/carbon-nanotube.h5
+    python plot_mpir.py /scratch/yimili/mixed-precision-IR/carbon-nanotube/carbon-nanotube.h5
     python plot_mpir.py .../carbon-nanotube.h5 --list
     python plot_mpir.py .../carbon-nanotube.h5 --experiment 3
     python plot_mpir.py .../carbon-nanotube.h5 --experiment 3 --idx 84 254
@@ -207,9 +219,8 @@ def _index_title(attrs, runs_for_idx, idx):
                     f" + {attrs.get('inner_label', refined['inner'])}")
     line = "   ".join(bits)
     if refined is not None:
-        verdict = "converged" if refined["converged"] else "did not converge"
-        line += (f"\n{verdict} in {refined['outer_iters']} outer steps"
-                 f"   —   {refined['stop_reason']}")
+        line += (f"\nouter iterations: {refined['outer_iters']}"
+                 f"   —   stopped: {refined['stop_reason']}")
     return line
 
 
@@ -338,7 +349,8 @@ def main():
     ap.add_argument("--summary-only", action="store_true",
                     help="draw only the sweep summary, no per-index figures")
     cli.add_output(ap, outdir_help="output directory "
-                                   "(default: the analysis file's directory)")
+                                   "(default: exp<NNNN>/ beside the analysis "
+                                   "file)")
     args = ap.parse_args()
 
     h5path = Path(args.h5path)
@@ -349,15 +361,19 @@ def main():
     name, attrs, runs, iters = load_experiment(h5path, args.experiment)
     attrs["_name"] = name
     material = args.material or attrs.get("material") or h5path.stem
-    outdir = Path(args.outdir) if args.outdir else h5path.parent
+    # One subdirectory per experiment, beside the analysis file, unless the
+    # user names a directory explicitly: the material's own directory then
+    # holds the data and every experiment's figures together, scp -r-able as
+    # one unit. The experiment number is not repeated in the filename since
+    # the directory already carries it.
+    outdir = Path(args.outdir) if args.outdir else h5path.parent / f"exp{name}"
 
     run_rows = table_rows(runs)
     iter_rows = table_rows(iters)
     print(f"[input] {h5path}:/experiments/{name}   "
           f"{len(run_rows)} run rows, {len(iter_rows)} iteration rows")
 
-    plot_summary(run_rows, attrs,
-                 outdir / f"{material}_exp{name}_summary.png")
+    plot_summary(run_rows, attrs, outdir / f"{material}_summary.png")
     if args.summary_only:
         return
 
@@ -379,7 +395,7 @@ def main():
     for idx in wanted:
         runs_for_idx = [r for r in run_rows if int(r["idx"]) == idx]
         plot_index(by_idx[idx], runs_for_idx, attrs, idx,
-                   outdir / f"{material}_exp{name}_E{idx}.png")
+                   outdir / f"{material}_E{idx}.png")
 
 
 if __name__ == "__main__":

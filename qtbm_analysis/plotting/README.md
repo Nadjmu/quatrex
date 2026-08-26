@@ -39,7 +39,7 @@ plotting/
 | `block-thomas/plot_growth_factor.py` | analysis file, `growth_factor` | `<material>_growth_factor.png` |
 | `block-thomas/plot_fp16_accuracy.py` | analysis file, `fp16_sweep` | `_relres_fwderr.png`, `_forward_accuracy.png`, `_error_vs_condition.png` |
 | `condition-est/plot_condition.py` | analysis file, `condition` | `<material>_condition.png`, `condition_all.png` |
-| `mixed_prec_ir/plot_mpir.py` | analysis file, one `experiments/<NNNN>` | `_exp<NNNN>_E<idx>.png`, `_exp<NNNN>_summary.png` |
+| `mixed_prec_ir/plot_mpir.py` | analysis file, one `experiments/<NNNN>` | `exp<NNNN>/<material>_E<idx>.png`, `exp<NNNN>/<material>_summary.png` |
 | `non-normal/plot_non_normal.py` | analysis file, `non_normality` | `<material>_frames/E_*.png`, `<material>_non_normal.gif` |
 | `matrices2/plot_qtbm_spectra.py` | a `main3.py` output directory | `_spectrum.png`, `_condition.png`, `_singular_values.png` |
 | `matrices2/plot_rhs.py` | material file, `E_<idx>/rhs` | `<material>_rhs.png` |
@@ -57,6 +57,7 @@ default as follows.
 | `matrices2/plot_qtbm_spectra.py` | `cli.CONDITION_DIR` |
 | `matrices2/plot_rhs.py` | `cli.CONDITION_DIR` |
 | `materials/bandstructure.py` | `cli.MATERIALS_DIR/<material>` |
+| `mixed_prec_ir/plot_mpir.py` | `exp<NNNN>/` beside the analysis file — one subdirectory per experiment inside the material's own directory, so it stays `scp -r`-able as a unit |
 
 ---
 
@@ -110,8 +111,9 @@ block-thomas/growth_factor.py    ─► error-analysis-block-thomas/            
                                      <material>.h5 :/growth_factor
 run_bench/sweep_fp16.py          ─► the same file :/fp16_sweep              ─► block-thomas/plot_fp16_accuracy.py
 condition-est/condition_est.py   ─► condition-est/<material>.h5 :/condition ─► condition-est/plot_condition.py
-mixed_prec_ir/mpir.py            ─► mixed-precision-IR/<material>.h5        ─► mixed_prec_ir/plot_mpir.py
-                                     :/experiments/<NNNN>/{runs,iterations}
+mixed_prec_ir/mpir.py            ─► mixed-precision-IR/<material>/           ─► mixed_prec_ir/plot_mpir.py
+                                     <material>.h5 :/experiments/<NNNN>/
+                                       {runs,iterations}
 non-normal/non-normal.py         ─► non-normal/<material>.h5                ─► non-normal/plot_non_normal.py
                                      :/non_normality
 main3.py / main3_gpu.py          ─► matrices2/<material>/energies.npy, ...  ─► matrices2/plot_qtbm_spectra.py
@@ -144,8 +146,8 @@ cd ../condition-est
 python plot_condition.py      /scratch/yimili/condition-est/graphene.h5
 
 cd ../mixed_prec_ir
-python plot_mpir.py           /scratch/yimili/mixed-precision-IR/graphene.h5 --list
-python plot_mpir.py           .../graphene.h5 --experiment 3 --idx 84 254
+python plot_mpir.py           /scratch/yimili/mixed-precision-IR/graphene/graphene.h5 --list
+python plot_mpir.py           .../graphene/graphene.h5 --experiment 3 --idx 84 254
 
 cd ../non-normal
 python plot_non_normal.py     /scratch/yimili/non-normal/carbon-chain.h5 --ping-pong
