@@ -188,7 +188,7 @@ def plot_index(rows, runs_for_idx, attrs, idx, out_path):
     right.axhline(1.0, color="black", ls=":", lw=1.0, label="1")
     right.set_xlabel("refinement step")
     right.set_ylabel(r"convergence factor")
-    right.set_title(r"convergence factor  (Corollary 3.3)")
+    right.set_title(r"convergence factor")
     right.grid(alpha=0.25, which="both", lw=0.4)
     right.legend(fontsize=7, framealpha=0.9)
     if not drew:
@@ -213,6 +213,8 @@ def _index_title(attrs, runs_for_idx, idx):
     if refined is not None and np.isfinite(refined.get("energy", np.nan)):
         bits.append(f"E = {refined['energy']:.4f} eV")
     if refined is not None:
+        if np.isfinite(refined.get("kappa_2", np.nan)):
+            bits.append(rf"$\kappa_2$ = {refined['kappa_2']:.2e}")
         if np.isfinite(refined.get("kappa_inf", np.nan)):
             bits.append(rf"$\kappa_\infty$ = {refined['kappa_inf']:.2e}")
         bits.append(f"{refined['solver']} {refined['factor_dtype']}"

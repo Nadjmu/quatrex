@@ -1,0 +1,576 @@
+<title>The mpir.py Result File</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,500;0,7..72,600;1,7..72,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --bg: #f4f5f4;
+    --surface: #ffffff;
+    --surface-2: #eceeee;
+    --ink: #14181b;
+    --ink-soft: #454c52;
+    --muted: #6b747c;
+    --border: #d8dcde;
+    --border-strong: #c2c8ca;
+    --accent: #1f6f7a;
+    --accent-strong: #0f4750;
+    --accent-soft: #e3eeee;
+    --warn: #a85a1a;
+    --warn-soft: #f4e8dc;
+    --code-bg: #eef1f1;
+    --shadow: 0 1px 2px rgba(20, 24, 27, 0.06), 0 8px 24px -12px rgba(20, 24, 27, 0.12);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14181b;
+      --surface: #191f22;
+      --surface-2: #20272a;
+      --ink: #e8ecec;
+      --ink-soft: #b7c0c2;
+      --muted: #8b969a;
+      --border: #2b3438;
+      --border-strong: #374246;
+      --accent: #5fc3cf;
+      --accent-strong: #bfeaf0;
+      --accent-soft: #17323a;
+      --warn: #dd9a5c;
+      --warn-soft: #362a1e;
+      --code-bg: #10161a;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 28px -14px rgba(0, 0, 0, 0.55);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #14181b;
+    --surface: #191f22;
+    --surface-2: #20272a;
+    --ink: #e8ecec;
+    --ink-soft: #b7c0c2;
+    --muted: #8b969a;
+    --border: #2b3438;
+    --border-strong: #374246;
+    --accent: #5fc3cf;
+    --accent-strong: #bfeaf0;
+    --accent-soft: #17323a;
+    --warn: #dd9a5c;
+    --warn-soft: #362a1e;
+    --code-bg: #10161a;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 12px 28px -14px rgba(0, 0, 0, 0.55);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3 { font-family: "Literata", Georgia, serif; text-wrap: balance; color: var(--ink); }
+
+  code, .mono, .data-num {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  a { color: var(--accent-strong); }
+  a:focus-visible, button:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* ---------- shell ---------- */
+
+  .shell {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 3rem 1.75rem 6rem;
+    display: grid;
+    grid-template-columns: 232px minmax(0, 1fr);
+    gap: 3rem;
+    align-items: start;
+  }
+
+  @media (max-width: 880px) {
+    .shell { grid-template-columns: 1fr; }
+  }
+
+  /* ---------- nav ---------- */
+
+  nav.toc {
+    position: sticky;
+    top: 2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    border-left: 2px solid var(--border);
+    padding-left: 1rem;
+  }
+
+  @media (max-width: 880px) {
+    nav.toc { position: static; border-left: none; padding-left: 0; }
+  }
+
+  nav.toc .eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 0.6rem;
+  }
+
+  nav.toc a {
+    color: var(--ink-soft);
+    text-decoration: none;
+    font-size: 0.88rem;
+    padding: 0.3rem 0;
+    border-bottom: 1px solid transparent;
+  }
+
+  nav.toc a:hover { color: var(--accent-strong); }
+
+  /* ---------- header ---------- */
+
+  header.masthead {
+    padding-bottom: 2.25rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 2.75rem;
+  }
+
+  .eyebrow-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-bottom: 1.1rem;
+  }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--accent-strong);
+    background: var(--accent-soft);
+    padding: 0.3rem 0.6rem;
+    border-radius: 3px;
+  }
+
+  .eyebrow-path {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+
+  h1.title {
+    font-size: clamp(2.1rem, 4vw, 2.9rem);
+    font-weight: 600;
+    line-height: 1.08;
+    margin: 0 0 0.9rem;
+    letter-spacing: -0.01em;
+  }
+
+  .dek {
+    font-size: 1.08rem;
+    color: var(--ink-soft);
+    max-width: 62ch;
+    margin: 0;
+  }
+
+  /* ---------- sections ---------- */
+
+  main { min-width: 0; }
+
+  section { margin-bottom: 3.25rem; scroll-margin-top: 2rem; }
+
+  section > h2 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    margin: 0 0 0.35rem;
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+  }
+
+  section > h2 .num {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.85rem;
+    color: var(--muted);
+    font-weight: 500;
+  }
+
+  section > .lede {
+    color: var(--ink-soft);
+    max-width: 68ch;
+    margin: 0 0 1.4rem;
+  }
+
+  section > .lede code { background: var(--code-bg); padding: 0.08em 0.35em; border-radius: 3px; font-size: 0.9em; }
+
+  h3.sub {
+    font-family: "IBM Plex Sans", sans-serif;
+    font-size: 1.02rem;
+    font-weight: 600;
+    color: var(--ink);
+    margin: 1.6rem 0 0.6rem;
+  }
+
+  /* ---------- file tree ---------- */
+
+  .tree {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+    padding: 1.25rem 1.5rem;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.86rem;
+    line-height: 1.85;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--ink-soft);
+  }
+
+  .tree .file { color: var(--ink); font-weight: 500; }
+  .tree .grp { color: var(--accent-strong); font-weight: 500; }
+  .tree .tbl { color: var(--ink); }
+  .tree .note { color: var(--muted); }
+
+  /* ---------- table cards ---------- */
+
+  .table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+    overflow-x: auto;
+  }
+
+  table.ref {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 560px;
+  }
+
+  table.ref th, table.ref td {
+    text-align: left;
+    padding: 0.62rem 1rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  table.ref thead th {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border-strong);
+  }
+
+  table.ref tbody tr:last-child td { border-bottom: none; }
+  table.ref tbody tr:hover { background: var(--surface-2); }
+
+  table.ref td.key, table.ref td.col {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.87rem;
+    color: var(--accent-strong);
+    white-space: nowrap;
+    font-weight: 500;
+  }
+
+  table.ref td.desc { color: var(--ink-soft); font-size: 0.93rem; max-width: 46ch; }
+  table.ref td.desc code { background: var(--code-bg); padding: 0.05em 0.32em; border-radius: 3px; font-size: 0.92em; color: var(--ink); }
+
+  .group-label {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding: 0.7rem 1rem 0.3rem;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* ---------- variant cards ---------- */
+
+  .variants {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 0.9rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .variant-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.95rem 1.1rem;
+    box-shadow: var(--shadow);
+  }
+
+  .variant-card .vnum {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.72rem;
+    color: var(--accent-strong);
+    margin-bottom: 0.35rem;
+    display: block;
+  }
+
+  .variant-card code {
+    display: block;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.84rem;
+    color: var(--ink);
+    margin-bottom: 0.4rem;
+  }
+
+  .variant-card p { margin: 0; color: var(--muted); font-size: 0.87rem; }
+
+  /* ---------- callout ---------- */
+
+  .callout {
+    display: flex;
+    gap: 0.85rem;
+    background: var(--warn-soft);
+    border: 1px solid color-mix(in srgb, var(--warn) 35%, var(--border));
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    margin-top: 1.4rem;
+  }
+
+  .callout .mark {
+    font-family: "IBM Plex Mono", monospace;
+    color: var(--warn);
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  .callout p { margin: 0; color: var(--ink-soft); font-size: 0.92rem; }
+  .callout p + p { margin-top: 0.5rem; }
+
+  /* ---------- code block ---------- */
+
+  pre.code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.1rem 1.3rem;
+    overflow-x: auto;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.87rem;
+    line-height: 1.7;
+    color: var(--ink);
+  }
+
+  pre.code .c { color: var(--muted); }
+  pre.code .s { color: var(--accent-strong); }
+
+  /* ---------- footer ---------- */
+
+  footer {
+    margin-top: 3rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.82rem;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  footer code { font-family: "IBM Plex Mono", monospace; }
+</style>
+
+<div class="shell">
+  <nav class="toc">
+    <div class="eyebrow">Contents</div>
+    <a href="#layout">File layout</a>
+    <a href="#attrs">Experiment attrs</a>
+    <a href="#runs">runs table</a>
+    <a href="#iterations">iterations table</a>
+    <a href="#hats">Estimated quantities</a>
+    <a href="#reading">Reading it back</a>
+  </nav>
+
+  <main>
+    <header class="masthead">
+      <div class="eyebrow-row">
+        <span class="eyebrow">Result file reference</span>
+        <span class="eyebrow-path">qtbm_analysis/mixed_prec_ir/mpir.py</span>
+      </div>
+      <h1 class="title">What mpir.py writes</h1>
+      <p class="dek">Every invocation of <code style="font-family:'IBM Plex Mono',monospace; background:var(--code-bg); padding:0.1em 0.4em; border-radius:3px;">mpir.py</code> appends one numbered experiment to a per-material HDF5 file &mdash; its full configuration as group attributes, and two tables: one row per solver variant, one row per outer refinement step. Nothing is ever overwritten.</p>
+    </header>
+
+    <section id="layout">
+      <h2>File layout</h2>
+      <p class="lede">One file per material, at <code>&lt;outdir&gt;/&lt;material&gt;/&lt;material&gt;.h5</code> (<code>analysis_path</code>). <code>--no-save</code> skips writing entirely.</p>
+      <div class="tree">&lt;material&gt;.h5
+└── experiments/
+    ├── <span class="grp">0001</span>/            <span class="note"># attrs: the whole run configuration</span>
+    │   ├── <span class="tbl">runs</span>          <span class="note"># one row per (idx, variant)</span>
+    │   └── <span class="tbl">iterations</span>    <span class="note"># one row per (idx, outer refinement step)</span>
+    ├── <span class="grp">0002</span>/
+    └── ...</div>
+      <p class="lede" style="margin-top: 1rem;">Group names are zero-padded so HDF5's string-key ordering matches numeric order. The lowest unused number is reused if an experiment is deleted by hand.</p>
+    </section>
+
+    <section id="attrs">
+      <h2><span class="num">experiments/NNNN</span> Experiment attrs</h2>
+      <p class="lede">The full configuration of one invocation, set in <code>main()</code>.</p>
+      <div class="table-wrap">
+        <table class="ref">
+          <thead><tr><th style="width:14rem;">Attr</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td class="key">material</td><td class="desc">Material name (<code>--material</code>, or the source file's stem)</td></tr>
+            <tr><td class="key">source</td><td class="desc">Path to the input material HDF5 file</td></tr>
+            <tr><td class="key">timestamp</td><td class="desc">ISO timestamp of the run</td></tr>
+            <tr><td class="key">command</td><td class="desc">The exact <code>sys.argv</code> invocation</td></tr>
+            <tr><td class="key">solver</td><td class="desc"><code>--solver</code> &mdash; superlu, umfpack, mumps, block-thomas, block-thomas-inv, cudss</td></tr>
+            <tr><td class="key">factor_dtype</td><td class="desc"><code>--factor-dtype</code> label: complex128, complex64 or complex32</td></tr>
+            <tr><td class="key">inv_dtype</td><td class="desc"><code>--inv-dtype</code>, read only by block-thomas-inv at complex32</td></tr>
+            <tr><td class="key">inner</td><td class="desc"><code>--inner</code>: direct or gmres</td></tr>
+            <tr><td class="key">inner_label</td><td class="desc"><code>"LU-IR"</code> or <code>"GMRES-IR"</code></td></tr>
+            <tr><td class="key">working_dtype<br>residual_dtype</td><td class="desc">Always complex128 (<code>HIGH_DTYPE</code>)</td></tr>
+            <tr><td class="key">working_u</td><td class="desc">Unit roundoff of the working precision</td></tr>
+            <tr><td class="key">rho_thresh<br>max_iter<br>k_max<br>ferr_thresh</td><td class="desc">The four tunable stopping-criteria thresholds &mdash; see below. <code>-1</code> / <code>-1.0</code> means disabled</td></tr>
+            <tr><td class="key">gmres_tol<br>gmres_restart<br>gmres_max_iter</td><td class="desc">Inner GMRES parameters (<code>--inner gmres</code> only)</td></tr>
+            <tr><td class="key">reference_solver</td><td class="desc">Solver used to compute <code>x_true</code> (<code>--reference-solver</code>)</td></tr>
+            <tr><td class="key">repeats</td><td class="desc">Repeats per variant &mdash; the median is what's stored</td></tr>
+            <tr><td class="key">indices</td><td class="desc">Array of energy indices requested</td></tr>
+            <tr><td class="key">n_requested<br>n_skipped</td><td class="desc">Counts</td></tr>
+            <tr><td class="key">skipped_idx<br>skipped_reason</td><td class="desc">Present only if some indices were skipped (e.g. missing <code>E_&lt;idx&gt;</code> in the source file)</td></tr>
+            <tr><td class="key">criteria</td><td class="desc">Citation &mdash; Oktay and Carson 2021, section 2.1.1</td></tr>
+            <tr><td class="key">convergence_factor</td><td class="desc">Citation &mdash; Carson and Higham 2018, Corollary 3.3</td></tr>
+            <tr><td class="key">&hellip;</td><td class="desc">Plus <code>material_metadata(h5path)</code>: material-level metadata copied from the source file</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="runs">
+      <h2><span class="num">runs</span> One row per (idx, variant)</h2>
+      <p class="lede">Three variants are benchmarked at every index, isolating the effect of precision and refinement from the effect of the solver implementation:</p>
+
+      <div class="variants">
+        <div class="variant-card">
+          <span class="vnum">Method under test</span>
+          <code>&lt;solver&gt; &lt;factor_dtype&gt; + LU-IR / GMRES-IR</code>
+          <p>The refined method being evaluated.</p>
+        </div>
+        <div class="variant-card">
+          <span class="vnum">Accuracy ceiling</span>
+          <code>&lt;solver&gt; complex128 (direct)</code>
+          <p>No refinement, full precision throughout.</p>
+        </div>
+        <div class="variant-card">
+          <span class="vnum">Lower bound</span>
+          <code>&lt;solver&gt; &lt;factor_dtype&gt; (no refine)</code>
+          <p>What refinement has to improve upon.</p>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="ref">
+          <thead><tr><th style="width:12rem;">Column</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td class="col">idx</td><td class="desc">Energy index (<code>E_&lt;idx&gt;</code> in the source file)</td></tr>
+            <tr><td class="col">energy</td><td class="desc">Energy in eV at that index</td></tr>
+            <tr><td class="col">n, nnz</td><td class="desc">Matrix size and nonzero count</td></tr>
+            <tr><td class="col">n_rhs</td><td class="desc">Number of right-hand-side columns</td></tr>
+            <tr><td class="col">n_blocks</td><td class="desc">Block count (block-thomas solvers only, else -1)</td></tr>
+            <tr><td class="col">solver, factor_dtype,<br>inner, variant</td><td class="desc">Which of the three variants this row is</td></tr>
+            <tr><td class="col">is_refined</td><td class="desc">1 for the refinement variant, 0 for the two direct variants</td></tr>
+            <tr><td class="col">u_f</td><td class="desc">Unit roundoff of the factorization precision</td></tr>
+            <tr><td class="col">u</td><td class="desc">Unit roundoff of the working precision (complex128)</td></tr>
+            <tr><td class="col">u_s</td><td class="desc">Effective correction-solve precision: <code>u_f</code> for LU-IR, <code>u</code> for GMRES-IR</td></tr>
+            <tr><td class="col">kappa_2, kappa_inf</td><td class="desc">Condition number of A, from the condition-est pipeline (NaN if unavailable)</td></tr>
+            <tr><td class="col">lu_ir_bound</td><td class="desc"><code>kappa_inf &times; u_f</code>; classical LU-IR converges when this is below 1</td></tr>
+            <tr><td class="col">relres</td><td class="desc">Median <code>||Ax&minus;b|| / ||b||</code></td></tr>
+            <tr><td class="col">ferr_ref</td><td class="desc">Median forward error <code>||x&minus;x_true|| / ||x_true||</code> vs. the reference solution (NaN if no <code>--reference-solver</code>)</td></tr>
+            <tr><td class="col">eta1, eta2, etainf</td><td class="desc">Normwise backward error (Rigal&ndash;Gaches) in the 1-, 2- and inf-norm</td></tr>
+            <tr><td class="col">omega</td><td class="desc">Componentwise backward error (Oettli&ndash;Prager)</td></tr>
+            <tr><td class="col">outer_iters</td><td class="desc">Outer refinement iterations taken (0 for the two direct variants)</td></tr>
+            <tr><td class="col">converged</td><td class="desc">1 if the Demmel et al. convergence test fired</td></tr>
+            <tr><td class="col">rho_max</td><td class="desc">Max observed correction ratio <code>||d_{i+1}|| / ||d_i||</code></td></tr>
+            <tr><td class="col">phi_final</td><td class="desc">Final <code>phi = z / (1 &minus; rho_max)</code> estimate</td></tr>
+            <tr><td class="col">stop_reason</td><td class="desc">Which stopping condition(s) fired, or <code>"no refinement"</code></td></tr>
+            <tr><td class="col">gmres_total</td><td class="desc">Total inner GMRES iterations across all outer steps (-1 if not GMRES-IR)</td></tr>
+            <tr><td class="col">wall_s</td><td class="desc">Median wall time</td></tr>
+            <tr><td class="col">factor_s, factor_symbolic_s,<br>factor_numeric_s</td><td class="desc">Factorization time, and its symbolic/numeric split (populated only for cuDSS; NaN otherwise)</td></tr>
+            <tr><td class="col">inner_s</td><td class="desc">Solve / inner-loop time</td></tr>
+            <tr><td class="col">factor_mb</td><td class="desc">Stored factorization size (MiB)</td></tr>
+            <tr><td class="col">working_mb</td><td class="desc">Factorization + matrix (at whatever precision it must be held) + Krylov basis if GMRES-IR</td></tr>
+            <tr><td class="col">reference_solver</td><td class="desc">Name of the reference solver, or empty</td></tr>
+            <tr><td class="col">reference_nbe</td><td class="desc">The reference solution's own backward error (nbe_inf)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="iterations">
+      <h2><span class="num">iterations</span> One row per outer refinement step</h2>
+      <p class="lede">Only the refinement variant produces rows here &mdash; the two direct variants perform no outer steps.</p>
+      <div class="table-wrap">
+        <table class="ref">
+          <thead><tr><th style="width:14rem;">Column</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td class="col">idx, energy, n, nnz,<br>solver, factor_dtype,<br>inner, variant</td><td class="desc">Identifies which run this step belongs to</td></tr>
+            <tr><td class="col">outer_iteration</td><td class="desc">Step index, 0-based</td></tr>
+            <tr><td class="col">relres</td><td class="desc"><code>||r|| / ||b||</code> at this step</td></tr>
+            <tr><td class="col">residual_norm_inf</td><td class="desc"><code>||r||</code><sub>inf</sub> at this step</td></tr>
+            <tr><td class="col">ferr_ref</td><td class="desc">Forward error vs. reference at this step</td></tr>
+            <tr><td class="col">rho</td><td class="desc">Observed contraction <code>ferr_ref[i+1] / ferr_ref[i]</code></td></tr>
+            <tr><td class="col">etainf, omega</td><td class="desc">Backward errors at this step's iterate</td></tr>
+            <tr><td class="col">mu_hat</td><td class="desc">Carson &amp; Higham's directional factor (3.1): ratio of <code>||A(x_true&minus;x_i)||</code><sub>inf</sub> to <code>||A||</code><sub>inf</sub><code>||x_true&minus;x_i||</code><sub>inf</sub></td></tr>
+            <tr><td class="col">phi_cond_hat</td><td class="desc">Conditioning term of the convergence-factor estimate, <code>2 u_s &middot; kappa_inf &middot; mu_hat</code></td></tr>
+            <tr><td class="col">phi_solve_hat</td><td class="desc">Correction-solver term: relative difference between this step's correction and a reference-solver correction of the same residual</td></tr>
+            <tr><td class="col">phi_hat</td><td class="desc"><code>phi_cond_hat + phi_solve_hat</code></td></tr>
+            <tr><td class="col">phi_cond_form</td><td class="desc">Which formula produced <code>phi_cond_hat</code>: <code>"2*u_s*kappa_inf*mu_hat"</code> or <code>"unavailable"</code></td></tr>
+            <tr><td class="col">z, v, rho_max,<br>phi_demmel, ferr_ratio</td><td class="desc">RefinementMonitor's own per-step stopping quantities: correction-to-iterate ratio, correction-to-correction ratio, running max of v, the Demmel et al. phi estimate, and the ferr ratio for stopping condition 5</td></tr>
+            <tr><td class="col">correction_norm_inf</td><td class="desc"><code>||d_i||</code><sub>inf</sub>, this step's correction</td></tr>
+            <tr><td class="col">reference_correction_norm_inf</td><td class="desc"><code>||d_i_ref||</code><sub>inf</sub>, the reference solver's correction for the same residual</td></tr>
+            <tr><td class="col">gmres_inner_iterations,<br>gmres_inner_max</td><td class="desc">Total and max inner GMRES iteration counts this step (-1 for LU-IR)</td></tr>
+            <tr><td class="col">note</td><td class="desc">Free-text note, e.g. if the reference correction solve failed</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="hats">
+      <h2>Why some quantities carry a hat</h2>
+      <div class="callout">
+        <span class="mark">^</span>
+        <div>
+          <p><code style="font-family:'IBM Plex Mono',monospace; background:transparent;">x_true</code> is a numerical reference solution, from <code style="font-family:'IBM Plex Mono',monospace; background:transparent;">--reference-solver</code>, not the exact answer. So <code style="font-family:'IBM Plex Mono',monospace; background:transparent;">mu_hat</code>, <code style="font-family:'IBM Plex Mono',monospace; background:transparent;">phi_cond_hat</code>, <code style="font-family:'IBM Plex Mono',monospace; background:transparent;">phi_solve_hat</code> and <code style="font-family:'IBM Plex Mono',monospace; background:transparent;">phi_hat</code> are estimates, not certified bounds.</p>
+          <p>See <code style="font-family:'IBM Plex Mono',monospace; background:transparent;">refinement_metrics</code> in mpir.py for the full derivation, and Carson and Higham, <em>A new analysis of iterative refinement and its application to accurate solution of ill-conditioned sparse linear systems</em>, SIAM J. Sci. Comput. 39(6), 2017, Corollary 3.3.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="reading">
+      <h2>Reading it back</h2>
+      <p class="lede">Both tables come back as column dicts, <code>{column_name: numpy_array}</code>, from <code>factor_io.load_table</code>.</p>
+      <pre class="code"><span class="c">from</span> mpir <span class="c">import</span> load_experiment
+
+<span class="c"># last experiment in the file</span>
+name, attrs, runs, iters = load_experiment(<span class="s">"/path/to/material.h5"</span>)
+
+<span class="c"># a specific one, by number</span>
+name, attrs, runs, iters = load_experiment(<span class="s">"/path/to/material.h5"</span>, experiment=3)</pre>
+      <p class="lede" style="margin-top: 1rem;"><code>mpir.py --list-experiments &lt;h5path&gt;</code> prints a one-line summary of every experiment in a file without loading either table.</p>
+    </section>
+
+    <footer>
+      <span>qtbm_analysis/mixed_prec_ir/mpir.py</span>
+      <span>RUN_COLUMNS &middot; ITERATION_COLUMNS &middot; save_experiment</span>
+    </footer>
+  </main>
+</div>

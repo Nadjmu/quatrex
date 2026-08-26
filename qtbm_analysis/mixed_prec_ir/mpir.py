@@ -110,12 +110,15 @@ and 2, not an extra solve.
 Convergence itself is declared on the normwise error estimate of Demmel et
 al. that Oktay and Carson carry alongside them,
 
-    phi = z / (1 - rho_max),   z = ||d_{i+1}|| / ||x_i||,
+    psi = z / (1 - rho_max),   z = ||d_{i+1}|| / ||x_i||,
                                rho_max = max over j <= i of ||d_{j+1}||/||d_j||
 
-with convergence when 0 <= phi <= sqrt(n) u. A negative phi means rho_max > 1,
+with convergence when 0 <= psi <= sqrt(n) u. A negative psi means rho_max > 1,
 that is a correction grew, and is divergence rather than a small error, which
-is why both bounds are tested. See RefinementMonitor.
+is why both bounds are tested. See RefinementMonitor. (Named psi rather than
+phi to keep it visually distinct from the Carson-Higham phi_hat quantities in
+Metrics below -- the two are unrelated estimates that happen to share a
+common Greek-letter convention in the literature.)
 
 A residual tolerance is the wrong criterion here: on these systems the
 residual reaches the working precision long before the forward error does,
@@ -221,7 +224,7 @@ E. Oktay and E. Carson, Multistage mixed precision iterative refinement,
     Numer. Linear Algebra Appl. 29(4), 2022; arXiv:2107.06200. Section 2.1.1
     is the source of the stopping criteria used here.
 J. Demmel et al., Error bounds from extra-precise iterative refinement,
-    ACM TOMS 32(2), 2006. The phi estimate the convergence test uses.
+    ACM TOMS 32(2), 2006. The psi estimate the convergence test uses.
 
 Usage
 -----
@@ -337,7 +340,7 @@ RUN_COLUMNS = [
     "solver", "factor_dtype", "inner", "variant", "is_refined",
     "u_f", "u", "u_s", "kappa_2", "kappa_inf", "lu_ir_bound",
     "relres", "ferr_ref", "eta1", "eta2", "etainf", "omega",
-    "outer_iters", "converged", "rho_max", "phi_final", "stop_reason",
+    "outer_iters", "converged", "rho_max", "psi_final", "stop_reason",
     "gmres_total", "wall_s", "factor_s", "factor_symbolic_s",
     "factor_numeric_s", "inner_s", "factor_mb", "working_mb",
     "reference_solver", "reference_nbe",
@@ -348,7 +351,7 @@ ITERATION_COLUMNS = [
     "outer_iteration", "relres", "residual_norm_inf", "ferr_ref", "rho",
     "etainf", "omega",
     "mu_hat", "phi_cond_hat", "phi_solve_hat", "phi_hat", "phi_cond_form",
-    "z", "v", "rho_max", "phi_demmel", "ferr_ratio",
+    "z", "v", "rho_max", "psi_demmel", "ferr_ratio",
     "correction_norm_inf", "reference_correction_norm_inf",
     "gmres_inner_iterations", "gmres_inner_max", "note",
 ]
@@ -791,13 +794,14 @@ def load_condition_numbers(h5path, idx):
 DEFAULT_RHO_THRESH = 0.5
 
 # Threshold on the ratio of successive forward errors against the reference
-# solution, condition 5. 1.0 means: stop as soon as the iterate stops getting
-# closer to the reference at all. Unlike rho_thresh there is no established
-# 'cautious'/'aggressive' pair to draw this from -- it is not from the
-# literature, just the plain statement that the reference is the best estimate
-# of the exact solution available, so no further improvement is possible once
-# ferr stops decreasing.
-DEFAULT_FERR_THRESH = 1.0
+# solution, condition 5. 1.0 would mean: stop as soon as the iterate stops
+# getting closer to the reference at all; 0.97 gives it a little slack so that
+# a step which is still improving, just slowly, isn't mistaken for a plateau.
+# Unlike rho_thresh there is no established 'cautious'/'aggressive' pair to
+# draw this from -- it is not from the literature, just the plain statement
+# that the reference is the best estimate of the exact solution available, so
+# no further improvement is possible once ferr stops decreasing.
+DEFAULT_FERR_THRESH = 0.97
 
 
 def _inf_norm(X):
@@ -855,13 +859,15 @@ class RefinementMonitor:
     names both.
 
     Convergence is declared on the normwise relative error estimate of Demmel
-    et al., which Oktay and Carson carry in phi_i:
+    et al., which Oktay and Carson carry in phi_i and which this class calls
+    psi_i, to keep it visually distinct from the unrelated Carson-Higham
+    phi_hat quantities of refinement_metrics:
 
-        phi_i = z / (1 - rho_max),   rho_max = max over j <= i of v_j
+        psi_i = z / (1 - rho_max),   rho_max = max over j <= i of v_j
 
-    with convergence when 0 <= phi_i <= sqrt(n) u. Both halves matter: phi_i is
+    with convergence when 0 <= psi_i <= sqrt(n) u. Both halves matter: psi_i is
     negative exactly when rho_max > 1, that is when some correction grew, and a
-    negative phi_i signals divergence rather than a small error. It is set to
+    negative psi_i signals divergence rather than a small error. It is set to
     -inf when rho_max == 1, where the geometric sum the estimate comes from
     does not converge at all.
 
@@ -901,7 +907,7 @@ class RefinementMonitor:
         self.z_history = []
         self.v_history = []
         self.rho_max_history = []
-        self.phi_history = []
+        self.psi_history = []
         self.ferr_history = []
         self.ferr_ratio_history = []
 
@@ -929,7 +935,7 @@ class RefinementMonitor:
         self.rho_max = max(self.rho_max, v)
 
         denom = 1.0 - self.rho_max
-        phi = z / denom if denom != 0.0 else -math.inf
+        psi = z / denom if denom != 0.0 else -math.inf
 
         w = None
         if ferr is not None:
@@ -939,16 +945,16 @@ class RefinementMonitor:
         self.z_history.append(z)
         self.v_history.append(v)
         self.rho_max_history.append(self.rho_max)
-        self.phi_history.append(phi)
+        self.psi_history.append(psi)
         self.ferr_history.append(ferr)
         self.ferr_ratio_history.append(w)
 
         # The convergence test is checked first, so that a step which both
         # converged and tripped a stopping condition is reported as converged.
-        self.converged = bool(0.0 <= phi <= self.limit)
+        self.converged = bool(0.0 <= psi <= self.limit)
         reasons = []
         if self.converged:
-            reasons.append(f"converged (phi={phi:.2e} <= sqrt(n) u={self.limit:.2e})")
+            reasons.append(f"converged (psi={psi:.2e} <= sqrt(n) u={self.limit:.2e})")
         if z <= self.u:
             reasons.append(f"correction too small (z={z:.2e} <= u={self.u:.2e})")
         if v >= self.rho_thresh:
@@ -975,7 +981,7 @@ class RefinementMonitor:
             "converged": self.converged,
             "outer_iters": self.iter,
             "rho_max": self.rho_max,
-            "phi_final": self.phi_history[-1] if self.phi_history else None,
+            "psi_final": self.psi_history[-1] if self.psi_history else None,
             "stop_reason": "; ".join(self.reasons) if self.reasons
                            else "loop ended without a condition firing",
         }
@@ -1257,7 +1263,7 @@ def refinement_metrics(A_high, x_true, extra, u_s, kappa_inf, ref_solve=None):
             row["z"] = monitor.z_history[i]
             row["v"] = monitor.v_history[i]
             row["rho_max"] = monitor.rho_max_history[i]
-            row["phi_demmel"] = monitor.phi_history[i]
+            row["psi_demmel"] = monitor.psi_history[i]
             row["ferr_ratio"] = monitor.ferr_ratio_history[i]
 
         if i < len(gmres_hist):
@@ -1963,8 +1969,8 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
         summary = monitor.summary()
         print(f"\n  Outer iterations: {summary['outer_iters']}   "
               f"(stopped: {summary['stop_reason']})")
-        if summary["phi_final"] is not None:
-            print(f"    phi = z/(1-rho_max) = {summary['phi_final']:.3e}   "
+        if summary["psi_final"] is not None:
+            print(f"    psi = z/(1-rho_max) = {summary['psi_final']:.3e}   "
                   f"rho_max = {summary['rho_max']:.3e}   "
                   f"sqrt(n)*u = {monitor.limit:.3e}")
 
@@ -2069,7 +2075,7 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
             outer_iters=int(summary.get("outer_iters", 0)),
             converged=int(bool(summary.get("converged", False))),
             rho_max=float(summary.get("rho_max", float("nan"))),
-            phi_final=float(summary["phi_final"]) if summary.get("phi_final") is not None
+            psi_final=float(summary["psi_final"]) if summary.get("psi_final") is not None
                       else float("nan"),
             stop_reason=summary.get("stop_reason", "no refinement"),
             gmres_total=int(sum(sum(g) for g in gm)) if gm else -1,
