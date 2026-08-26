@@ -13,13 +13,13 @@ resolution * i.
 
 Output
 ------
-Buckets widen by alternating factors of 2 and 5 above --first-edge, e.g.
-0-500, 500-1e3, 1e3-5e3, 5e3-1e4, 1e4-5e4, 5e4-1e5, ..., covering the observed
-kappa_2 range -- kappa_2 is the bucketing variable, kappa_inf is listed
-alongside it as a check against the LU-IR bound, which is stated in the
-infinity norm (see mixed_prec_ir/README.md). For each bucket, the index,
-energy and both condition numbers of up to --max-per-bin rows falling in it,
-in index order.
+Buckets widen by a factor of 10 above --first-edge, e.g. 0-100, 100-1e3,
+1e3-1e4, 1e4-1e5, ..., covering the observed kappa_2 range -- kappa_2 is the
+bucketing variable, kappa_inf is listed alongside it as a check against the
+LU-IR bound, which is stated in the infinity norm (see
+mixed_prec_ir/README.md). For each bucket, the index, energy and both
+condition numbers of every row falling in it, in index order, unless
+--max-per-bin caps it.
 
 Usage
 -----
@@ -41,17 +41,14 @@ GROUP = "condition"
 
 def bin_edges(first_edge, upper):
     """
-    [0, first_edge, ...] widening by alternating factors of 2 and 5, up to and
-    including the first edge at or above `upper`.
+    [0, first_edge, ...] widening by a factor of 10, up to and including the
+    first edge at or above `upper`.
 
-    e.g. first_edge=500: 0, 500, 1e3, 5e3, 1e4, 5e4, 1e5, 5e5, 1e6, ...
+    e.g. first_edge=100: 0, 100, 1e3, 1e4, 1e5, 1e6, ...
     """
     edges = [0.0, float(first_edge)]
-    factors = (2.0, 5.0)
-    i = 0
     while edges[-1] < upper:
-        edges.append(edges[-1] * factors[i % 2])
-        i += 1
+        edges.append(edges[-1] * 10.0)
     return edges
 
 
@@ -59,12 +56,12 @@ def main():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap, help="condition-est analysis file, e.g. "
                              "condition-est/carbon-nanotube.h5")
-    ap.add_argument("--first-edge", type=float, default=500.0, metavar="K",
+    ap.add_argument("--first-edge", type=float, default=100.0, metavar="K",
                     help="first bucket boundary above 0; later boundaries "
-                         "widen by alternating factors of 2 and 5 "
-                         "(default: 500)")
-    ap.add_argument("--max-per-bin", type=int, default=50, metavar="N",
-                    help="rows listed per bucket (default: 50)")
+                         "widen by a factor of 10 (default: 100)")
+    ap.add_argument("--max-per-bin", type=int, default=None, metavar="N",
+                    help="cap on rows listed per bucket (default: no cap, "
+                         "show every row)")
     args = ap.parse_args()
 
     with h5py.File(args.h5path, "r") as f:
