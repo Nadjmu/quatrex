@@ -166,7 +166,7 @@ Loosening the stopping criteria, and writing the tables somewhere else.
 ```bash
 python mpir.py .../si-bulk.h5 --idx 254 --solver cudss \
     --factor-dtype complex64 --inner gmres \
-    --rho-thresh 0.9 --max-iter 30 --k-max 0 --outdir ./scratch
+    --rho-thresh 0.9 --max-iter 30 --k-max 0 --ferr-thresh 0 --outdir ./scratch
 ```
 
 Three variants of the **same** solver family are measured, so the comparison
@@ -186,7 +186,8 @@ GMRES-IR, the inner iteration counts.
 
 The loop does **not** stop on a fixed residual tolerance. It uses the four
 criteria of [Oktay and Carson, section 2.1.1](#references), which read the
-corrections the loop already produces and so cost nothing extra:
+corrections the loop already produces and so cost nothing extra, plus one more
+of the same kind:
 
 | # | Condition | Option | Meaning |
 |---|---|---|---|
@@ -194,6 +195,21 @@ corrections the loop already produces and so cost nothing extra:
 | 2 | `‖d_{i+1}‖ / ‖d_i‖ ≥ ρ_thresh` | `--rho-thresh` (0.5) | corrections stopped shrinking geometrically; a ratio above 1 is divergence |
 | 3 | `iter ≥ i_max` | `--max-iter` (10) | |
 | 4 | `k_GMRES ≥ k_max` | `--k-max` (`ceil(0.1n)`) | one outer step now costs about what refactorizing would; GMRES-IR only, `0` disables |
+| 5 | `ferr_i / ferr_{i-1} ≥ ferr_thresh` | `--ferr-thresh` (1.0) | the forward error against the reference solution stopped improving; needs `--reference-solver`, `0` or negative disables |
+
+**Condition 5 is not from Oktay and Carson.** It measures the thing that
+actually matters rather than a proxy for it: the reference solution is the
+best available estimate of the exact answer, so once the iterate stops getting
+closer to it there is nothing left to gain, whatever the correction norms are
+doing. It is a cheap `O(n)` vector-norm comparison — exactly like conditions 1
+and 2, not an extra solve — computed from the same iterates already retained.
+It complements rather than duplicates 1 and 2: a correction can keep looking
+healthy by every internal measure while `ferr` has already reached the
+reference's own accuracy floor (condition 5 catches this, conditions 1–2
+don't), and conversely a nonnormal matrix can make corrections look erratic
+well before `ferr` actually stops improving (conditions 1–2 catch this,
+condition 5 doesn't). When both are true at once — typical once rounding noise
+dominates — they fire together and `stop_reason` names both.
 
 Convergence itself is declared on the normwise error estimate of Demmel et al.
 that Oktay and Carson carry alongside them,
@@ -416,8 +432,8 @@ produced it.
 Everything needed to say what a run was, in one place: `material`, `source`,
 `timestamp`, `command`, `solver`, `factor_dtype`, `inv_dtype`, `inner` and
 `inner_label`, `working_dtype`, `residual_dtype`, `working_u`, `rho_thresh`,
-`max_iter`, `k_max`, `gmres_tol`, `gmres_restart`, `gmres_max_iter`,
-`reference_solver`, `repeats`, `indices`, `n_requested`, `n_skipped`,
+`max_iter`, `k_max`, `ferr_thresh`, `gmres_tol`, `gmres_restart`,
+`gmres_max_iter`, `reference_solver`, `repeats`, `indices`, `n_requested`, `n_skipped`,
 `criteria`, `convergence_factor`, plus the material's band edges and energy
 grid. They sit on the experiment group and not on the two tables, so a reader
 looks in one place.
@@ -441,14 +457,18 @@ performs outer steps, so only it appears in `iterations`.
 **`iterations`** — the convergence trajectory and the quantities Corollary 3.3
 is stated in: `outer_iteration`, `relres`, `residual_norm_inf`, `ferr_ref`,
 `rho`, `etainf`, `omega`, `mu_hat`, `phi_cond_hat`, `phi_solve_hat`,
-`phi_hat`, `phi_cond_form`, `z`, `v`, `rho_max`, `phi_demmel`,
+`phi_hat`, `phi_cond_form`, `z`, `v`, `rho_max`, `phi_demmel`, `ferr_ratio`,
 `correction_norm_inf`, `reference_correction_norm_inf`,
 `gmres_inner_iterations`, `gmres_inner_max`, `note`, alongside the same
 identifying columns.
 
-`z`, `v`, `rho_max` and `phi_demmel` are the stopping-criteria quantities
-themselves, so a figure can show not only that a run stopped but which
-condition was about to fire and how close the others were.
+`z`, `v`, `rho_max`, `phi_demmel` and `ferr_ratio` are the stopping-criteria
+quantities themselves, so a figure can show not only that a run stopped but
+which condition was about to fire and how close the others were. `ferr_ratio`
+is `ferr_i / ferr_{i-1}`, the quantity condition 5 tests; it is numerically the
+same ratio as `rho` one step later (`ferr_ratio[i] == rho[i-1]`), but kept as
+its own column since it is what the monitor actually saw at decision time,
+looking backward rather than `rho`'s forward-looking convention.
 
 Raw iterate, correction and residual **vectors are not stored**: they are
 `O(n)` per step per index and a sweep would run to gigabytes, while every

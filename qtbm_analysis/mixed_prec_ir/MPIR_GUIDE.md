@@ -117,7 +117,7 @@ python mpir.py carbon-nanotube.h5 --start 0 --end 400 --solver block-thomas \
 
 # Loosen the stopping criteria, pick where the file goes
 python mpir.py si-bulk.h5 --idx 254 --solver cudss --factor-dtype complex64 \
-    --inner gmres --rho-thresh 0.9 --max-iter 30 --k-max 0 --outdir ./scratch
+    --inner gmres --rho-thresh 0.9 --max-iter 30 --k-max 0 --ferr-thresh 0 --outdir ./scratch
 
 # List what's already in a file, without running anything
 python mpir.py carbon-nanotube.h5 --list-experiments
@@ -135,6 +135,7 @@ python mpir.py carbon-nanotube.h5 --list-experiments
 | `--rho-thresh` | `0.5` | stopping condition 2 threshold (§3) |
 | `--max-iter` | `10` | stopping condition 3: max outer steps |
 | `--k-max` | `ceil(0.1n)` | stopping condition 4: max inner GMRES iterations in one step (`--inner gmres` only; `0` disables) |
+| `--ferr-thresh` | `1.0` | stopping condition 5: stop once `ferr_i/ferr_{i-1} ≥` this (needs `--reference-solver`; `0` or negative disables) |
 | `--repeats` | `1` | repeats per variant; the median is reported |
 | `--reference-solver` | `mumps` | supplies `x_true` and the reference corrections `phi_solve` is measured against |
 | `--gmres-tol`, `--gmres-restart`, `--gmres-max-iter` | `1e-8`, `30`, `50` | inner GMRES parameters (`--inner gmres` only) |
@@ -152,8 +153,8 @@ reaches the working precision long before the forward error does, so a
 residual tolerance would declare convergence while the solution is still
 wrong — and it cannot tell slow convergence from divergence at all. Instead
 the loop uses the four criteria of Oktay and Carson (2021), section 2.1.1,
-all read from quantities the loop produces anyway, so none of them costs an
-extra solve:
+plus one more of the same kind — all read from quantities the loop produces
+anyway, so none of them costs an extra solve:
 
 | # | Condition | Meaning |
 |---|---|---|
@@ -161,11 +162,29 @@ extra solve:
 | 2 | `‖d_{i+1}‖/‖d_i‖ ≥ ρ_thresh` | corrections stopped shrinking geometrically (a ratio `> 1` is divergence) |
 | 3 | `iter ≥ max_iter` | |
 | 4 | `k_GMRES ≥ k_max` | one step now costs about what refactorizing would (GMRES-IR only) |
+| 5 | `ferr_i/ferr_{i-1} ≥ ferr_thresh` | the forward error against the reference solution stopped improving (needs `--reference-solver`) |
 
 `u` here is always the **working precision** (complex128), never `u_f` — the
 question is whether refinement reached the accuracy the working precision can
 hold, and asking it at `u_f` would accept a solution only as good as the
 factorization itself.
+
+**Condition 5 is not from Oktay and Carson** — it was added because the other
+four are all proxies for accuracy (correction size, iteration budget), while
+the reference solution is the actual best-available estimate of the exact
+answer. Once the iterate stops getting closer to it, there is nothing left to
+gain regardless of what the corrections look like. It's a cheap `O(n)`
+vector-norm comparison, computed the same way as conditions 1 and 2, not an
+extra solve — and it complements rather than duplicates them:
+
+- A correction can keep looking healthy by every internal measure (conditions
+  1–2 silent) while `ferr` has already hit the reference's own accuracy
+  floor — condition 5 catches this case, the other two don't.
+- A nonnormal matrix can make corrections look erratic (tripping 1–2) well
+  before `ferr` has actually stopped improving — the other two catch this
+  case, condition 5 doesn't.
+- Once rounding noise dominates (both symptoms present at once), they
+  typically fire together, and `stop_reason` names both.
 
 Convergence is declared on Demmel's normwise error estimate:
 
@@ -264,8 +283,8 @@ the last run silently replacing the previous one.
 Everything needed to say what a run was, on the experiment group itself:
 `material`, `source`, `timestamp`, `command`, `solver`, `factor_dtype`,
 `inv_dtype`, `inner`, `inner_label`, `working_dtype`, `residual_dtype`,
-`working_u`, `rho_thresh`, `max_iter`, `k_max`, `gmres_tol`, `gmres_restart`,
-`gmres_max_iter`, `reference_solver`, `repeats`, `indices`, `n_requested`,
+`working_u`, `rho_thresh`, `max_iter`, `k_max`, `ferr_thresh`, `gmres_tol`,
+`gmres_restart`, `gmres_max_iter`, `reference_solver`, `repeats`, `indices`, `n_requested`,
 `n_skipped`, `criteria`, `convergence_factor`, plus the material's band edges
 and energy grid.
 
@@ -288,15 +307,18 @@ All three measured variants appear here (three rows per index).
 idx, energy, n, nnz, solver, factor_dtype, inner, variant, outer_iteration,
 relres, residual_norm_inf, ferr_ref, rho, etainf, omega,
 mu_hat, phi_cond_hat, phi_solve_hat, phi_hat, phi_cond_form,
-z, v, rho_max, phi_demmel,
+z, v, rho_max, phi_demmel, ferr_ratio,
 correction_norm_inf, reference_correction_norm_inf,
 gmres_inner_iterations, gmres_inner_max, note
 ```
 
 Only the refinement variant performs outer steps, so only it appears here.
-`z`, `v`, `rho_max`, `phi_demmel` are the stopping-criteria quantities
-themselves — a figure can show not only that a run stopped but which
-condition was about to fire and how close the others were.
+`z`, `v`, `rho_max`, `phi_demmel` and `ferr_ratio` are the stopping-criteria
+quantities themselves — a figure can show not only that a run stopped but
+which condition was about to fire and how close the others were. `ferr_ratio`
+is `ferr_i/ferr_{i-1}`, condition 5's own quantity; it equals `rho` shifted by
+one step (`ferr_ratio[i] == rho[i-1]`) but is kept separately since it's what
+the monitor actually saw, looking backward, at the moment it decided.
 
 Both tables carry `idx`, so either joins back to the other when a figure needs
 both. Raw iterate/correction/residual **vectors are not stored** — `O(n)` per
