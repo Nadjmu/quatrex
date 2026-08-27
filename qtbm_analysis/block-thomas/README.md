@@ -263,7 +263,11 @@ python ../plotting/block-thomas/plot_forward_error.py \
 
 Writes the `forward_error` group of `<outdir>/<material>.h5`, beside the
 `growth_factor` and `fp16_sweep` groups; the file is opened in append mode and
-only that group is rewritten. The condition file defaults to
+only that group is rewritten. The same group also feeds
+`plot_backward_error.py`, which reads only its eta/omega columns and is the
+one figure covering all six solvers, MUMPS and cuDSS included, since backward
+error needs the stored solution and nothing the two factor-less solvers
+withhold. The condition file defaults to
 `cli.CONDITION_DIR/<material>.h5` and is optional: without it the forward
 errors are still recorded and only the bound columns are NaN.
 `cond_skeel_x` requires `condition_est.py` to have been run with the Skeel

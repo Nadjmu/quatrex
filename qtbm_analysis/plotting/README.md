@@ -20,6 +20,7 @@ plotting/
 │   ├── plot_speedup.py
 │   ├── plot_growth_factor.py
 │   ├── plot_forward_error.py
+│   ├── plot_backward_error.py
 │   └── plot_fp16_accuracy.py
 ├── condition-est/
 │   └── plot_condition.py
@@ -40,6 +41,7 @@ plotting/
 | `block-thomas/plot_speedup.py` | material file, timing datasets | `<material>_speedup.png` |
 | `block-thomas/plot_growth_factor.py` | analysis file, `growth_factor` | `<material>_growth_factor.png`, `<material>_schur_growth.png` |
 | `block-thomas/plot_forward_error.py` | analysis file, `forward_error` | `<material>_forward_error.png` |
+| `block-thomas/plot_backward_error.py` | analysis file, `forward_error` | `<material>_backward_error.png` |
 | `block-thomas/plot_fp16_accuracy.py` | analysis file, `fp16_sweep` | `_relres_fwderr.png`, `_forward_accuracy.png`, `_error_vs_condition.png` |
 | `condition-est/plot_condition.py` | analysis file, `condition` | `<material>_condition.png`, `condition_all.png` |
 | `mixed_prec_ir/plot_mpir.py` | convergence file, one `experiments/<NNNN>` | `exp<NNNN>/<material>_E<idx>.png`, `exp<NNNN>/<material>_summary.png` |
@@ -115,6 +117,7 @@ run_bench/gpu_run_benchmarks.py  ─► the same file                           
 block-thomas/growth_factor.py    ─► error-analysis-block-thomas/            ─► block-thomas/plot_growth_factor.py
                                      <material>.h5 :/growth_factor
 block-thomas/forward_error.py    ─► the same file :/forward_error           ─► block-thomas/plot_forward_error.py
+                                                                              ─► block-thomas/plot_backward_error.py
 run_bench/sweep_fp16.py          ─► the same file :/fp16_sweep              ─► block-thomas/plot_fp16_accuracy.py
 condition-est/condition_est.py   ─► condition-est/<material>.h5 :/condition ─► condition-est/plot_condition.py
 mixed_prec_ir/mpir.py            ─► mixed-precision-IR/<material>/           ─► mixed_prec_ir/plot_mpir.py
@@ -148,6 +151,7 @@ python plot_speedup.py        /scratch/yimili/matrices2/hdf5/graphene.h5
 python plot_speedup.py        .../graphene.h5 --solvers cudss --suffix _gpu
 python plot_growth_factor.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 python plot_forward_error.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
+python plot_backward_error.py /scratch/yimili/error-analysis-block-thomas/graphene.h5
 python plot_fp16_accuracy.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 
 cd ../condition-est
@@ -195,6 +199,12 @@ A second figure, `<material>_schur_growth.png`, covers the Schur-complement
 recursion of the two Block Thomas variants: block growth, the conditioning of
 the pivot blocks, and the residual of implementation 2's explicit inverses. It
 is drawn only when the analysis file carries those columns.
+
+**`block-thomas/plot_backward_error.py`.** omega (componentwise, primary) and
+eta_inf (normwise, secondary/faded) against energy, for all six solvers — the
+one figure in the chapter where MUMPS and cuDSS appear alongside the four
+factor-exposing solvers, since backward error needs only the stored solution.
+A unit-roundoff reference line is drawn per precision present.
 
 **`block-thomas/plot_forward_error.py`.** The measured forward error against an
 extended-precision reference, the ratio of that error to each of the two

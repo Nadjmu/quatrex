@@ -100,6 +100,7 @@ which every analysis of that material writes its own top-level group.
   STAGE 5  PLOT (reads HDF5, writes figures only, into the same directory)
                     plotting/block-thomas/plot_growth_factor.py
                     plotting/block-thomas/plot_forward_error.py
+                    plotting/block-thomas/plot_backward_error.py
                     plotting/block-thomas/plot_fp16_accuracy.py
                     plotting/block-thomas/plot_speedup.py
                     plotting/mixed_prec_ir/plot_mpir.py
@@ -254,6 +255,7 @@ cd ../plotting/block-thomas
 python plot_speedup.py        /scratch/yimili/matrices2/hdf5/graphene.h5
 python plot_growth_factor.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 python plot_forward_error.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
+python plot_backward_error.py /scratch/yimili/error-analysis-block-thomas/graphene.h5
 python plot_fp16_accuracy.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 cd ../mixed_prec_ir
 python plot_mpir.py           /scratch/yimili/mixed-precision-IR/graphene/graphene.h5 --list
