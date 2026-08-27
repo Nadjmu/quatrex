@@ -200,17 +200,23 @@ recursion of the two Block Thomas variants: block growth, the conditioning of
 the pivot blocks, and the residual of implementation 2's explicit inverses. It
 is drawn only when the analysis file carries those columns.
 
-**`block-thomas/plot_backward_error.py`.** omega (componentwise, primary) and
-eta_inf (normwise, secondary/faded) against energy, for all six solvers — the
-one figure in the chapter where MUMPS and cuDSS appear alongside the four
-factor-exposing solvers, since backward error needs only the stored solution.
-A unit-roundoff reference line is drawn per precision present.
+**`block-thomas/plot_backward_error.py`.** omega (componentwise, primary row)
+and eta_inf (normwise, secondary row) against energy, one column per working
+precision present — splitting by precision is what makes six solvers
+distinguishable at all, since folding both precisions onto one axis spreads
+omega over 10+ decades. The one figure in the chapter where MUMPS and cuDSS
+appear alongside the four factor-exposing solvers, since backward error needs
+only the stored solution. A unit-roundoff reference line is drawn per column.
 
-**`block-thomas/plot_forward_error.py`.** The measured forward error against an
-extended-precision reference, the ratio of that error to each of the two
-predicted bounds with unity marked, and a scatter of error against bound with
-the line `y = x`. Points at or below the drawn reference floor
-`kappa_inf * eps_ext` measure the reference rather than the solver.
+**`block-thomas/plot_forward_error.py`.** Two rows, one column per working
+precision present: the measured forward error against energy with the
+reference floor `kappa_inf * eps_ext` drawn beneath it, and a scatter of error
+against predicted bound with the line `y = x`. Points at or below the floor
+measure the reference rather than the solver. A third row plotting the ratio
+fwd/bound against energy existed in an earlier version and was dropped — it is
+a deterministic function of what the scatter row already plots on independent
+axes, so it added a panel without adding information; the raw `ratio_nw` /
+`ratio_cw` columns remain in the HDF5 group for anyone who wants the numbers.
 
 **`block-thomas/plot_fp16_accuracy.py`.** Residual against forward error, with
 the fp16 unit roundoff drawn as a reference. A residual near `u` with a forward

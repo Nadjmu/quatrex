@@ -20,25 +20,29 @@ Algorithm
 ---------
 No computation: omega and eta_inf are plotted as recorded.
 
-Panel 1, omega against energy, one line per (solver, dtype). This is the
-primary claim of the figure: every solver returns the exact solution of a
-nearby problem, at omega of order the unit roundoff of its working precision,
-and Block Thomas is not distinguishable from the pivoting solvers here even
-though its pivoting is weaker -- backward stability is achieved, whatever the
-growth factor (a separate figure, plot_growth_factor.py) says about the
-margin by which it was achieved.
+One column per working precision present in the file, so that six solvers
+overlaid no longer sit on top of a second, precision-driven six-way split on
+the same axis -- with both folded onto one panel the omega values alone spread
+over 10 decades and the individual solver curves become indistinguishable.
+Splitting by precision leaves one decade or so of vertical spread per panel,
+where the actual differences between solvers are visible.
 
-Panel 2, eta_inf against energy, drawn faded and secondary. eta_p is not
-comparable across energies: its denominator carries ||A||_p ||x||_p, which
-tracks conditioning, so eta can span 20+ orders of magnitude between a
-well-conditioned and a near-band-edge index of the same matrix even when the
-solve itself is uniformly backward stable. It is shown for completeness and to
-make that incomparability visible, not as the panel to read a stability
-conclusion from -- omega is.
+Row 1, omega against energy. This is the primary claim of the figure: every
+solver returns the exact solution of a nearby problem, at omega of order the
+unit roundoff of its working precision, and Block Thomas is not distinguishable
+from the pivoting solvers here even though its pivoting is weaker -- backward
+stability is achieved, whatever the growth factor (a separate figure,
+plot_growth_factor.py) says about the margin by which it was achieved. A
+reference line at the unit roundoff of that column's precision is drawn on
+every panel in this row.
 
-A reference line at the unit roundoff of each working precision present
-(2^-52 for complex128, 2^-23 for complex64, 2^-11 for the embedded-real fp16
-variants) is drawn on panel 1.
+Row 2, eta_inf against energy, drawn secondary. eta_p is not comparable across
+energies: its denominator carries ||A||_p ||x||_p, which tracks conditioning,
+so eta can span 20+ orders of magnitude between a well-conditioned and a
+near-band-edge index of the same matrix even when the solve itself is
+uniformly backward stable. It is shown for completeness and to make that
+incomparability visible, not as the row to read a stability conclusion from --
+omega is.
 
 Output
 ------
@@ -77,6 +81,10 @@ UNIT_ROUNDOFF = {
     "complex32":  FP16_UNIT_ROUNDOFF,
 }
 
+# Column order when several precisions are present: coarsest to finest, so
+# panels read left-to-right as "more accurate".
+DTYPE_ORDER = ("complex32", "complex64", "complex128")
+
 
 def read_records(h5path):
     columns, attrs = load_table(h5path, GROUP)
@@ -86,70 +94,75 @@ def read_records(h5path):
     return records, attrs
 
 
-def group_by_series(records):
-    """Rows grouped by (solver, dtype), each sorted by index."""
-    grouped = defaultdict(list)
-    for record in records:
-        grouped[(record["solver"], record["dtype"])].append(record)
-    return {key: sorted(rows, key=lambda r: r["idx"])
-            for key, rows in sorted(grouped.items())}
-
-
 def _finite(values):
     array = np.asarray(values, dtype=float)
     return np.where(np.isfinite(array), array, np.nan)
 
 
+def _sorted_dtypes(records):
+    present = {r["dtype"] for r in records}
+    return [d for d in DTYPE_ORDER if d in present] + sorted(present - set(DTYPE_ORDER))
+
+
 def plot(records, attrs, material, out_path):
-    fig, axes = plt.subplots(1, 2, figsize=(13.5, 5.0), squeeze=False)
-    ax_omega, ax_eta = axes[0]
+    dtypes = _sorted_dtypes(records)
+    solvers = sorted({r["solver"] for r in records})
     have_energy = energies_of(attrs, [0]) is not None
-    series = group_by_series(records)
 
-    for (solver, dtype), rows in series.items():
-        indices = [r["idx"] for r in rows]
-        x = energies_of(attrs, indices)
-        if x is None:
-            x = indices
-        _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
-        _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
+    fig, axes = plt.subplots(2, len(dtypes),
+                             figsize=(5.6 * len(dtypes), 8.4), squeeze=False)
 
-        ax_omega.semilogy(x, _finite([r["omega"] for r in rows]), ls,
-                          marker=".", ms=3, lw=1.1, color=colour)
-        ax_eta.semilogy(x, _finite([r["eta_inf"] for r in rows]), ls,
-                        marker=".", ms=2.5, lw=0.8, color=colour, alpha=0.5)
+    by_dtype_solver = defaultdict(list)
+    for r in records:
+        by_dtype_solver[(r["dtype"], r["solver"])].append(r)
 
-    dtypes_present = sorted({dtype for _, dtype in series})
-    for dtype in dtypes_present:
+    for col, dtype in enumerate(dtypes):
+        ax_omega, ax_eta = axes[0][col], axes[1][col]
+        dtype_label, _ = DTYPE_STYLE.get(dtype, (dtype, "-"))
+
+        for solver in solvers:
+            rows = sorted(by_dtype_solver.get((dtype, solver), []),
+                          key=lambda r: r["idx"])
+            if not rows:
+                continue
+            indices = [r["idx"] for r in rows]
+            x = energies_of(attrs, indices)
+            if x is None:
+                x = indices
+            _, colour, marker = SOLVER_STYLE.get(solver, (solver, None, "o"))
+
+            ax_omega.semilogy(x, _finite([r["omega"] for r in rows]), "-",
+                              marker=marker, ms=4, lw=1.2, color=colour)
+            ax_eta.semilogy(x, _finite([r["eta_inf"] for r in rows]), "-",
+                            marker=marker, ms=3, lw=0.9, color=colour,
+                            alpha=0.6)
+
         u = UNIT_ROUNDOFF.get(dtype)
         if u is not None:
-            _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
-            ax_omega.axhline(u, color="k", lw=0.9, ls=ls, alpha=0.6)
+            ax_omega.axhline(u, color="k", lw=1.0, ls="--")
 
-    ax_omega.set_title(r"componentwise backward error  "
-                       r"$\omega = \max_{ij} |R_{ij}| / (|A||\hat{x}| + |b|)_{ij}$")
-    ax_omega.set_ylabel(r"$\omega$")
-    ax_eta.set_title(r"normwise backward error  $\eta_\infty$  (secondary — "
-                     r"not comparable across energies, see docstring)")
-    ax_eta.set_ylabel(r"$\eta_\infty$")
+        ax_omega.set_title(f"{dtype_label}")
+        ax_eta.set_title("")
+        for ax in (ax_omega, ax_eta):
+            ax.set_xlabel(axis_label(have_energy))
+            ax.grid(True, which="both", ls=":", alpha=0.4)
+            if have_energy:
+                mark_band_edges(ax, attrs)
 
-    for ax in (ax_omega, ax_eta):
-        ax.set_xlabel(axis_label(have_energy))
-        ax.grid(True, which="both", ls=":", alpha=0.4)
-        if have_energy:
-            mark_band_edges(ax, attrs)
+    axes[0][0].set_ylabel(r"$\omega$  (componentwise backward error)")
+    axes[1][0].set_ylabel(r"$\eta_\infty$  (normwise — secondary, see"
+                          r" docstring)")
 
-    solvers = list(dict.fromkeys(solver for solver, _ in series))
-    handles, labels = legend_handles(solvers, dtypes_present,
-                                     extra=[(plt.Line2D([], [], color="k",
-                                                        lw=0.9),
-                                            "unit roundoff u")])
+    handles, labels = legend_handles(
+        solvers, [],
+        extra=[(plt.Line2D([], [], color="k", lw=1.0, ls="--"),
+               "unit roundoff u")])
 
     fig.suptitle(f"Backward error, all solvers — {material}",
-                 fontsize=14, y=1.02)
+                 fontsize=14, y=1.01)
     fig.tight_layout()
-    fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
-              fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.06))
+    fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 7),
+              fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.05))
     save_figure(fig, out_path, dpi=140)
 
 
