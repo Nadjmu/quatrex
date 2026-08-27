@@ -26,16 +26,13 @@ two panels each.
 
 Panel 1, factor growth relative to A_eff. The entrywise bound
 |A - LU| <= gamma_n |L| |U| gives, in a monotone norm,
-||A - LU|| <= gamma_n || |L| |U| ||, so the tight ratio
-|| |L| |U| || / ||A_eff|| is the quantity that enters the backward-error bound
-directly; it is drawn as the solid marked line. The loose ratio
-||L|| ||U|| / ||A_eff|| is the same bound after the coarser estimate
-|| |L| |U| || <= ||L|| ||U||, never below the tight one; it is drawn faint and
-the slack between the two is shaded, so the gap reads at a glance instead of as
-two near-coincident lines. The pivot growth factor rho = max|U| / max|A_eff| is
-not plotted: it watches only the largest entry of U, is blind to L, and for
-block LU -- whose multipliers are not bounded by pivoting -- understates the
-growth the tight ratio captures.
+||A - LU|| <= gamma_n || |L| |U| ||, so || |L| |U| || / ||A_eff|| is the
+quantity that enters the backward-error bound directly. That is the only ratio
+drawn. The looser ||L|| ||U|| / ||A_eff|| and the pivot growth factor
+rho = max|U| / max|A_eff| are recorded by growth_factor.py but not plotted: the
+first only over-estimates this one, and rho watches the largest entry of U
+alone, is blind to L, and for block LU -- whose multipliers are not bounded by
+pivoting -- understates the growth this ratio captures.
 
 Panel 2, assembly residual. This is a correctness guard on the reconstruction,
 not a stability metric: values far above the unit roundoff of the stored
@@ -52,10 +49,11 @@ variants: the block growth max_k ||S_k|| / max_k ||A_kk|| and the pivot
 conditioning max_k kappa_2(S_k). These are what the scalar growth factor cannot
 see, and are drawn only when the analysis file carries them; see plot_schur.
 
-UMFPACK is excluded by default. It factorizes A with its rows rescaled, so its
-ratios and rho are measured against a different A_eff and do not sit on the
-same scale as the other three solvers; --solvers puts it back for a run where
-that is wanted.
+UMFPACK and block-thomas-inv are excluded by default. UMFPACK factorizes A
+with its rows rescaled, so its ratios are measured against a different A_eff
+and do not sit on the same scale as the others. block-thomas-inv shares the
+Schur recursion of block-thomas exactly and only crowds the panels. --solvers
+adds either back.
 
 Only the infinity norm is drawn by default. The 1-norm carries the same
 conclusion for these matrices and merely doubles the figure height; --norms
@@ -63,7 +61,7 @@ restores it when a specific reason to compare the two arises. The Schur columns
 are 2-norm quantities and are unaffected either way.
 
 The legend is shared across both panels and placed below the figure: one colour
-per solver, one line style per precision, plus the tight/loose/slack keys.
+per solver, one line style per precision.
 
 Output
 ------
@@ -90,8 +88,6 @@ sys.path.append(str((_HERE / ".." / ".." / "solvers").resolve()))
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
-from matplotlib.patches import Patch
 
 import cli
 from factor_io import load_table, table_rows
@@ -100,11 +96,12 @@ from style import (SOLVER_STYLE, DTYPE_STYLE, axis_label, energies_of,
 
 GROUP = "growth_factor"
 
-# UMFPACK factorizes A with its rows rescaled, so rho = max|U| / max|A_eff|
-# and the growth ratios are measured against a different matrix from the other
-# three solvers and are not directly comparable to them. It is dropped by
-# default; --solvers umfpack ... puts it back.
-DEFAULT_SOLVERS = ("block-thomas", "block-thomas-inv", "superlu")
+# Default solver set for the figures. UMFPACK is left out because its row
+# scaling makes A_eff -- and hence every ratio -- incomparable to the others.
+# block-thomas-inv is left out because it shares the Schur recursion of
+# block-thomas exactly and only clutters the growth panels; --solvers adds
+# either back.
+DEFAULT_SOLVERS = ("block-thomas", "superlu")
 
 
 def read_records(h5path):
@@ -154,20 +151,9 @@ def plot(records, attrs, material, norms, out_path):
             _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
             _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
             tight = np.asarray([r["tight"] for r in rows], dtype=float)
-            loose = np.asarray([r["loose"] for r in rows], dtype=float)
             tight_all.append(tight)
             prim = sweep_line(len(rows), "primary")
-            sec = sweep_line(len(rows), "secondary")
 
-            # tight is the bound; loose is the same bound after a coarser
-            # estimate and never below it. On a strided sweep the two are near
-            # coincident, so the slack between them is shaded to read at a
-            # glance; on a full sweep the overlapping shades of several solvers
-            # turn to mud, so only the two thin lines are drawn.
-            if len(rows) <= 200:
-                ax_ratio.fill_between(x, tight, loose, color=colour,
-                                      alpha=0.13, lw=0)
-            ax_ratio.semilogy(x, loose, ls, color=colour, **sec)
             ax_ratio.semilogy(x, tight, ls, color=colour, **prim)
             ax_resid.semilogy(x, [r["resid_rel"] for r in rows], ls,
                               color=colour, **prim)
@@ -186,7 +172,7 @@ def plot(records, attrs, material, norms, out_path):
 
         ax_ratio.set_title(f"factor growth relative to "
                            f"$A_{{\\mathrm{{eff}}}}$  [{norm}]")
-        ax_ratio.set_ylabel(r"ratio to $\|A_{\mathrm{eff}}\|$")
+        ax_ratio.set_ylabel(r"$\| |L||U| \| / \|A_{\mathrm{eff}}\|$")
         ax_resid.set_title(f"assembly residual "
                            f"$\\|A_{{\\mathrm{{eff}}}} - LU\\| / "
                            f"\\|A_{{\\mathrm{{eff}}}}\\|$  [{norm}]")
@@ -200,14 +186,7 @@ def plot(records, attrs, material, norms, out_path):
 
     solvers = _ordered(solvers_present, SOLVER_STYLE)
     dtypes = _ordered(dtypes_present, DTYPE_STYLE)
-    extra = [
-        (Line2D([], [], color="0.35", lw=1.4, marker="."),
-         r"tight  $\| |L||U| \| / \|A_{\mathrm{eff}}\|$"),
-        (Line2D([], [], color="0.35", lw=0.9, alpha=0.55),
-         r"loose  $\|L\|\,\|U\| / \|A_{\mathrm{eff}}\|$"),
-        (Patch(facecolor="0.35", alpha=0.15), "loose–tight slack"),
-    ]
-    handles, labels = legend_handles(solvers, dtypes, extra=extra)
+    handles, labels = legend_handles(solvers, dtypes)
 
     fig.suptitle(f"LU backward stability and factor growth — {material}",
                  fontsize=14, y=1.005)
@@ -315,9 +294,11 @@ def main():
                               f"block-thomas/growth_factor.py, group {GROUP}")
     cli.add_solver_selection(ap, choices=cli.FACTOR_SOLVERS, default=None,
                              help="restrict to these solvers (default: "
-                                  f"{', '.join(DEFAULT_SOLVERS)}; UMFPACK is "
-                                  "excluded because its row scaling makes the "
-                                  "ratios incomparable to the others)")
+                                  f"{', '.join(DEFAULT_SOLVERS)}; UMFPACK and "
+                                  "block-thomas-inv are excluded by default, "
+                                  "the first for its row scaling, the second "
+                                  "as a duplicate of the block-thomas Schur "
+                                  "recursion)")
     cli.add_dtypes(ap, choices=cli.COMPLEX_DTYPES, default=None,
                    help="restrict to these precisions "
                         "(default: all present in the file)")

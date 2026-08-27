@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Block Thomas Error Analysis</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,500;0,600;1,400&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; }
+</style>
+</head>
+<body>
+<style>
+  :root {
+    --ground: #f7f7fa;
+    --surface: #ffffff;
+    --surface-sunk: #f0f1f6;
+    --ink: #15171f;
+    --muted: #5c6377;
+    --rule: #e0e3ed;
+    --accent: #3242c8;
+    --accent-soft: #eaecfb;
+    --caution: #8a5a00;
+    --caution-soft: #faf1de;
+    --verified: #0b6f62;
+    --verified-soft: #e4f3ef;
+    --shadow: 0 1px 2px rgba(21, 23, 31, .05), 0 8px 24px -16px rgba(21, 23, 31, .3);
+
+    --display: "Spectral", Georgia, "Times New Roman", serif;
+    --body: "Source Sans 3", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+
+    --measure: 68ch;
+    --wide: 74rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0f1118;
+      --surface: #171a23;
+      --surface-sunk: #12141c;
+      --ink: #e9ebf3;
+      --muted: #99a0b5;
+      --rule: #272b39;
+      --accent: #93a5ff;
+      --accent-soft: #1b2039;
+      --caution: #dca33c;
+      --caution-soft: #241f13;
+      --verified: #4fc7b0;
+      --verified-soft: #10241f;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px -18px rgba(0, 0, 0, .9);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0f1118;
+    --surface: #171a23;
+    --surface-sunk: #12141c;
+    --ink: #e9ebf3;
+    --muted: #99a0b5;
+    --rule: #272b39;
+    --accent: #93a5ff;
+    --accent-soft: #1b2039;
+    --caution: #dca33c;
+    --caution-soft: #241f13;
+    --verified: #4fc7b0;
+    --verified-soft: #10241f;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px -18px rgba(0, 0, 0, .9);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.65;
+    margin: 0;
+    padding: 0 1.5rem 6rem;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page { max-width: var(--wide); margin: 0 auto; }
+  .col { max-width: var(--measure); }
+
+  /* ---------- masthead ---------- */
+  header.masthead {
+    border-bottom: 1px solid var(--rule);
+    padding: 4.5rem 0 2.5rem;
+    margin-bottom: 3.5rem;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 1.25rem;
+  }
+  h1 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(2.3rem, 5.2vw, 3.4rem);
+    line-height: 1.08;
+    letter-spacing: -.015em;
+    text-wrap: balance;
+    margin: 0 0 1rem;
+    max-width: 22ch;
+  }
+  .standfirst {
+    font-size: 1.15rem;
+    color: var(--muted);
+    max-width: 58ch;
+    margin: 0;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.75rem;
+    margin-top: 2.25rem;
+    font-family: var(--mono);
+    font-size: .78rem;
+    color: var(--muted);
+  }
+  .meta b { color: var(--ink); font-weight: 500; }
+
+  /* ---------- sections ---------- */
+  section { margin-bottom: 4rem; }
+  .section-head {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+    border-top: 1px solid var(--rule);
+    padding-top: 1.25rem;
+    margin-bottom: 1.75rem;
+  }
+  .section-head .tag {
+    font-family: var(--mono);
+    font-size: .7rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    white-space: nowrap;
+    padding-top: .35rem;
+  }
+  h2 {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: 1.75rem;
+    line-height: 1.2;
+    letter-spacing: -.01em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  h3 {
+    font-family: var(--body);
+    font-weight: 600;
+    font-size: 1.05rem;
+    letter-spacing: .005em;
+    margin: 2.25rem 0 .5rem;
+  }
+  p { margin: 0 0 1.1rem; }
+  a { color: var(--accent); text-underline-offset: 3px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+  strong { font-weight: 600; }
+  code {
+    font-family: var(--mono);
+    font-size: .88em;
+    background: var(--surface-sunk);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: .08em .32em;
+  }
+
+  /* ---------- the prompt ---------- */
+  blockquote.prompt {
+    margin: 0;
+    padding: 1.5rem 1.75rem;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    border-radius: 3px;
+    box-shadow: var(--shadow);
+    font-family: var(--display);
+    font-style: italic;
+    font-size: 1.02rem;
+    color: var(--ink);
+  }
+  blockquote.prompt p:last-child { margin-bottom: 0; }
+
+  /* ---------- formula ---------- */
+  .formula {
+    font-family: var(--mono);
+    font-size: .92rem;
+    line-height: 1.9;
+    background: var(--surface-sunk);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 1.1rem 1.35rem;
+    margin: 1.5rem 0;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--ink);
+  }
+  .formula .note { color: var(--muted); }
+
+  /* ---------- tables ---------- */
+  .table-wrap { overflow-x: auto; margin: 1.5rem 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 34rem;
+    font-size: .93rem;
+    font-variant-numeric: tabular-nums;
+  }
+  caption {
+    text-align: left;
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding-bottom: .7rem;
+  }
+  th, td {
+    text-align: left;
+    padding: .62rem .9rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  thead th {
+    font-weight: 600;
+    font-size: .78rem;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--ink);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.mono, th.mono { font-family: var(--mono); font-size: .85rem; }
+
+  /* ---------- gap cards ---------- */
+  .gaps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+    gap: 1rem;
+    margin-top: 1.75rem;
+  }
+  .gap {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 1.2rem 1.3rem;
+    box-shadow: var(--shadow);
+  }
+  .gap h4 {
+    font-family: var(--body);
+    font-size: .97rem;
+    font-weight: 600;
+    margin: 0 0 .45rem;
+  }
+  .gap p { font-size: .93rem; color: var(--muted); margin: 0; }
+  .gap p + p { margin-top: .6rem; }
+  .gap .verdict {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: .68rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    padding: .16rem .5rem;
+    border-radius: 2px;
+    margin-bottom: .7rem;
+  }
+  .verdict.fix { background: var(--accent-soft); color: var(--accent); }
+  .verdict.gap { background: var(--caution-soft); color: var(--caution); }
+
+  /* ---------- callout ---------- */
+  .callout {
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--caution);
+    background: var(--caution-soft);
+    border-radius: 3px;
+    padding: 1.1rem 1.35rem;
+    margin: 1.75rem 0;
+    font-size: .95rem;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout .label {
+    font-family: var(--mono);
+    font-size: .7rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--caution);
+    display: block;
+    margin-bottom: .4rem;
+  }
+
+  /* ---------- checks ---------- */
+  .checks { display: grid; gap: .75rem; margin: 1.5rem 0; }
+  .check {
+    display: grid;
+    grid-template-columns: minmax(11rem, 18rem) 1fr;
+    gap: .35rem 1.5rem;
+    align-items: baseline;
+    background: var(--verified-soft);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: .85rem 1.15rem;
+  }
+  .check .what { font-weight: 600; font-size: .93rem; }
+  .check .result {
+    font-family: var(--mono);
+    font-size: .85rem;
+    color: var(--verified);
+  }
+  @media (max-width: 34rem) {
+    .check { grid-template-columns: 1fr; }
+  }
+
+  /* ---------- steps ---------- */
+  ol.steps { counter-reset: step; list-style: none; margin: 1.5rem 0 0; padding: 0; }
+  ol.steps > li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 2.2rem 1fr;
+    gap: 0 1rem;
+    padding-bottom: 1.6rem;
+  }
+  ol.steps > li::before {
+    content: counter(step);
+    font-family: var(--mono);
+    font-size: .8rem;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-radius: 50%;
+    width: 1.8rem;
+    height: 1.8rem;
+    display: grid;
+    place-items: center;
+    margin-top: .1rem;
+  }
+  ol.steps .what { font-weight: 600; margin: 0 0 .4rem; }
+  ol.steps .why { color: var(--muted); font-size: .92rem; margin: .45rem 0 0; }
+  pre.cmd {
+    font-family: var(--mono);
+    font-size: .82rem;
+    line-height: 1.7;
+    background: var(--surface-sunk);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: .8rem 1rem;
+    margin: 0;
+    overflow-x: auto;
+  }
+
+  ul.plain { padding-left: 1.15rem; margin: 0 0 1.1rem; }
+  ul.plain li { margin-bottom: .5rem; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    margin-top: 4rem;
+    padding-top: 1.5rem;
+    font-family: var(--mono);
+    font-size: .76rem;
+    color: var(--muted);
+  }
+</style>
+
+<div class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">Block Thomas · stability note</p>
+    <h1>The two Schur-complement panels</h1>
+    <p class="standfirst">
+      What the <span style="font-family:var(--mono);font-size:.95em">schur_growth</span>
+      figure shows, and why those two quantities &mdash; not the scalar growth
+      factor &mdash; decide whether block Thomas is backward stable. Self-contained.
+    </p>
+    <div class="meta">
+      <span><b>Figure</b> &lt;material&gt;_schur_growth.png</span>
+      <span><b>Panels</b> block growth &middot; pivot conditioning</span>
+      <span><b>Reference</b> Demmel, Higham &amp; Nichols 1995; Higham ASNA ch. 13</span>
+    </div>
+  </header>
+
+  <section class="col">
+    <div class="section-head">
+      <span class="tag">&sect; 1</span>
+      <h2>Setup</h2>
+    </div>
+    <p>
+      <code>M</code> is block tridiagonal with <code>N</code> diagonal blocks
+      <code>A<sub>11</sub>, &hellip;, A<sub>NN</sub></code>, sub-diagonal blocks
+      <code>A<sub>k+1,k</sub></code> and super-diagonal blocks
+      <code>A<sub>k,k+1</sub></code>. Every block is <code>m &times; m</code>, where
+      <code>m</code> is the number of orbitals in one layer of the device. Making the
+      device longer increases <code>N</code>; it does <strong>not</strong> increase
+      <code>m</code>.
+    </p>
+    <p>
+      Block LU &mdash; the &ldquo;block Thomas&rdquo; recursion &mdash; computes
+    </p>
+    <div class="formula">S<sub>1</sub> = A<sub>11</sub>
+S<sub>k</sub> = A<sub>kk</sub> &minus; A<sub>k,k&minus;1</sub> S<sub>k&minus;1</sub><sup>&minus;1</sup> A<sub>k&minus;1,k</sub>      <span class="note">k = 2, &hellip;, N</span></div>
+    <p>
+      The <code>S<sub>k</sub></code> are the <strong>pivot blocks</strong>. They are
+      exactly the diagonal blocks of the <code>U</code> factor in <code>M = LU</code>,
+      and the code stores them as <code>Dmod</code>. Two implementations differ only in
+      how they use <code>S<sub>k</sub></code>:
+    </p>
+    <ul class="plain">
+      <li><strong>LU-based:</strong> factor <code>S<sub>k</sub> = P<sub>k</sub> L<sub>k</sub> U<sub>k</sub></code>
+        once, with partial pivoting <em>inside</em> the <code>m &times; m</code> block,
+        and reuse it for every solve against <code>S<sub>k</sub></code>.</li>
+      <li><strong>inverse-based:</strong> form <code>G<sub>k</sub> = S<sub>k</sub><sup>&minus;1</sup></code>
+        explicitly.</li>
+    </ul>
+    <p>
+      Both need to solve linear systems with <code>S<sub>k</sub></code> as the
+      coefficient matrix, in two places:
+    </p>
+    <ol class="plain" style="padding-left:1.4rem">
+      <li>forming <code>S<sub>k+1</sub></code> needs
+        <code>S<sub>k</sub><sup>&minus;1</sup> A<sub>k&minus;1,k</sub></code>, i.e. solve
+        <code>S<sub>k</sub> Y = A<sub>k&minus;1,k</sub></code>;</li>
+      <li>the substitution phase solves <code>S<sub>k</sub> z = (right-hand side)</code>
+        for each block.</li>
+    </ol>
+  </section>
+
+  <section class="col">
+    <div class="section-head">
+      <span class="tag">&sect; 2</span>
+      <h2>Why block LU is not scalar LU</h2>
+    </div>
+    <p>
+      Scalar LU with partial pivoting is backward stable in practice because the
+      multipliers are bounded, <code>|L<sub>ij</sub>| &le; 1</code>, so the only thing
+      that can go wrong is element growth in <code>U</code>, measured by the growth
+      factor <code>&rho; = max|U| / max|M|</code>. If <code>&rho;</code> is modest,
+      <code>&#8214;M &minus; LU&#8214; &le; &gamma;<sub>n</sub> &#8214;|L||U|&#8214;</code>
+      is small and the solve is backward stable.
+    </p>
+    <p>
+      Block LU replaces &ldquo;divide by the scalar pivot&rdquo; with &ldquo;solve a
+      system with the block pivot <code>S<sub>k</sub></code>&rdquo;. That step is
+      backward stable in the usual sense &mdash; the computed solution
+      <code>y&#770;</code> satisfies
+      <code>(S<sub>k</sub> + &delta;S<sub>k</sub>) y&#770; = c</code> with
+      <code>&#8214;&delta;S<sub>k</sub>&#8214; / &#8214;S<sub>k</sub>&#8214; &sim; u</code>
+      &mdash; but its <strong>forward</strong> error is
+    </p>
+    <div class="formula">&#8214;y&#770; &minus; y&#8214; / &#8214;y&#8214;   &lesssim;   &kappa;<sub>2</sub>(S<sub>k</sub>) &middot; u        <span class="note">&kappa;<sub>2</sub>(S<sub>k</sub>) = &#8214;S<sub>k</sub>&#8214; &#8214;S<sub>k</sub><sup>&minus;1</sup>&#8214;</span></div>
+    <p>
+      That inexact <code>y&#770;</code> is then substituted into
+      <code>S<sub>k+1</sub></code>, into the <code>L</code> multipliers, and into the
+      solution blocks, and the error propagates down the recursion. The result
+      (Demmel, Higham &amp; Nichols, <em>Block LU factorization is not always
+      stable</em>, 1995) is that the backward error of the whole block factorization
+      is bounded by roughly
+    </p>
+    <div class="formula">&#8214;M &minus; L&#770; U&#770;&#8214; / &#8214;M&#8214;   &lesssim;   c(N, m) &middot; ( 1 + max<sub>k</sub> &kappa;<sub>2</sub>(S<sub>k</sub>) ) &middot; u</div>
+    <p>
+      The <code>max<sub>k</sub> &kappa;<sub>2</sub>(S<sub>k</sub>)</code> factor has no
+      counterpart in the scalar partial-pivoting bound.
+      <strong>Block LU is backward stable iff the pivot blocks stay well
+      conditioned</strong> &mdash; the growth factor alone does not certify it.
+    </p>
+    <blockquote class="prompt">
+      <p>
+        This is a different <code>&kappa;</code> from the one in the forward-error
+        bound. <code>&kappa;(M)</code> governs how far <code>x</code> is from the true
+        solution <em>given</em> a backward-stable solve.
+        <code>&kappa;<sub>2</sub>(S<sub>k</sub>)</code> is an internal quantity of the
+        block algorithm that degrades the backward error itself. A well-conditioned
+        <code>M</code> can still produce an ill-conditioned <code>S<sub>k</sub></code>:
+        <code>S<sub>k</sub></code> is the Schur complement of the leading
+        <code>k&minus;1</code> block rows, and it is near singular whenever that leading
+        principal submatrix is near singular, independently of <code>&kappa;(M)</code>.
+      </p>
+    </blockquote>
+  </section>
+
+  <section class="col">
+    <div class="section-head">
+      <span class="tag">&sect; 3</span>
+      <h2>The two panels</h2>
+    </div>
+    <p>
+      Both are 2-norm quantities, one SVD per block per energy index. Both
+      implementations share the <code>S<sub>k</sub></code> exactly, so their curves
+      coincide; only one is plotted.
+    </p>
+
+    <h3>Panel 1 &mdash; block growth
+      <code>max<sub>k</sub> &#8214;S<sub>k</sub>&#8214;<sub>2</sub> / max<sub>k</sub> &#8214;A<sub>kk</sub>&#8214;<sub>2</sub></code></h3>
+    <p>
+      The block analogue of <code>&rho;</code>. Did the recursion inflate the blocks
+      relative to the diagonal blocks of <code>M</code> it started from? A value near 1
+      means the <code>S<sub>k</sub></code> are no larger than the
+      <code>A<sub>kk</sub></code>; a large value means the subtraction
+      <code>A<sub>kk</sub> &minus; A<sub>k,k&minus;1</sub> S<sub>k&minus;1</sub><sup>&minus;1</sup> A<sub>k&minus;1,k</sub></code>
+      produced a much bigger block, which feeds element growth into <code>U</code>.
+    </p>
+
+    <h3>Panel 2 &mdash; pivot conditioning
+      <code>max<sub>k</sub> &kappa;<sub>2</sub>(S<sub>k</sub>)</code></h3>
+    <p>
+      The quantity from &sect;&nbsp;2. This is the one that enters the block LU
+      backward error where scalar LU has nothing. Even with block growth of 1, a
+      single near-singular <code>S<sub>k</sub></code> sends this over
+      <code>10<sup>5</sup></code> or <code>10<sup>6</sup></code> and costs that many
+      digits in the block solves against <code>S<sub>k</sub></code> &mdash; and hence in
+      the assembled factors, at the working precision <code>u</code>.
+    </p>
+    <p>
+      For the QTBM matrices <code>M(E) = E&thinsp;I &minus; H &minus; &Sigma;(E)</code>
+      this spikes at the band edges: <code>M(E)</code> itself approaches singularity
+      there (the resolvent blows up near an eigenvalue), and that near singularity
+      concentrates into one Schur complement. Away from the band edges
+      <code>&kappa;<sub>2</sub>(S<sub>k</sub>)</code> sits at
+      <code>10<sup>2</sup></code>&ndash;<code>10<sup>3</sup></code> and block LU is
+      uniformly backward stable.
+    </p>
+  </section>
+
+  <section class="col">
+    <div class="section-head">
+      <span class="tag">&sect; 4</span>
+      <h2>Reading them with the other figures</h2>
+    </div>
+    <ul class="plain">
+      <li>
+        <strong><code>backward_error</code> figure.</strong> At
+        <code>complex128</code>, <code>&kappa;<sub>2</sub>(S<sub>k</sub>) &sim; 10<sup>6</sup></code>
+        times <code>u &sim; 10<sup>&minus;16</sup></code> is still
+        <code>&sim; 10<sup>&minus;10</sup> &Lt; 1</code>, so <code>&omega;</code> stays
+        at <code>u</code> even at the band edge. At <code>complex64</code>,
+        <code>u &sim; 6&times;10<sup>&minus;8</sup></code>, the same product is
+        <code>&sim; 6&times;10<sup>&minus;2</sup></code>, and the block Thomas
+        <code>&omega;</code> visibly bumps up at the conduction edge &mdash; this panel
+        is the explanation for that bump.
+      </li>
+      <li>
+        <strong><code>growth_factor</code> figure, assembly-residual panel.</strong>
+        <code>&#8214;M<sub>eff</sub> &minus; LU&#8214; / &#8214;M<sub>eff</sub>&#8214;</code>
+        tracks (block growth) &times; (pivot conditioning) &times; <code>u</code>. At
+        <code>complex128</code> it is <code>&sim; 10<sup>&minus;15</sup></code>
+        everywhere; at <code>complex64</code> it rises to
+        <code>&sim; 10<sup>&minus;2</sup></code> at the band edge, which is
+        <code>&kappa;<sub>2</sub>(S<sub>k</sub>) &middot; u</code> again.
+      </li>
+    </ul>
+  </section>
+
+  <section class="col">
+    <div class="section-head">
+      <span class="tag">&sect; 5</span>
+      <h2>Scalability caveat</h2>
+    </div>
+    <p>
+      <code>&kappa;<sub>2</sub>(S<sub>k</sub>)</code> is computed here by a full SVD of
+      each <code>m &times; m</code> block: <code>O(N m<sup>3</sup>)</code>, linear in
+      <code>N</code>, the same order as the factorization. It does not blow up as the
+      device lengthens. If <code>m</code> itself is large, the SVD is replaceable by a
+      1-norm condition estimate (<code>LAPACK ?gecon</code>) reusing the pivot-block LU
+      that implementation 1 already computes &mdash; <code>O(m<sup>2</sup>)</code> per
+      block. For a post-hoc, strided analysis over two materials the SVD is fine and
+      gives the exact number.
+    </p>
+  </section>
+
+  <footer>
+    Pipeline: run_benchmarks &rarr; growth_factor (with &minus;&minus;schur) &rarr; plot_growth_factor.
+    Figure: plotting/block-thomas/plot_growth_factor.py, function plot_schur.
+  </footer>
+
+</div>
+
+</body>
+</html>

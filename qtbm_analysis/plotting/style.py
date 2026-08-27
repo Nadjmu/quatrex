@@ -211,10 +211,10 @@ def sweep_line(n_points, weight="primary", marker="."):
     dense = n_points > 200
     m = "" if dense else marker
     if weight == "secondary":
-        return dict(marker=m, ms=3, lw=0.4 if dense else 0.8,
-                    alpha=0.4 if dense else 0.55)
+        return dict(marker=m, ms=2, lw=0.5 if dense else 1.0,
+                    alpha=0.7 if dense else 0.8)
     return dict(marker=m, ms=3, lw=0.6 if dense else 1.3,
-                alpha=0.8 if dense else 1.0)
+                alpha=0.85 if dense else 1.0)
 
 
 def save_figure(fig, path, dpi=150):

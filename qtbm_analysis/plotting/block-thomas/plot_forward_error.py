@@ -29,16 +29,17 @@ Row 1, the measured forward error against energy, with the reference floor
 kappa_inf * eps_ext drawn beneath it. Points at or below that floor measure the
 reference rather than the solver and carry no information about the solver.
 
-Row 2, the two ratios fwd_inf / bound against energy, with unity marked. This
-is the panel that answers the chapter's question directly: the bound holds
-exactly where the line sits below 1, and by how much is read straight off the
-axis. An earlier version of this figure used a fwd-against-bound scatter with
-the line y = x instead; the same information, but reading "how far below the
-diagonal, in log space" is a harder visual task than reading "how far below 1
-on a linear-in-log axis", for a comparison where "below 1" is the entire
-point. The scatter is gone; the ratio is what the chapter shows. A ratio above
-one falsifies the bound and means either that the reference is at its floor
-(row 1) or that a recorded quantity is wrong.
+Row 2, the ratio fwd_inf / (cond(A, x) * omega) against energy, with unity
+marked. This is the panel that answers the chapter's question directly: the
+componentwise bound holds exactly where the line sits below 1, and by how much
+is read straight off the axis. Only the componentwise ratio is drawn; the
+normwise ratio fwd_inf / (kappa_inf * eta_inf) is recorded by forward_error.py
+(ratio_nw) but not plotted. An earlier version of this figure used a
+fwd-against-bound scatter with the line y = x instead; reading "how far below
+the diagonal, in log space" is a harder visual task than reading "how far below
+1 on a linear-in-log axis", for a comparison where "below 1" is the entire
+point. A ratio above one falsifies the bound and means either that the
+reference is at its floor (row 1) or that a recorded quantity is wrong.
 
 Output
 ------
@@ -121,15 +122,11 @@ def plot(records, attrs, material, out_path):
                 x = indices
             _, colour, marker = SOLVER_STYLE.get(solver, (solver, None, "o"))
             prim = sweep_line(len(rows), "primary", marker)
-            sec = sweep_line(len(rows), "secondary", marker)
 
             ax_fwd.semilogy(x, _finite([r["fwd_inf"] for r in rows]), "-",
                             color=colour, **prim)
-
             ax_ratio.semilogy(x, _finite([r["ratio_cw"] for r in rows]), "-",
                               color=colour, **prim)
-            ax_ratio.semilogy(x, _finite([r["ratio_nw"] for r in rows]), "-",
-                              color=colour, **sec)
 
             if not floor_drawn:
                 ax_fwd.semilogy(x, _finite([r["ref_floor"] for r in rows]),
@@ -146,13 +143,9 @@ def plot(records, attrs, material, out_path):
                 mark_band_edges(ax, attrs)
 
     axes[0][0].set_ylabel(r"forward error  $\|\hat{x}-x\|_\infty/\|x\|_\infty$")
-    axes[1][0].set_ylabel("forward error / predicted bound")
+    axes[1][0].set_ylabel(r"forward error / $\mathrm{cond}(A,x)\,\omega$")
 
     extra = [
-        (Line2D([], [], color="0.3", lw=1.1),
-         r"componentwise, $\mathrm{cond}(A,x)\,\omega$"),
-        (Line2D([], [], color="0.3", lw=0.8, alpha=0.45),
-         r"normwise, $\kappa_\infty \eta_\infty$"),
         (Line2D([], [], color="k", ls="--", lw=1.0),
          r"reference floor (top row), unity (bottom row)"),
     ]
