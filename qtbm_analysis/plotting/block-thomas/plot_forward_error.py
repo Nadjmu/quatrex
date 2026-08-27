@@ -13,7 +13,7 @@ row per (index, solver, dtype) with the columns
     cond_inf, cond_skeel_x          condition numbers of the same system
     bound_nw = cond_inf * eta_inf   normwise prediction
     bound_cw = cond_skeel_x * omega componentwise prediction
-    ratio_nw, ratio_cw              fwd_inf / bound (not plotted, see below)
+    ratio_nw, ratio_cw              fwd_inf / bound
     ref_res, ref_floor, ref_steps   quality of the reference solution
 
 Algorithm
@@ -29,19 +29,16 @@ Row 1, the measured forward error against energy, with the reference floor
 kappa_inf * eps_ext drawn beneath it. Points at or below that floor measure the
 reference rather than the solver and carry no information about the solver.
 
-Row 2, forward error against predicted bound, as a scatter with the line
-y = x. Every point must lie on or below the line, and the vertical distance
-below it is exactly how much the bound gives away. Both pairs are drawn, the
-componentwise one filled and the normwise one open.
-
-The ratio fwd/bound against energy, drawn in an earlier version of this
-figure, is not a third row: it carries no information beyond what rows 1 and 2
-already show between them. ratio = fwd / bound is a deterministic function of
-the two quantities row 2 already plots on independent axes, and row 2's
-distance below the y = x line *is* that ratio, in log space, for every point
-at once; a ratio-vs-energy panel would only restate it one point at a time
-along an axis row 1 already carries the energy dependence for. The two ratio
-columns remain in the HDF5 group for anyone who wants the raw numbers.
+Row 2, the two ratios fwd_inf / bound against energy, with unity marked. This
+is the panel that answers the chapter's question directly: the bound holds
+exactly where the line sits below 1, and by how much is read straight off the
+axis. An earlier version of this figure used a fwd-against-bound scatter with
+the line y = x instead; the same information, but reading "how far below the
+diagonal, in log space" is a harder visual task than reading "how far below 1
+on a linear-in-log axis", for a comparison where "below 1" is the entire
+point. The scatter is gone; the ratio is what the chapter shows. A ratio above
+one falsifies the bound and means either that the reference is at its floor
+(row 1) or that a recorded quantity is wrong.
 
 Output
 ------
@@ -109,7 +106,7 @@ def plot(records, attrs, material, out_path):
         by_dtype_solver[(r["dtype"], r["solver"])].append(r)
 
     for col, dtype in enumerate(dtypes):
-        ax_fwd, ax_scatter = axes[0][col], axes[1][col]
+        ax_fwd, ax_ratio = axes[0][col], axes[1][col]
         dtype_label, _ = DTYPE_STYLE.get(dtype, (dtype, "-"))
         floor_drawn = False
 
@@ -127,45 +124,35 @@ def plot(records, attrs, material, out_path):
             ax_fwd.semilogy(x, _finite([r["fwd_inf"] for r in rows]), "-",
                             marker=marker, ms=4, lw=1.1, color=colour)
 
-            fwd = _finite([r["fwd_inf"] for r in rows])
-            ax_scatter.loglog(_finite([r["bound_cw"] for r in rows]), fwd,
-                              linestyle="none", marker=marker or "o", ms=4.5,
-                              color=colour)
-            ax_scatter.loglog(_finite([r["bound_nw"] for r in rows]), fwd,
-                              linestyle="none", marker=marker or "o", ms=4.5,
-                              mfc="none", alpha=0.5, color=colour)
+            ax_ratio.semilogy(x, _finite([r["ratio_cw"] for r in rows]), "-",
+                              marker=marker, ms=4, lw=1.1, color=colour)
+            ax_ratio.semilogy(x, _finite([r["ratio_nw"] for r in rows]), "-",
+                              lw=0.8, color=colour, alpha=0.45)
 
             if not floor_drawn:
                 ax_fwd.semilogy(x, _finite([r["ref_floor"] for r in rows]),
                                 "k--", lw=1.0)
                 floor_drawn = True
 
-        ax_fwd.set_title(dtype_label)
-        ax_fwd.set_xlabel(axis_label(have_energy))
-        ax_fwd.grid(True, which="both", ls=":", alpha=0.4)
-        if have_energy:
-            mark_band_edges(ax_fwd, attrs)
+        ax_ratio.axhline(1.0, color="k", lw=1.0, ls="--")
 
-        limits = [v for r in records if r["dtype"] == dtype
-                  for v in (r["fwd_inf"], r["bound_cw"], r["bound_nw"])
-                  if np.isfinite(v) and v > 0]
-        if limits:
-            lo, hi = min(limits), max(limits)
-            ax_scatter.plot([lo, hi], [lo, hi], "k--", lw=1.0)
-        ax_scatter.set_xlabel(r"bound: $\kappa_\infty \eta_\infty$ (open), "
-                              r"$\mathrm{cond}(A,x)\,\omega$ (filled)")
-        ax_scatter.grid(True, which="both", ls=":", alpha=0.4)
+        ax_fwd.set_title(dtype_label)
+        for ax in (ax_fwd, ax_ratio):
+            ax.set_xlabel(axis_label(have_energy))
+            ax.grid(True, which="both", ls=":", alpha=0.4)
+            if have_energy:
+                mark_band_edges(ax, attrs)
 
     axes[0][0].set_ylabel(r"forward error  $\|\hat{x}-x\|_\infty/\|x\|_\infty$")
-    axes[1][0].set_ylabel("forward error")
+    axes[1][0].set_ylabel("forward error / predicted bound")
 
     extra = [
-        (Line2D([], [], color="0.3", marker="o", ls="none", ms=5),
-         r"componentwise bound"),
-        (Line2D([], [], color="0.3", marker="o", ls="none", ms=5, mfc="none"),
-         r"normwise bound"),
+        (Line2D([], [], color="0.3", lw=1.1),
+         r"componentwise, $\mathrm{cond}(A,x)\,\omega$"),
+        (Line2D([], [], color="0.3", lw=0.8, alpha=0.45),
+         r"normwise, $\kappa_\infty \eta_\infty$"),
         (Line2D([], [], color="k", ls="--", lw=1.0),
-         r"reference floor (top row), $y=x$ (bottom row)"),
+         r"reference floor (top row), unity (bottom row)"),
     ]
     handles, labels = legend_handles(solvers, [], extra=extra)
 

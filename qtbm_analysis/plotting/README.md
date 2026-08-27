@@ -210,13 +210,13 @@ only the stored solution. A unit-roundoff reference line is drawn per column.
 
 **`block-thomas/plot_forward_error.py`.** Two rows, one column per working
 precision present: the measured forward error against energy with the
-reference floor `kappa_inf * eps_ext` drawn beneath it, and a scatter of error
-against predicted bound with the line `y = x`. Points at or below the floor
-measure the reference rather than the solver. A third row plotting the ratio
-fwd/bound against energy existed in an earlier version and was dropped — it is
-a deterministic function of what the scatter row already plots on independent
-axes, so it added a panel without adding information; the raw `ratio_nw` /
-`ratio_cw` columns remain in the HDF5 group for anyone who wants the numbers.
+reference floor `kappa_inf * eps_ext` drawn beneath it, and `fwd_inf / bound`
+against energy with unity marked — the panel that answers the chapter's
+question directly, since "the bound holds" reads as "the line sits below 1"
+rather than requiring a diagonal-distance judgement. An earlier version drew a
+fwd-against-bound scatter with the line `y = x` instead; mathematically the
+same information, but harder to read for a comparison whose entire point is
+"below one," so the ratio panel replaced it.
 
 **`block-thomas/plot_fp16_accuracy.py`.** Residual against forward error, with
 the fp16 unit roundoff drawn as a reference. A residual near `u` with a forward

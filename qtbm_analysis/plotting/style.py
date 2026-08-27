@@ -59,9 +59,13 @@ SOLVER_STYLE = {
     "superlu":               ("SuperLU",              "#555555", "x"),
     "umfpack":               ("UMFPACK",              "#E67E22", "s"),
     "mumps":                 ("MUMPS",                "#27AE60", "^"),
+    # cuDSS was previously #16A085, a teal indistinguishable from MUMPS'
+    # green at a glance on a line plot; #D81B60 (magenta) is the only unused
+    # hue family left once gray/orange/green/purple/dark-red/blue are spoken
+    # for by the rest of this table.
     "gmres":                 ("GMRES (SciPy)",        "#8E44AD", "D"),
     "gmres-cupy":            ("GMRES (CuPy)",         "#C0392B", "v"),
-    "cudss":                 ("cuDSS",                "#16A085", "P"),
+    "cudss":                 ("cuDSS",                "#D81B60", "P"),
     "block-thomas":          ("Block Thomas (LU)",    "#2E86AB", "o"),
     "block-thomas-inv":      ("Block Thomas (inv)",   "#9B59B6", "*"),
     "block-thomas-fp16":     ("Block Thomas fp16",    "#2E86AB", "o"),
