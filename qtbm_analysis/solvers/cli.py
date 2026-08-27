@@ -512,6 +512,23 @@ def add_index_selection(ap, default_all=True):
     return ap
 
 
+def index_of_energy(attrs, energies):
+    """
+    Nearest energy-grid index for each energy in eV -- the inverse of
+    style.energies_of(). `attrs` needs grid_energy_min and resolution, which
+    material_metadata() copies into every stage-4 group; raises SystemExit
+    otherwise, since there is then no grid to invert.
+    """
+    if attrs is None or "grid_energy_min" not in attrs or "resolution" not in attrs:
+        raise SystemExit(
+            "--energy requires grid_energy_min/resolution metadata, absent "
+            "from this file"
+        )
+    start = float(attrs["grid_energy_min"])
+    step = float(attrs["resolution"])
+    return [int(round((float(e) - start) / step)) for e in energies]
+
+
 def available_indices(h5_file, require="M"):
     """
     Energy indices actually present in an open material file, ascending.

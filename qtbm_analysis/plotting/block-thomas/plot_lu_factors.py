@@ -43,6 +43,7 @@ Usage
 -----
     python plot_lu_factors.py /scratch/yimili/error-analysis-block-thomas/carbon-nanotube.h5
     python plot_lu_factors.py .../carbon-nanotube.h5 --idx 5 --dtypes complex128
+    python plot_lu_factors.py .../carbon-nanotube.h5 --energy -3.57
 """
 
 import sys
@@ -58,7 +59,7 @@ import matplotlib.pyplot as plt
 
 import cli
 from factor_io import load_sparse_factor
-from style import save_figure
+from style import energies_of, save_figure
 
 GROUP = "lu_factors"
 
@@ -109,7 +110,7 @@ def block_boundaries(group, n):
     return [int(e) for e in edges if 0 < e < n]
 
 
-def plot(groups, idx, dtype_name, material, dynamic_range, out_path):
+def plot(groups, idx, dtype_name, material, attrs, dynamic_range, out_path):
     """One 3x3 figure: rows are solvers present in `groups`, columns A_eff/L/U."""
     rows = [s for s in ROWS if s in groups]
 
@@ -146,7 +147,10 @@ def plot(groups, idx, dtype_name, material, dynamic_range, out_path):
 
     fig.colorbar(image, ax=axes, label=r"$\log_{10}|\cdot|$",
                  fraction=0.02, pad=0.02)
-    fig.suptitle(f"{material}  E_{idx}  {dtype_name}", fontsize=14)
+    energy = energies_of(attrs, [idx])
+    position = f"E = {float(energy[0]):.4f} eV" if energy is not None \
+        else f"idx {idx}"
+    fig.suptitle(f"{material}  {position}  {dtype_name}", fontsize=14)
     save_figure(fig, out_path, dpi=160)
 
 
@@ -155,6 +159,14 @@ def main():
     cli.add_h5_input(ap, help=f"analysis file written by "
                               f"block-thomas/extract_lu.py, group {GROUP}")
     cli.add_index_selection(ap, default_all=True)
+    ap.add_argument("--energy", type=float, nargs="+", default=None,
+                    metavar="EV",
+                    help="select energy indices by nearest energy in eV, "
+                         "instead of --idx/--start/--end (overrides them if "
+                         "both are given); requires the analysis file to "
+                         "carry grid_energy_min/resolution, which "
+                         "extract_lu.py copies in when the material file has "
+                         "it")
     cli.add_dtypes(ap, choices=cli.COMPLEX_DTYPES, default=None,
                    help="restrict to these precisions "
                         "(default: all present in the file)")
@@ -172,6 +184,12 @@ def main():
     outdir = Path(args.outdir) if args.outdir else h5path.parent
 
     with h5py.File(h5path, "r") as f:
+        group_attrs = dict(f[GROUP].attrs) if GROUP in f else {}
+        if args.energy is not None:
+            args.idx = cli.index_of_energy(group_attrs, args.energy)
+            for e, idx in zip(args.energy, args.idx):
+                print(f"energy {e:.4f} eV -> idx {idx}")
+
         # The indices available are those the extraction wrote, not those a
         # material file holds, so the selection is resolved against this
         # file's own groups.
@@ -183,7 +201,8 @@ def main():
         if not found:
             raise SystemExit("no combination remains after filtering")
         for (idx, dtype_name), groups in found:
-            plot(groups, idx, dtype_name, material, args.dynamic_range,
+            plot(groups, idx, dtype_name, material, group_attrs,
+                 args.dynamic_range,
                  outdir / f"{material}_E{idx}_{dtype_name}_lu.png")
 
 

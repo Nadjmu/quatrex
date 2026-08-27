@@ -59,6 +59,7 @@ Usage
     python extract_lu.py .../graphene.h5 --idx 25 \
         --solvers block-thomas superlu umfpack --dtypes complex128
     python extract_lu.py .../graphene.h5 --start 10 --end 20 --stride 5
+    python extract_lu.py .../graphene.h5 --energy -3.57
 
 The factors of a large material are far denser than A and every combination is
 stored in full, so a whole sweep is not a sensible selection: the intended use
@@ -153,6 +154,12 @@ def main():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap)
     cli.add_index_selection(ap, default_all=True)
+    ap.add_argument("--energy", type=float, nargs="+", default=None,
+                    metavar="EV",
+                    help="select energy indices by nearest energy in eV, "
+                         "instead of --idx/--start/--end (overrides them if "
+                         "both are given); requires the material file to "
+                         "record grid_energy_min/resolution")
     cli.add_solver_selection(
         ap, choices=SOLVERS, default=SOLVERS,
         help="solvers whose stored factors to extract; those absent from the "
@@ -168,13 +175,19 @@ def main():
     material = args.material or h5path.stem
     out_path = cli.analysis_h5(args.outdir, material)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    material_attrs = material_metadata(h5path)
+
+    if args.energy is not None:
+        args.idx = cli.index_of_energy(material_attrs, args.energy)
+        for e, idx in zip(args.energy, args.idx):
+            print(f"energy {e:.4f} eV -> idx {idx}")
 
     written = 0
     with h5py.File(h5path, "r") as f, h5py.File(out_path, "a") as out:
         indices = cli.resolve_indices(ap, args, cli.available_indices(f))
         root = out.require_group(GROUP)
         for key, value in dict(material=material, source=str(h5path),
-                               **material_metadata(h5path)).items():
+                               **material_attrs).items():
             root.attrs[key] = value
         for idx in indices:
             print(f"idx = {idx}")
