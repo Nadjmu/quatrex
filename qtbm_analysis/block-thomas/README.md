@@ -14,6 +14,7 @@ per index and refines. It repeats none of the benchmark's own solves.
 |---|---|
 | `growth_factor.py` | is the factorization backward stable, and by how much did the factors grow? |
 | `forward_error.py` | how close is the computed solution to the true one, and do the classical bounds predict it? |
+| `extract_lu.py` | what do the factors themselves look like — how much fill-in, and where? |
 | `determine_custom_block_size.py` | what non-uniform block partition does this matrix have? |
 | `arnoldi_shift_invert_cpu.py` / `_gpu.py` | extreme eigenvalues, singular values, and the condition number |
 
@@ -277,7 +278,50 @@ nothing else.
 
 ---
 
-## 3. `determine_custom_block_size.py`
+## 3. `extract_lu.py`
+
+Assembles the global `L` and `U` of a stored factorization and writes them out,
+so that the factors can be looked at rather than only measured. The assembly is
+`growth_factor.ASSEMBLERS`, imported rather than repeated: the factors written
+here are exactly the ones the growth columns are computed from. Nothing is
+recomputed and no factorization is performed.
+
+Per `(index, solver, dtype)` three sparse matrices are stored: `L`, `U`, and
+`A_eff`, the matrix those factors reconstruct — `A` for the Block Thomas
+variants, `Pr A Pc` for SuperLU, `Pr diag(1/R) A Pc` for UMFPACK, as in section
+1.3. `resid_rel = ||A_eff - L U|| / ||A_eff||` is stored as an attribute and is
+the same guard it is there: far above the unit roundoff of the stored
+precision, the extracted factors are not the ones the solver computed.
+
+```bash
+python extract_lu.py /scratch/yimili/matrices2/hdf5/carbon-nanotube.h5 --idx 5
+python extract_lu.py .../graphene.h5 --idx 25 --solvers block-thomas superlu \
+    --dtypes complex128
+
+python ../plotting/block-thomas/plot_lu_factors.py \
+    /scratch/yimili/error-analysis-block-thomas/carbon-nanotube.h5 --idx 5
+```
+
+Writes `lu_factors/E_<idx>/<solver>/<dtype>/{A_eff,L,U}` as CSC triplets into
+`<outdir>/<material>.h5`, beside the `growth_factor` and `forward_error`
+groups. **Only the combinations extracted in a run are replaced**, not the
+whole group — unlike every other script here, which rewrites its group
+wholesale. An extraction is per index and costs a full copy of the factors, so
+wholesale replacement would discard the earlier indices, and a sweep is not a
+sensible selection in the first place: the intended use is a handful of
+indices.
+
+The figure is one row of three panels — `A_eff`, `L`, `U` — as `log10` of the
+entry magnitude on a shared colour scale, in the style the device Hamiltonian
+is drawn in by `plotting/materials/bandstructure.py`. Fill-in is the extent of
+the coloured region against `A_eff`'s, growth is a factor panel brighter than
+it. Only a leading window is drawn, the first three blocks of the recorded
+partition by default and `--size` rows otherwise, since a device matrix cannot
+be densified.
+
+---
+
+## 4. `determine_custom_block_size.py`
 
 Derives a non-uniform block partition from the sparsity pattern by growing a
 reach frontier row by row, declaring a boundary wherever the frontier stops
@@ -321,7 +365,7 @@ block 0.
 
 ---
 
-## 4. Arnoldi and shift-invert
+## 5. Arnoldi and shift-invert
 
 `arnoldi_shift_invert_cpu.py` (MUMPS, Block Thomas, SuperLU) and
 `arnoldi_shift_invert_gpu.py` (cuDSS). The interface is identical; the GPU

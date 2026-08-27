@@ -21,6 +21,7 @@ plotting/
 │   ├── plot_growth_factor.py
 │   ├── plot_forward_error.py
 │   ├── plot_backward_error.py
+│   ├── plot_lu_factors.py
 │   └── plot_fp16_accuracy.py
 ├── condition-est/
 │   └── plot_condition.py
@@ -42,6 +43,7 @@ plotting/
 | `block-thomas/plot_growth_factor.py` | analysis file, `growth_factor` | `<material>_growth_factor.png`, `<material>_schur_growth.png` |
 | `block-thomas/plot_forward_error.py` | analysis file, `forward_error` | `<material>_forward_error.png` |
 | `block-thomas/plot_backward_error.py` | analysis file, `forward_error` | `<material>_backward_error.png` |
+| `block-thomas/plot_lu_factors.py` | analysis file, `lu_factors` | `<material>_E<idx>_<solver>_<dtype>_lu.png` |
 | `block-thomas/plot_fp16_accuracy.py` | analysis file, `fp16_sweep` | `_relres_fwderr.png`, `_forward_accuracy.png`, `_error_vs_condition.png` |
 | `condition-est/plot_condition.py` | analysis file, `condition` | `<material>_condition.png`, `condition_all.png` |
 | `mixed_prec_ir/plot_mpir.py` | convergence file, one `experiments/<NNNN>` | `exp<NNNN>/<material>_E<idx>.png`, `exp<NNNN>/<material>_summary.png` |
