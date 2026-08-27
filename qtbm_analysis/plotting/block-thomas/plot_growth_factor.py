@@ -22,33 +22,35 @@ see the header of ``block-thomas/growth_factor.py``.
 Algorithm
 ---------
 No computation is performed. The recorded quantities are plotted per norm,
-four panels each.
+two panels each.
 
-Panel 1, tight ratio || |L| |U| || / ||A_eff||. The entrywise bound
+Panel 1, factor growth relative to A_eff. The entrywise bound
 |A - LU| <= gamma_n |L| |U| gives, in a monotone norm,
-||A - LU|| <= gamma_n || |L| |U| ||, so this is the quantity that enters the
-backward-error bound directly.
+||A - LU|| <= gamma_n || |L| |U| ||, so the tight ratio
+|| |L| |U| || / ||A_eff|| is the quantity that enters the backward-error bound
+directly; it is drawn as the solid marked line. The loose ratio
+||L|| ||U|| / ||A_eff|| is the same bound after the coarser estimate
+|| |L| |U| || <= ||L|| ||U||, never below the tight one; it is drawn faint and
+the slack between the two is shaded, so the gap reads at a glance instead of as
+two near-coincident lines. The pivot growth factor rho = max|U| / max|A_eff| is
+not plotted: it watches only the largest entry of U, is blind to L, and for
+block LU -- whose multipliers are not bounded by pivoting -- understates the
+growth the tight ratio captures.
 
-Panel 2, loose ratio ||L|| ||U|| / ||A_eff||. The same bound after the further
-estimate || |L| |U| || <= ||L|| ||U||, so it is never below panel 1. Drawn on
-its own axis rather than faded over panel 1 because the two can sit decades
-apart and the overlay was unreadable.
-
-Panel 3, pivot growth factor rho. Norm-free, and the standard scalar summary of
-whether pivoting kept the factorization under control.
-
-Panel 4, assembly residual. This is a correctness guard on the reconstruction,
+Panel 2, assembly residual. This is a correctness guard on the reconstruction,
 not a stability metric: values far above the unit roundoff of the stored
 precision indicate that the assumed factor convention does not hold for the
-build that produced the file, and the other three panels must then be
-discarded.
+build that produced the file, and panel 1 must then be discarded.
+
+complex64 and complex128 are both drawn (dashed and solid). In panel 1 they
+coincide almost exactly -- factor growth is precision-independent up to
+rounding -- so the dashed line sits under the solid one; the two separate only
+in panel 2, which is a roundoff quantity.
 
 A second figure carries the Schur-complement recursion of the two Block Thomas
-variants: the block growth max_k ||S_k|| / max_k ||A_kk||, the pivot
-conditioning max_k kappa_2(S_k), and, for implementation 2, the residual
-max_k ||S_k G_k - I|| of the explicit inverses. These are what the scalar
-growth factor cannot see, and are drawn only when the analysis file carries
-them; see plot_schur.
+variants: the block growth max_k ||S_k|| / max_k ||A_kk|| and the pivot
+conditioning max_k kappa_2(S_k). These are what the scalar growth factor cannot
+see, and are drawn only when the analysis file carries them; see plot_schur.
 
 UMFPACK is excluded by default. It factorizes A with its rows rescaled, so its
 ratios and rho are measured against a different A_eff and do not sit on the
@@ -60,13 +62,13 @@ conclusion for these matrices and merely doubles the figure height; --norms
 restores it when a specific reason to compare the two arises. The Schur columns
 are 2-norm quantities and are unaffected either way.
 
-The legend is shared across all panels and placed below the figure: one colour
-per solver, one line style per precision.
+The legend is shared across both panels and placed below the figure: one colour
+per solver, one line style per precision, plus the tight/loose/slack keys.
 
 Output
 ------
-<outdir>/<material>_growth_factor.png, one row of four panels per norm drawn,
-and <outdir>/<material>_schur_growth.png, three panels, Block Thomas only. The
+<outdir>/<material>_growth_factor.png, one row of two panels per norm drawn,
+and <outdir>/<material>_schur_growth.png, two panels, Block Thomas only. The
 default output directory is the analysis file's own directory, so the figures
 are written beside the data they were drawn from.
 
@@ -86,7 +88,10 @@ _HERE = Path(__file__).resolve().parent
 sys.path.append(str((_HERE / "..").resolve()))
 sys.path.append(str((_HERE / ".." / ".." / "solvers").resolve()))
 
+import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 
 import cli
 from factor_io import load_table, table_rows
@@ -128,13 +133,13 @@ def group_by_series(records, norm):
 
 
 def plot(records, attrs, material, norms, out_path):
-    fig, axes = plt.subplots(len(norms), 4, figsize=(20, 4.6 * len(norms)),
+    fig, axes = plt.subplots(len(norms), 2, figsize=(13, 4.8 * len(norms)),
                              squeeze=False)
     have_energy = energies_of(attrs, [0]) is not None
     solvers_present, dtypes_present = set(), set()
 
     for row_index, norm in enumerate(norms):
-        ax_tight, ax_loose, ax_rho, ax_resid = axes[row_index]
+        ax_ratio, ax_resid = axes[row_index]
         series = group_by_series(records, norm)
 
         for (solver, dtype), rows in series.items():
@@ -144,26 +149,27 @@ def plot(records, attrs, material, norms, out_path):
             x = energies_of(attrs, indices)
             if x is None:
                 x = indices
+            x = np.asarray(x, dtype=float)
             _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
             _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
-            line = dict(marker=".", ms=3, lw=1.1, color=colour)
+            tight = np.asarray([r["tight"] for r in rows], dtype=float)
+            loose = np.asarray([r["loose"] for r in rows], dtype=float)
 
-            ax_tight.semilogy(x, [r["tight"] for r in rows], ls, **line)
-            ax_loose.semilogy(x, [r["loose"] for r in rows], ls, **line)
-            ax_rho.semilogy(x, [r["rho"] for r in rows], ls, **line)
-            ax_resid.semilogy(x, [r["resid_rel"] for r in rows], ls, **line)
+            # tight is the bound; loose is the same bound after a coarser
+            # estimate and never below it. Shade the slack between the two so
+            # the gap reads at a glance rather than as two near-coincident
+            # lines.
+            ax_ratio.fill_between(x, tight, loose, color=colour, alpha=0.15,
+                                  lw=0)
+            ax_ratio.semilogy(x, loose, ls, lw=0.9, color=colour, alpha=0.55)
+            ax_ratio.semilogy(x, tight, ls, marker=".", ms=3, lw=1.4,
+                              color=colour)
+            ax_resid.semilogy(x, [r["resid_rel"] for r in rows], ls,
+                              marker=".", ms=3, lw=1.1, color=colour)
 
-        ax_tight.set_title(f"tight ratio  "
-                           f"$\\| |L||U| \\| / \\|A_{{\\mathrm{{eff}}}}\\|$  "
-                           f"[{norm}]")
-        ax_tight.set_ylabel(r"ratio to $\|A_{\mathrm{eff}}\|$")
-        ax_loose.set_title(f"loose ratio  "
-                           f"$\\|L\\|\\,\\|U\\| / \\|A_{{\\mathrm{{eff}}}}\\|$  "
-                           f"[{norm}]")
-        ax_loose.set_ylabel(r"ratio to $\|A_{\mathrm{eff}}\|$")
-        ax_rho.set_title(r"pivot growth factor  "
-                         r"$\rho = \max|U| / \max|A_{\mathrm{eff}}|$")
-        ax_rho.set_ylabel(r"$\rho$")
+        ax_ratio.set_title(f"factor growth relative to "
+                           f"$A_{{\\mathrm{{eff}}}}$  [{norm}]")
+        ax_ratio.set_ylabel(r"ratio to $\|A_{\mathrm{eff}}\|$")
         ax_resid.set_title(f"assembly residual "
                            f"$\\|A_{{\\mathrm{{eff}}}} - LU\\| / "
                            f"\\|A_{{\\mathrm{{eff}}}}\\|$  [{norm}]")
@@ -177,36 +183,51 @@ def plot(records, attrs, material, norms, out_path):
 
     solvers = _ordered(solvers_present, SOLVER_STYLE)
     dtypes = _ordered(dtypes_present, DTYPE_STYLE)
-    handles, labels = legend_handles(solvers, dtypes)
+    extra = [
+        (Line2D([], [], color="0.35", lw=1.4, marker="."),
+         r"tight  $\| |L||U| \| / \|A_{\mathrm{eff}}\|$"),
+        (Line2D([], [], color="0.35", lw=0.9, alpha=0.55),
+         r"loose  $\|L\|\,\|U\| / \|A_{\mathrm{eff}}\|$"),
+        (Patch(facecolor="0.35", alpha=0.15), "loose–tight slack"),
+    ]
+    handles, labels = legend_handles(solvers, dtypes, extra=extra)
 
     fig.suptitle(f"LU backward stability and factor growth — {material}",
                  fontsize=14, y=1.005)
     fig.tight_layout()
-    fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
+    fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 5),
                fontsize=8, frameon=False,
-               bbox_to_anchor=(0.5, -0.10 / len(norms)))
+               bbox_to_anchor=(0.5, -0.14 / len(norms)))
     save_figure(fig, out_path, dpi=140)
 
 
 # ---------------------------------------------------------------------------
 # Schur-complement recursion, Block Thomas only
 # ---------------------------------------------------------------------------
-SCHUR_COLUMNS = ("schur_growth", "schur_cond_max", "inv_resid_max")
+SCHUR_COLUMNS = ("schur_growth", "schur_cond_max")
 
 
 def plot_schur(records, attrs, material, out_path):
     """
-    The three Schur columns against energy, for the Block Thomas variants.
+    Block growth and pivot conditioning of the Schur-complement recursion, for
+    the Block Thomas variants.
 
     These are the quantities the scalar growth factor cannot see. Block LU
     pivots only inside a diagonal block, so its backward error is governed by
     the recursion S_k = A_kk - A_{k,k-1} S_{k-1}^-1 A_{k-1,k}: by how much the
-    blocks grew (panel 1), by how well conditioned the pivot blocks stayed
-    (panel 2, which enters the block LU bound even when nothing grew), and, for
-    implementation 2 alone, by the accuracy of the explicit inverses it formed
-    of them (panel 3). Inversion is not backward stable, and its error scales
-    with kappa_2(S_k), so panels 2 and 3 are read together: they should differ
-    by roughly the unit roundoff of the precision.
+    blocks grew (panel 1) and by how well conditioned the pivot blocks stayed
+    (panel 2). Every step solves systems with S_k as the coefficient matrix --
+    to form the next Schur complement and in the substitution phase -- and such
+    a solve loses kappa_2(S_k) u relative accuracy, so the block LU backward
+    error carries max_k kappa_2(S_k) as a factor that scalar partial pivoting
+    does not have. Both variants share S_k exactly, so the curves coincide; the
+    inverse-based variant's extra error from forming S_k^-1 explicitly is not
+    analysed here.
+
+    kappa_2(S_k) is computed by an SVD per block. The block size is fixed by
+    the material, not by the matrix size, so this is one SVD of a modest dense
+    block per layer and stays linear in the number of blocks; a production code
+    would use a 1-norm condition estimate on the pivot-block LU instead.
 
     The values are 2-norm quantities and are stored on every norm row, so one
     norm is selected to avoid drawing each series twice. Returns False when the
@@ -224,10 +245,9 @@ def plot_schur(records, attrs, material, out_path):
     if not all(column in sample for column in SCHUR_COLUMNS):
         return False
 
-    fig, axes = plt.subplots(1, 3, figsize=(16, 4.6), squeeze=False)
-    ax_growth, ax_cond, ax_inv = axes[0]
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8), squeeze=False)
+    ax_growth, ax_cond = axes[0]
     have_energy = energies_of(attrs, [0]) is not None
-    drawn_inv = False
     solvers_present, dtypes_present = set(), set()
 
     for (solver, dtype), rows in sorted(rows_by_series.items()):
@@ -244,24 +264,14 @@ def plot_schur(records, attrs, material, out_path):
 
         ax_growth.semilogy(x, [r["schur_growth"] for r in rows], ls, **style)
         ax_cond.semilogy(x, [r["schur_cond_max"] for r in rows], ls, **style)
-        values = [r["inv_resid_max"] for r in rows]
-        if any(v == v for v in values):
-            ax_inv.semilogy(x, values, ls, **style)
-            drawn_inv = True
 
     ax_growth.set_title(r"block growth  "
                         r"$\max_k \|S_k\|_2 / \max_k \|A_{kk}\|_2$")
     ax_growth.set_ylabel("block growth")
     ax_cond.set_title(r"pivot conditioning  $\max_k \kappa_2(S_k)$")
     ax_cond.set_ylabel(r"$\kappa_2(S_k)$")
-    ax_inv.set_title(r"explicit inverse  $\max_k \|S_k G_k - I\|_2$")
-    ax_inv.set_ylabel("inverse residual")
-    if not drawn_inv:
-        ax_inv.text(0.5, 0.5, "implementation 2 not present",
-                    ha="center", va="center", transform=ax_inv.transAxes,
-                    fontsize=9)
 
-    for ax in (ax_growth, ax_cond, ax_inv):
+    for ax in (ax_growth, ax_cond):
         ax.set_xlabel(axis_label(have_energy))
         ax.grid(True, which="both", ls=":", alpha=0.4)
         if have_energy:
@@ -275,7 +285,7 @@ def plot_schur(records, attrs, material, out_path):
                  fontsize=14, y=1.01)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
-               fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.10))
+               fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.12))
     save_figure(fig, out_path, dpi=140)
     return True
 
