@@ -311,13 +311,12 @@ wholesale replacement would discard the earlier indices, and a sweep is not a
 sensible selection in the first place: the intended use is a handful of
 indices.
 
-The figure is one row of three panels — `A_eff`, `L`, `U` — as `log10` of the
-entry magnitude on a shared colour scale, in the style the device Hamiltonian
-is drawn in by `plotting/materials/bandstructure.py`. Fill-in is the extent of
-the coloured region against `A_eff`'s, growth is a factor panel brighter than
-it. Only a leading window is drawn, the first three blocks of the recorded
-partition by default and `--size` rows otherwise, since a device matrix cannot
-be densified.
+The figure is a 3x3 grid, one row per solver (`block-thomas`, `superlu`,
+`umfpack`, whichever are present) and one column per matrix (`A_eff`, `L`,
+`U`), as `log10` of the entry magnitude on one shared colour scale across the
+whole grid. Fill-in and factor growth are then comparable both within a row
+(a factor panel brighter than its own `A_eff`) and across solvers. The full
+matrix is drawn; there is no windowing.
 
 ---
 

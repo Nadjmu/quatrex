@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Sparsity and magnitude of the extracted L and U factors.
+Sparsity and magnitude of the extracted L and U factors, Block Thomas against
+SuperLU and UMFPACK.
 
 Input
 -----
@@ -14,37 +15,34 @@ see the header of ``block-thomas/growth_factor.py``.
 
 Algorithm
 ---------
-No computation is performed. Each combination is drawn as one row of three
-panels -- A_eff, L, U -- showing log10 of the entry magnitude, in the style the
-device Hamiltonian is drawn in by ``plotting/materials/bandstructure.py``.
+No computation is performed. One figure is drawn per (index, dtype): a 3x3
+grid, one row per solver (block-thomas, superlu, umfpack, in that order) and
+one column per matrix (A_eff, L, U), each panel showing log10 of the entry
+magnitude over the full matrix.
 
-The three panels share one colour scale, so fill-in and factor growth are read
-directly off the figure: an L or U panel brighter than its A_eff panel is
-growth, and the extent of the coloured region against A_eff's is the fill-in.
+Every panel shares one colour scale, so fill-in and factor growth are
+comparable both across the row (a solver's L or U brighter than its own
+A_eff is growth) and across solvers (more or less fill-in at the same scale).
 The scale spans `--dynamic-range` decades below the largest entry drawn, which
 keeps entries at the level of the rounding error of the factorization from
 occupying half the colour map.
 
-A full device matrix has O(1e5) rows and cannot be densified, so only a leading
-window is drawn: `--size` rows and columns, defaulting to the first three
-blocks of the recorded partition where the extraction stored one, and to 1500
-otherwise. The window is stated in the title. Block boundaries are drawn where
-the partition is known, since the block-bidiagonal structure of the Block
-Thomas factors is only legible against them.
+The full matrix is drawn, never a windowed subset. Block boundaries of the
+Block Thomas partition are marked on its row only, since that is the structure
+the block-bidiagonal factors follow; SuperLU and UMFPACK carry no partition.
 
 Output
 ------
-    <outdir>/<material>_E<idx>_<solver>_<dtype>_lu.png
+    <outdir>/<material>_E<idx>_<dtype>_lu.png
 
-one file per combination drawn. The default output directory is the analysis
-file's own directory, so the figures are written beside the data.
+one file per (index, dtype) drawn, with whichever of the three solvers are
+present in the file. The default output directory is the analysis file's own
+directory, so the figures are written beside the data.
 
 Usage
 -----
-    python plot_lu_factors.py /scratch/yimili/error-analysis-block-thomas/graphene.h5
-    python plot_lu_factors.py .../graphene.h5 --idx 5 \
-        --solvers block-thomas superlu --dtypes complex128
-    python plot_lu_factors.py .../graphene.h5 --idx 5 --size 800
+    python plot_lu_factors.py /scratch/yimili/error-analysis-block-thomas/carbon-nanotube.h5
+    python plot_lu_factors.py .../carbon-nanotube.h5 --idx 5 --dtypes complex128
 """
 
 import sys
@@ -64,103 +62,91 @@ from style import save_figure
 
 GROUP = "lu_factors"
 
-# Window drawn when the extraction recorded no partition to derive one from.
-DEFAULT_SIZE = 1500
-
 # Decades of magnitude below the largest entry drawn that the colour scale
 # spans. Twelve covers a double-precision factorization down to the level of
 # its own rounding error and no further.
 DEFAULT_DYNAMIC_RANGE = 12
 
-PANELS = ("A_eff", "L", "U")
-PANEL_TITLE = {"A_eff": r"$A_{\mathrm{eff}}$", "L": r"$L$", "U": r"$U$"}
+ROWS = ("block-thomas", "superlu", "umfpack")
+COLUMNS = ("A_eff", "L", "U")
+COLUMN_TITLE = {"A_eff": r"$A_{\mathrm{eff}}$", "L": r"$L$", "U": r"$U$"}
 
 
-def combinations(f, indices, solvers, dtypes):
+def figures(f, indices, dtypes):
     """
-    The (idx, solver, dtype, group) combinations the file holds, filtered by
-    the selection. `solvers` and `dtypes` are None for "everything present".
+    (idx, dtype) pairs to draw, and for each the {solver: group} dict of
+    whatever ROWS entries are actually present in the file.
     """
     root = f.get(GROUP)
     if root is None:
         raise SystemExit(f"no /{GROUP} group; "
                          f"run block-thomas/extract_lu.py first")
-    out = []
-    for key in sorted((k for k in root if k.startswith("E_")),
-                      key=lambda k: int(k[2:])):
+    per_key = {}
+    for key in root:
+        if not key.startswith("E_"):
+            continue
         idx = int(key[2:])
         if idx not in indices:
             continue
-        for stored in sorted(root[key]):
-            for dtype_name in sorted(root[key][stored]):
+        for stored in root[key]:
+            for dtype_name in root[key][stored]:
                 solver = cli.from_h5_group(stored, dtype_name)
-                if solvers is not None and solver not in solvers:
+                if solver not in ROWS:
                     continue
                 if dtypes is not None and dtype_name not in dtypes:
                     continue
-                out.append((idx, solver, dtype_name,
-                            root[key][stored][dtype_name]))
-    return out
+                per_key.setdefault((idx, dtype_name), {})[solver] = \
+                    root[key][stored][dtype_name]
+    return sorted(per_key.items())
 
 
-def window_size(group, requested):
-    """
-    Number of leading rows and columns to draw.
-
-    Defaults to the first three blocks of the recorded partition, the window
-    bandstructure.py draws the Hamiltonian in, and never exceeds the matrix.
-    """
-    n = int(group.attrs["n"])
-    if requested is not None:
-        return min(requested, n)
-    sizes = group.attrs.get("block_sizes")
-    if sizes is not None and len(sizes):
-        return min(int(np.sum(sizes[:3])), n)
-    return min(DEFAULT_SIZE, n)
-
-
-def block_boundaries(group, size):
-    """Block boundaries of the recorded partition inside the drawn window."""
+def block_boundaries(group, n):
+    """Block boundaries of the recorded partition, if any."""
     sizes = group.attrs.get("block_sizes")
     if sizes is None:
         return []
     edges = np.cumsum(np.asarray(sizes, dtype=np.int64))
-    return [int(e) for e in edges if 0 < e < size]
+    return [int(e) for e in edges if 0 < e < n]
 
 
-def plot(group, idx, solver, dtype_name, material, size, dynamic_range,
-         out_path):
-    """One figure: the leading `size` rows and columns of A_eff, L and U."""
-    n = int(group.attrs["n"])
-    blocks = block_boundaries(group, size)
+def plot(groups, idx, dtype_name, material, dynamic_range, out_path):
+    """One 3x3 figure: rows are solvers present in `groups`, columns A_eff/L/U."""
+    rows = [s for s in ROWS if s in groups]
 
-    # Densified one panel at a time: the window is small, the full factors of
-    # a device matrix are not.
     panels = {}
-    for name in PANELS:
-        window = load_sparse_factor(group[name])[:size, :size].toarray()
-        panels[name] = np.log10(np.abs(window) + 1e-300)
+    for solver in rows:
+        group = groups[solver]
+        for name in COLUMNS:
+            mat = load_sparse_factor(group[name]).toarray()
+            panels[(solver, name)] = np.log10(np.abs(mat) + 1e-300)
 
     vmax = np.ceil(max(float(p.max()) for p in panels.values()))
     vmin = vmax - dynamic_range
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5.2))
-    for ax, name in zip(axes, PANELS):
-        image = ax.matshow(panels[name], cmap="viridis", vmin=vmin, vmax=vmax)
-        ax.set_title(PANEL_TITLE[name], fontsize=13, pad=12)
-        for edge in blocks:
-            ax.axhline(edge - 0.5, color="white", lw=0.4, alpha=0.5)
-            ax.axvline(edge - 0.5, color="white", lw=0.4, alpha=0.5)
-    fig.colorbar(image, ax=axes, label=r"$\log_{10}|\cdot|$",
-                 fraction=0.025, pad=0.02)
+    fig, axes = plt.subplots(len(rows), 3, figsize=(15, 5.2 * len(rows)),
+                             squeeze=False)
+    for r, solver in enumerate(rows):
+        group = groups[solver]
+        n = int(group.attrs["n"])
+        blocks = block_boundaries(group, n) if solver == "block-thomas" else []
+        resid = float(group.attrs.get("resid_rel", np.nan))
+        for c, name in enumerate(COLUMNS):
+            ax = axes[r][c]
+            image = ax.matshow(panels[(solver, name)], cmap="viridis",
+                               vmin=vmin, vmax=vmax)
+            ax.set_title(COLUMN_TITLE[name], fontsize=12, pad=10)
+            for edge in blocks:
+                ax.axhline(edge - 0.5, color="white", lw=0.3, alpha=0.4)
+                ax.axvline(edge - 0.5, color="white", lw=0.3, alpha=0.4)
+        axes[r][0].set_ylabel(
+            f"{cli.label(solver)}\n"
+            r"$\|A_{\mathrm{eff}}-LU\|/\|A_{\mathrm{eff}}\|$ = "
+            f"{resid:.1e}",
+            fontsize=10)
 
-    resid = float(group.attrs.get("resid_rel", np.nan))
-    fig.suptitle(
-        f"{material}  E_{idx}  {cli.label(solver)}  {dtype_name}   "
-        f"(first {size} of {n};  "
-        r"$\|A_{\mathrm{eff}}-LU\|/\|A_{\mathrm{eff}}\|$ = "
-        f"{resid:.1e})",
-        fontsize=13)
+    fig.colorbar(image, ax=axes, label=r"$\log_{10}|\cdot|$",
+                 fraction=0.02, pad=0.02)
+    fig.suptitle(f"{material}  E_{idx}  {dtype_name}", fontsize=14)
     save_figure(fig, out_path, dpi=160)
 
 
@@ -169,16 +155,9 @@ def main():
     cli.add_h5_input(ap, help=f"analysis file written by "
                               f"block-thomas/extract_lu.py, group {GROUP}")
     cli.add_index_selection(ap, default_all=True)
-    cli.add_solver_selection(ap, choices=cli.FACTOR_SOLVERS, default=None,
-                             help="restrict to these solvers "
-                                  "(default: all present in the file)")
     cli.add_dtypes(ap, choices=cli.COMPLEX_DTYPES, default=None,
                    help="restrict to these precisions "
                         "(default: all present in the file)")
-    ap.add_argument("--size", type=int, default=None, metavar="N",
-                    help="leading rows and columns to draw (default: the "
-                         "first three blocks of the recorded partition, or "
-                         f"{DEFAULT_SIZE} where none was recorded)")
     ap.add_argument("--dynamic-range", type=float,
                     default=DEFAULT_DYNAMIC_RANGE, metavar="D",
                     help=f"decades below the largest entry drawn that the "
@@ -199,15 +178,13 @@ def main():
         stored = sorted(int(k[2:]) for k in f.get(GROUP, {})
                         if k.startswith("E_"))
         indices = cli.resolve_indices(ap, args, stored)
-        found = combinations(f, set(indices),
-                             set(args.solvers) if args.solvers else None,
-                             set(args.dtypes) if args.dtypes else None)
+        found = figures(f, set(indices),
+                        set(args.dtypes) if args.dtypes else None)
         if not found:
             raise SystemExit("no combination remains after filtering")
-        for idx, solver, dtype_name, group in found:
-            plot(group, idx, solver, dtype_name, material,
-                 window_size(group, args.size), args.dynamic_range,
-                 outdir / f"{material}_E{idx}_{solver}_{dtype_name}_lu.png")
+        for (idx, dtype_name), groups in found:
+            plot(groups, idx, dtype_name, material, args.dynamic_range,
+                 outdir / f"{material}_E{idx}_{dtype_name}_lu.png")
 
 
 if __name__ == "__main__":
