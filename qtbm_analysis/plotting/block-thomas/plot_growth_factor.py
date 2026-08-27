@@ -22,33 +22,51 @@ see the header of ``block-thomas/growth_factor.py``.
 Algorithm
 ---------
 No computation is performed. The recorded quantities are plotted per norm,
-three panels each.
+four panels each.
 
-Panel 1, growth ratios. The entrywise bound |A - LU| <= gamma_n |L| |U| gives,
-in a monotone norm, ||A - LU|| <= gamma_n || |L| |U| ||. The tight ratio
-|| |L| |U| || / ||A|| is therefore the quantity that enters the backward-error
-bound directly; the loose ratio ||L|| ||U|| / ||A|| over-estimates it and is
-drawn faded for comparison.
+Panel 1, tight ratio || |L| |U| || / ||A_eff||. The entrywise bound
+|A - LU| <= gamma_n |L| |U| gives, in a monotone norm,
+||A - LU|| <= gamma_n || |L| |U| ||, so this is the quantity that enters the
+backward-error bound directly.
 
-Panel 2, pivot growth factor rho. Norm-free, and the standard scalar summary of
+Panel 2, loose ratio ||L|| ||U|| / ||A_eff||. The same bound after the further
+estimate || |L| |U| || <= ||L|| ||U||, so it is never below panel 1. Drawn on
+its own axis rather than faded over panel 1 because the two can sit decades
+apart and the overlay was unreadable.
+
+Panel 3, pivot growth factor rho. Norm-free, and the standard scalar summary of
 whether pivoting kept the factorization under control.
 
-Panel 3, assembly residual. This is a correctness guard on the reconstruction,
+Panel 4, assembly residual. This is a correctness guard on the reconstruction,
 not a stability metric: values far above the unit roundoff of the stored
 precision indicate that the assumed factor convention does not hold for the
-build that produced the file, and the other two panels must then be discarded.
+build that produced the file, and the other three panels must then be
+discarded.
 
-Panel 4 onwards, in a second figure, the Schur-complement recursion of the two
-Block Thomas variants: the block growth max_k ||S_k|| / max_k ||A_kk||, the
-pivot conditioning max_k kappa_2(S_k), and, for implementation 2, the residual
+A second figure carries the Schur-complement recursion of the two Block Thomas
+variants: the block growth max_k ||S_k|| / max_k ||A_kk||, the pivot
+conditioning max_k kappa_2(S_k), and, for implementation 2, the residual
 max_k ||S_k G_k - I|| of the explicit inverses. These are what the scalar
 growth factor cannot see, and are drawn only when the analysis file carries
 them; see plot_schur.
 
+UMFPACK is excluded by default. It factorizes A with its rows rescaled, so its
+ratios and rho are measured against a different A_eff and do not sit on the
+same scale as the other three solvers; --solvers puts it back for a run where
+that is wanted.
+
+Only the infinity norm is drawn by default. The 1-norm carries the same
+conclusion for these matrices and merely doubles the figure height; --norms
+restores it when a specific reason to compare the two arises. The Schur columns
+are 2-norm quantities and are unaffected either way.
+
+The legend is shared across all panels and placed below the figure: one colour
+per solver, one line style per precision.
+
 Output
 ------
-<outdir>/<material>_growth_factor.png, one row of three panels per norm, and
-<outdir>/<material>_schur_growth.png, three panels, Block Thomas only. The
+<outdir>/<material>_growth_factor.png, one row of four panels per norm drawn,
+and <outdir>/<material>_schur_growth.png, three panels, Block Thomas only. The
 default output directory is the analysis file's own directory, so the figures
 are written beside the data they were drawn from.
 
@@ -56,7 +74,7 @@ Usage
 -----
     python plot_growth_factor.py /scratch/yimili/error-analysis-block-thomas/graphene.h5
     python plot_growth_factor.py .../graphene.h5 \
-        --solvers block-thomas superlu --norms 1-norm
+        --solvers block-thomas superlu --norms 1-norm inf-norm
 """
 
 import argparse
@@ -73,9 +91,15 @@ import matplotlib.pyplot as plt
 import cli
 from factor_io import load_table, table_rows
 from style import (SOLVER_STYLE, DTYPE_STYLE, axis_label, energies_of,
-                   mark_band_edges, save_figure)
+                   legend_handles, mark_band_edges, save_figure)
 
 GROUP = "growth_factor"
+
+# UMFPACK factorizes A with its rows rescaled, so rho = max|U| / max|A_eff|
+# and the growth ratios are measured against a different matrix from the other
+# three solvers and are not directly comparable to them. It is dropped by
+# default; --solvers umfpack ... puts it back.
+DEFAULT_SOLVERS = ("block-thomas", "block-thomas-inv", "superlu")
 
 
 def read_records(h5path):
@@ -85,6 +109,12 @@ def read_records(h5path):
     if not records:
         raise SystemExit(f"{h5path}:/{GROUP} contains no rows")
     return records, attrs
+
+
+def _ordered(present, style_map):
+    """`present` keys in the canonical order of `style_map`, unknowns appended."""
+    known = [k for k in style_map if k in present]
+    return known + sorted(k for k in present if k not in style_map)
 
 
 def group_by_series(records, norm):
@@ -98,36 +128,39 @@ def group_by_series(records, norm):
 
 
 def plot(records, attrs, material, norms, out_path):
-    fig, axes = plt.subplots(len(norms), 3, figsize=(18, 4.2 * len(norms)),
+    fig, axes = plt.subplots(len(norms), 4, figsize=(20, 4.6 * len(norms)),
                              squeeze=False)
     have_energy = energies_of(attrs, [0]) is not None
+    solvers_present, dtypes_present = set(), set()
 
     for row_index, norm in enumerate(norms):
-        ax_ratio, ax_rho, ax_resid = axes[row_index]
+        ax_tight, ax_loose, ax_rho, ax_resid = axes[row_index]
         series = group_by_series(records, norm)
 
         for (solver, dtype), rows in series.items():
+            solvers_present.add(solver)
+            dtypes_present.add(dtype)
             indices = [r["idx"] for r in rows]
             x = energies_of(attrs, indices)
             if x is None:
                 x = indices
             _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
             _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
-            tag = f"{solver} ({dtype})"
+            line = dict(marker=".", ms=3, lw=1.1, color=colour)
 
-            ax_ratio.semilogy(x, [r["tight"] for r in rows], ls,
-                              marker=".", ms=3, lw=1.1, color=colour,
-                              label=f"tight  {tag}")
-            ax_ratio.semilogy(x, [r["loose"] for r in rows], ls, lw=0.9,
-                              color=colour, alpha=0.45, label=f"loose  {tag}")
-            ax_rho.semilogy(x, [r["rho"] for r in rows], ls, marker=".",
-                            ms=3, lw=1.1, color=colour, label=tag)
-            ax_resid.semilogy(x, [r["resid_rel"] for r in rows], ls,
-                              marker=".", ms=3, lw=1.1, color=colour, label=tag)
+            ax_tight.semilogy(x, [r["tight"] for r in rows], ls, **line)
+            ax_loose.semilogy(x, [r["loose"] for r in rows], ls, **line)
+            ax_rho.semilogy(x, [r["rho"] for r in rows], ls, **line)
+            ax_resid.semilogy(x, [r["resid_rel"] for r in rows], ls, **line)
 
-        ax_ratio.set_title(f"factor growth relative to $A_{{\\mathrm{{eff}}}}$  "
+        ax_tight.set_title(f"tight ratio  "
+                           f"$\\| |L||U| \\| / \\|A_{{\\mathrm{{eff}}}}\\|$  "
                            f"[{norm}]")
-        ax_ratio.set_ylabel(r"ratio to $\|A_{\mathrm{eff}}\|$")
+        ax_tight.set_ylabel(r"ratio to $\|A_{\mathrm{eff}}\|$")
+        ax_loose.set_title(f"loose ratio  "
+                           f"$\\|L\\|\\,\\|U\\| / \\|A_{{\\mathrm{{eff}}}}\\|$  "
+                           f"[{norm}]")
+        ax_loose.set_ylabel(r"ratio to $\|A_{\mathrm{eff}}\|$")
         ax_rho.set_title(r"pivot growth factor  "
                          r"$\rho = \max|U| / \max|A_{\mathrm{eff}}|$")
         ax_rho.set_ylabel(r"$\rho$")
@@ -136,16 +169,22 @@ def plot(records, attrs, material, norms, out_path):
                            f"\\|A_{{\\mathrm{{eff}}}}\\|$  [{norm}]")
         ax_resid.set_ylabel("relative residual")
 
-        for ax in (ax_ratio, ax_rho, ax_resid):
+        for ax in axes[row_index]:
             ax.set_xlabel(axis_label(have_energy))
             ax.grid(True, which="both", ls=":", alpha=0.4)
             if have_energy:
-                mark_band_edges(ax, attrs)
-            ax.legend(fontsize=7, ncol=2)
+                mark_band_edges(ax, attrs, label=False)
+
+    solvers = _ordered(solvers_present, SOLVER_STYLE)
+    dtypes = _ordered(dtypes_present, DTYPE_STYLE)
+    handles, labels = legend_handles(solvers, dtypes)
 
     fig.suptitle(f"LU backward stability and factor growth — {material}",
                  fontsize=14, y=1.005)
     fig.tight_layout()
+    fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
+               fontsize=8, frameon=False,
+               bbox_to_anchor=(0.5, -0.10 / len(norms)))
     save_figure(fig, out_path, dpi=140)
 
 
@@ -173,7 +212,8 @@ def plot_schur(records, attrs, material, out_path):
     norm is selected to avoid drawing each series twice. Returns False when the
     file predates these columns.
     """
-    norm = sorted({r["norm"] for r in records})[0]
+    present_norms = {r["norm"] for r in records}
+    norm = "inf-norm" if "inf-norm" in present_norms else sorted(present_norms)[0]
     rows_by_series = defaultdict(list)
     for record in records:
         if record["norm"] == norm and record["solver"] in cli.BLOCK_SOLVERS:
@@ -184,12 +224,15 @@ def plot_schur(records, attrs, material, out_path):
     if not all(column in sample for column in SCHUR_COLUMNS):
         return False
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 4.2), squeeze=False)
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.6), squeeze=False)
     ax_growth, ax_cond, ax_inv = axes[0]
     have_energy = energies_of(attrs, [0]) is not None
     drawn_inv = False
+    solvers_present, dtypes_present = set(), set()
 
     for (solver, dtype), rows in sorted(rows_by_series.items()):
+        solvers_present.add(solver)
+        dtypes_present.add(dtype)
         rows = sorted(rows, key=lambda r: r["idx"])
         indices = [r["idx"] for r in rows]
         x = energies_of(attrs, indices)
@@ -197,8 +240,7 @@ def plot_schur(records, attrs, material, out_path):
             x = indices
         _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
         _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
-        tag = f"{solver} ({dtype})"
-        style = dict(marker=".", ms=3, lw=1.1, color=colour, label=tag)
+        style = dict(marker=".", ms=3, lw=1.1, color=colour)
 
         ax_growth.semilogy(x, [r["schur_growth"] for r in rows], ls, **style)
         ax_cond.semilogy(x, [r["schur_cond_max"] for r in rows], ls, **style)
@@ -223,13 +265,17 @@ def plot_schur(records, attrs, material, out_path):
         ax.set_xlabel(axis_label(have_energy))
         ax.grid(True, which="both", ls=":", alpha=0.4)
         if have_energy:
-            mark_band_edges(ax, attrs)
-        if ax.get_legend_handles_labels()[0]:
-            ax.legend(fontsize=7)
+            mark_band_edges(ax, attrs, label=False)
+
+    solvers = _ordered(solvers_present, SOLVER_STYLE)
+    dtypes = _ordered(dtypes_present, DTYPE_STYLE)
+    handles, labels = legend_handles(solvers, dtypes)
 
     fig.suptitle(f"Block Thomas: Schur-complement recursion — {material}",
                  fontsize=14, y=1.01)
     fig.tight_layout()
+    fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
+               fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.10))
     save_figure(fig, out_path, dpi=140)
     return True
 
@@ -239,13 +285,17 @@ def main():
     cli.add_h5_input(ap, help=f"analysis file written by "
                               f"block-thomas/growth_factor.py, group {GROUP}")
     cli.add_solver_selection(ap, choices=cli.FACTOR_SOLVERS, default=None,
-                             help="restrict to these solvers "
-                                  "(default: all present in the file)")
+                             help="restrict to these solvers (default: "
+                                  f"{', '.join(DEFAULT_SOLVERS)}; UMFPACK is "
+                                  "excluded because its row scaling makes the "
+                                  "ratios incomparable to the others)")
     cli.add_dtypes(ap, choices=cli.COMPLEX_DTYPES, default=None,
                    help="restrict to these precisions "
                         "(default: all present in the file)")
     ap.add_argument("--norms", nargs="+", default=None, metavar="NAME",
-                    help="restrict to these norms (default: all present)")
+                    help="norms to draw, one row of panels each "
+                         "(default: inf-norm only; the 1-norm tells the same "
+                         "story and doubles the figure)")
     cli.add_output(ap, outdir_help="output directory "
                                    "(default: the analysis file's directory)")
     args = ap.parse_args()
@@ -255,14 +305,16 @@ def main():
     outdir = Path(args.outdir) if args.outdir else h5path.parent
 
     records, attrs = read_records(h5path)
-    if args.solvers:
-        records = [r for r in records if r["solver"] in args.solvers]
+    keep = set(args.solvers) if args.solvers else set(DEFAULT_SOLVERS)
+    records = [r for r in records if r["solver"] in keep]
     if args.dtypes:
         records = [r for r in records if r["dtype"] in args.dtypes]
     if not records:
         raise SystemExit("no rows remain after filtering")
 
-    norms = args.norms or sorted({r["norm"] for r in records})
+    present_norms = {r["norm"] for r in records}
+    norms = [n for n in (args.norms or ["inf-norm"]) if n in present_norms]
+    norms = norms or sorted(present_norms)
     plot(records, attrs, material, norms,
          outdir / f"{material}_growth_factor.png")
 
