@@ -68,7 +68,7 @@ from matplotlib.lines import Line2D
 import cli
 from factor_io import load_table, table_rows
 from style import (SOLVER_STYLE, DTYPE_STYLE, axis_label, energies_of,
-                   legend_handles, mark_band_edges, save_figure)
+                   legend_handles, mark_band_edges, save_figure, sweep_line)
 
 GROUP = "forward_error"
 
@@ -120,14 +120,16 @@ def plot(records, attrs, material, out_path):
             if x is None:
                 x = indices
             _, colour, marker = SOLVER_STYLE.get(solver, (solver, None, "o"))
+            prim = sweep_line(len(rows), "primary", marker)
+            sec = sweep_line(len(rows), "secondary", marker)
 
             ax_fwd.semilogy(x, _finite([r["fwd_inf"] for r in rows]), "-",
-                            marker=marker, ms=4, lw=1.1, color=colour)
+                            color=colour, **prim)
 
             ax_ratio.semilogy(x, _finite([r["ratio_cw"] for r in rows]), "-",
-                              marker=marker, ms=4, lw=1.1, color=colour)
+                              color=colour, **prim)
             ax_ratio.semilogy(x, _finite([r["ratio_nw"] for r in rows]), "-",
-                              lw=0.8, color=colour, alpha=0.45)
+                              color=colour, **sec)
 
             if not floor_drawn:
                 ax_fwd.semilogy(x, _finite([r["ref_floor"] for r in rows]),

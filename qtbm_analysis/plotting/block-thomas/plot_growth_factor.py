@@ -96,7 +96,7 @@ from matplotlib.patches import Patch
 import cli
 from factor_io import load_table, table_rows
 from style import (SOLVER_STYLE, DTYPE_STYLE, axis_label, energies_of,
-                   legend_handles, mark_band_edges, save_figure)
+                   legend_handles, mark_band_edges, save_figure, sweep_line)
 
 GROUP = "growth_factor"
 
@@ -141,6 +141,7 @@ def plot(records, attrs, material, norms, out_path):
     for row_index, norm in enumerate(norms):
         ax_ratio, ax_resid = axes[row_index]
         series = group_by_series(records, norm)
+        tight_all = []
 
         for (solver, dtype), rows in series.items():
             solvers_present.add(solver)
@@ -154,18 +155,34 @@ def plot(records, attrs, material, norms, out_path):
             _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
             tight = np.asarray([r["tight"] for r in rows], dtype=float)
             loose = np.asarray([r["loose"] for r in rows], dtype=float)
+            tight_all.append(tight)
+            prim = sweep_line(len(rows), "primary")
+            sec = sweep_line(len(rows), "secondary")
 
             # tight is the bound; loose is the same bound after a coarser
-            # estimate and never below it. Shade the slack between the two so
-            # the gap reads at a glance rather than as two near-coincident
-            # lines.
-            ax_ratio.fill_between(x, tight, loose, color=colour, alpha=0.15,
-                                  lw=0)
-            ax_ratio.semilogy(x, loose, ls, lw=0.9, color=colour, alpha=0.55)
-            ax_ratio.semilogy(x, tight, ls, marker=".", ms=3, lw=1.4,
-                              color=colour)
+            # estimate and never below it. On a strided sweep the two are near
+            # coincident, so the slack between them is shaded to read at a
+            # glance; on a full sweep the overlapping shades of several solvers
+            # turn to mud, so only the two thin lines are drawn.
+            if len(rows) <= 200:
+                ax_ratio.fill_between(x, tight, loose, color=colour,
+                                      alpha=0.13, lw=0)
+            ax_ratio.semilogy(x, loose, ls, color=colour, **sec)
+            ax_ratio.semilogy(x, tight, ls, color=colour, **prim)
             ax_resid.semilogy(x, [r["resid_rel"] for r in rows], ls,
-                              marker=".", ms=3, lw=1.1, color=colour)
+                              color=colour, **prim)
+
+        # A near-singular pivot block at a band edge sends the ratios over 1e6
+        # at a handful of indices and, drawn to scale, flattens the plateau
+        # where the solvers actually differ. Cap the axis just above the bulk
+        # of the tight ratios; the excursions clip and the Schur figure
+        # carries them.
+        bulk = np.concatenate(tight_all) if tight_all else np.array([1.0])
+        bulk = bulk[np.isfinite(bulk) & (bulk > 0)]
+        if bulk.size:
+            top = 10.0 ** (np.ceil(np.log10(np.percentile(bulk, 95))) + 1)
+            if np.nanmax(bulk) > top:
+                ax_ratio.set_ylim(top=top)
 
         ax_ratio.set_title(f"factor growth relative to "
                            f"$A_{{\\mathrm{{eff}}}}$  [{norm}]")
@@ -260,10 +277,12 @@ def plot_schur(records, attrs, material, out_path):
             x = indices
         _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
         _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
-        style = dict(marker=".", ms=3, lw=1.1, color=colour)
+        prim = sweep_line(len(rows), "primary")
 
-        ax_growth.semilogy(x, [r["schur_growth"] for r in rows], ls, **style)
-        ax_cond.semilogy(x, [r["schur_cond_max"] for r in rows], ls, **style)
+        ax_growth.semilogy(x, [r["schur_growth"] for r in rows], ls,
+                           color=colour, **prim)
+        ax_cond.semilogy(x, [r["schur_cond_max"] for r in rows], ls,
+                         color=colour, **prim)
 
     ax_growth.set_title(r"block growth  "
                         r"$\max_k \|S_k\|_2 / \max_k \|A_{kk}\|_2$")

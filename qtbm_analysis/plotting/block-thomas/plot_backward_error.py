@@ -70,7 +70,8 @@ import matplotlib.pyplot as plt
 import cli
 from factor_io import load_table, table_rows
 from style import (SOLVER_STYLE, DTYPE_STYLE, FP16_UNIT_ROUNDOFF, axis_label,
-                   energies_of, legend_handles, mark_band_edges, save_figure)
+                   energies_of, legend_handles, mark_band_edges, save_figure,
+                   sweep_line)
 
 GROUP = "forward_error"
 
@@ -130,12 +131,13 @@ def plot(records, attrs, material, out_path):
             if x is None:
                 x = indices
             _, colour, marker = SOLVER_STYLE.get(solver, (solver, None, "o"))
+            prim = sweep_line(len(rows), "primary", marker)
+            sec = sweep_line(len(rows), "secondary", marker)
 
             ax_omega.semilogy(x, _finite([r["omega"] for r in rows]), "-",
-                              marker=marker, ms=4, lw=1.2, color=colour)
+                              color=colour, **prim)
             ax_eta.semilogy(x, _finite([r["eta_inf"] for r in rows]), "-",
-                            marker=marker, ms=3, lw=0.9, color=colour,
-                            alpha=0.6)
+                            color=colour, **sec)
 
         u = UNIT_ROUNDOFF.get(dtype)
         if u is not None:

@@ -42,6 +42,7 @@ legend_handles(solvers, dtypes, ...) Proxy artists for a combined legend.
 energies_of(attrs, indices)          Energies in eV, or None if unavailable.
 axis_label(have_energy)              Axis label matching what was plotted.
 mark_band_edges(ax, attrs, ...)      Vertical lines at the two band edges.
+sweep_line(n_points, weight)         Line kwargs scaled to the sweep density.
 save_figure(fig, path, dpi)          Create the parent directory, write, close.
 """
 
@@ -188,6 +189,32 @@ def legend_handles(solvers, dtypes, extra=()):
         handles.append(artist)
         labels.append(label)
     return handles, labels
+
+
+def sweep_line(n_points, weight="primary", marker="."):
+    """
+    Line kwargs for one series of a sweep figure, scaled to how many points it
+    has.
+
+    A full-resolution sweep is thousands of energy indices. Drawn with the
+    markers and line weight that suit a strided sweep of a few dozen, every
+    series fills in to a solid band and the figure carries no information. Past
+    a few hundred points the markers are dropped and the line is made thin and
+    slightly translucent so that overlapping series stay individually visible;
+    below that the marked style is kept, using `marker` (the caller passes the
+    solver's own marker where identity matters).
+
+    `weight` is "primary" for the quantity a panel is about and "secondary" for
+    one drawn only for context. Returns a dict to pass to ``Axes.plot`` /
+    ``semilogy`` alongside colour and line style.
+    """
+    dense = n_points > 200
+    m = "" if dense else marker
+    if weight == "secondary":
+        return dict(marker=m, ms=3, lw=0.4 if dense else 0.8,
+                    alpha=0.4 if dense else 0.55)
+    return dict(marker=m, ms=3, lw=0.6 if dense else 1.3,
+                alpha=0.8 if dense else 1.0)
 
 
 def save_figure(fig, path, dpi=150):
