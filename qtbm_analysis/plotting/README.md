@@ -26,7 +26,8 @@ plotting/
 ├── non-normal/
 │   └── plot_non_normal.py
 ├── mixed_prec_ir/
-│   └── plot_mpir.py
+│   ├── plot_mpir.py
+│   └── plot_mpir_cost.py
 ├── matrices2/
 │   ├── plot_qtbm_spectra.py
 │   └── plot_rhs.py
@@ -41,7 +42,8 @@ plotting/
 | `block-thomas/plot_forward_error.py` | analysis file, `forward_error` | `<material>_forward_error.png` |
 | `block-thomas/plot_fp16_accuracy.py` | analysis file, `fp16_sweep` | `_relres_fwderr.png`, `_forward_accuracy.png`, `_error_vs_condition.png` |
 | `condition-est/plot_condition.py` | analysis file, `condition` | `<material>_condition.png`, `condition_all.png` |
-| `mixed_prec_ir/plot_mpir.py` | analysis file, one `experiments/<NNNN>` | `exp<NNNN>/<material>_E<idx>.png`, `exp<NNNN>/<material>_summary.png` |
+| `mixed_prec_ir/plot_mpir.py` | convergence file, one `experiments/<NNNN>` | `exp<NNNN>/<material>_E<idx>.png`, `exp<NNNN>/<material>_summary.png` |
+| `mixed_prec_ir/plot_mpir_cost.py` | cost file, one `experiments/<NNNN>` | `cost<NNNN>/<material>_cost_speedup.png`, `_cost_time_breakdown.png`, `_cost_memory.png`, `_cost_sweep.png` |
 | `non-normal/plot_non_normal.py` | analysis file, `non_normality` | `<material>_frames/E_*.png`, `<material>_non_normal.gif` |
 | `matrices2/plot_qtbm_spectra.py` | a `main3.py` output directory | `_spectrum.png`, `_condition.png`, `_singular_values.png` |
 | `matrices2/plot_rhs.py` | material file, `E_<idx>/rhs` | `<material>_rhs.png` |
@@ -60,6 +62,7 @@ default as follows.
 | `matrices2/plot_rhs.py` | `cli.CONDITION_DIR` |
 | `materials/bandstructure.py` | `cli.MATERIALS_DIR/<material>` |
 | `mixed_prec_ir/plot_mpir.py` | `exp<NNNN>/` beside the analysis file — one subdirectory per experiment inside the material's own directory, so it stays `scp -r`-able as a unit |
+| `mixed_prec_ir/plot_mpir_cost.py` | `cost<NNNN>/` beside the cost file, the same convention |
 
 ---
 
@@ -115,6 +118,7 @@ block-thomas/forward_error.py    ─► the same file :/forward_error           
 run_bench/sweep_fp16.py          ─► the same file :/fp16_sweep              ─► block-thomas/plot_fp16_accuracy.py
 condition-est/condition_est.py   ─► condition-est/<material>.h5 :/condition ─► condition-est/plot_condition.py
 mixed_prec_ir/mpir.py            ─► mixed-precision-IR/<material>/           ─► mixed_prec_ir/plot_mpir.py
+mixed_prec_ir/mpcost.py          ─► mixed-precision-IR/<material>/           ─► mixed_prec_ir/plot_mpir_cost.py
                                      <material>.h5 :/experiments/<NNNN>/
                                        {runs,iterations}
 non-normal/non-normal.py         ─► non-normal/<material>.h5                ─► non-normal/plot_non_normal.py
@@ -128,8 +132,8 @@ timings it needs are already stored there and no intermediate artefact is
 required. Its figure is written to the Block Thomas analysis directory, beside
 the stability and accuracy figures drawn from the same solver runs.
 
-`mixed_prec_ir/plot_mpir.py` is the one script here that reads a *numbered
-experiment* rather than a single fixed group: `mpir.py` appends one per
+The two `mixed_prec_ir/` scripts are the ones here that read a *numbered
+experiment* rather than a single fixed group: `mpir.py` and `mpcost.py` append one per
 invocation and never overwrites, so `--experiment` selects which run to draw
 and defaults to the last. `--list` prints what a file holds. See
 [`../mixed_prec_ir/README.md`](../mixed_prec_ir/README.md#6-output).
@@ -152,6 +156,8 @@ python plot_condition.py      /scratch/yimili/condition-est/graphene.h5
 cd ../mixed_prec_ir
 python plot_mpir.py           /scratch/yimili/mixed-precision-IR/graphene/graphene.h5 --list
 python plot_mpir.py           .../graphene/graphene.h5 --experiment 3 --idx 84 254
+python plot_mpir_cost.py      .../graphene/graphene_cost.h5 --list
+python plot_mpir_cost.py      .../graphene/graphene_cost.h5 --experiment 2
 
 cd ../non-normal
 python plot_non_normal.py     /scratch/yimili/non-normal/carbon-chain.h5 --ping-pong
@@ -224,6 +230,47 @@ two: whichever dominates coincides with it exactly and would otherwise be
 hidden underneath. One summary figure then covers the whole sweep — what
 refinement recovered against what the unrefined low-precision solve reached,
 the outer iteration counts, and the inner GMRES counts.
+
+**`mixed_prec_ir/plot_mpir_cost.py`.** One experiment of the companion cost
+study, in the layout of Zounon et al. (2022) and Amestoy et al. (2023). Four
+figures, all organised by the four variants `mpcost.py` measures for each
+(index, solver) — `c128_direct`, `c64_direct`, `luir`, `gmresir` — and keyed on
+`variant_key`, never on the human-readable label.
+
+The *speedup* figure gives, per solver, the factorization speedup
+`complex128/complex64`, the same for the numerical phase alone, and the
+end-to-end speedup of each refinement variant over the `complex128` direct
+solve, with lines at 1.0, 1.5 and 2.0; beside it the factorization speedup
+across the sweep. Bars are the median over indices and whiskers the
+interquartile range, not the extremes: one index whose factorization was
+interrupted sets a minimum that is not a property of the method and stretches
+the axis until nothing is readable.
+
+The *time breakdown* is the explanatory figure. Each variant's time, normalized
+by the `complex128` direct solve of the same solver, stacked into the analysis
+phase, the numerical factorization, the low-precision solves, the residuals and
+the rest. The analysis phase performs no floating-point arithmetic, so it is the
+same height at every precision, and a solver spending a large share of its
+factorization there cannot gain much from a lower one — the explanation Zounon
+et al. give for sparse speedups falling short of 2. The number above each bar is
+its low-precision solve count, which is most of what separates LU-IR from
+GMRES-IR; a bar whose variant did not reach the reference accuracy is marked, so
+its cost is visible but not read as a result.
+
+The *memory* figure is the same construction on the working set, stacked into
+the stored factorization, the matrix and the Krylov basis. The factorization
+halves at `complex64` and the matrix does not, because refinement forms its
+residual at the working precision and so holds `A` there; the two together are
+why the working set does not halve. A backend that exposes no factor size —
+MUMPS, cuDSS in some builds — is marked `?` and its bar drawn as the lower
+bound it is, rather than as a factorization of no size.
+
+Figures 1 to 3 aggregate over the swept indices as a **sum**: each stage summed
+over the indices, divided by the same sum for the baseline, so the parts of a
+bar add to its total exactly and the bar means what running the whole sweep
+cost relative to running it in double precision. The *sweep* figure aggregates
+nothing and draws every index, which is where an average hiding a bimodal
+distribution would show up.
 
 **`non-normal/plot_non_normal.py`.** Its panels are per rank rather than per
 energy, so it has no energy axis to mark; the energy of the frame appears in

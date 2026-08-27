@@ -1478,6 +1478,12 @@ class MUMPS:
     The dtype of the matrix selects MUMPS's internal precision, so both
     complex128 and complex64 are available.
 
+    Phase timing
+    ------------
+    The analysis phase and the numerical factorization are run as two separate
+    calls and timed separately; factor_breakdown() returns the pair. See
+    __init__ for why the split matters and when it is unavailable.
+
     No explicit factors
     -------------------
     MUMPS holds L and U in Fortran-side, possibly MPI-distributed structures,
@@ -1495,7 +1501,48 @@ class MUMPS:
         A = A.astype(self.dtype).tocsc()
         self.ctx = mumps.Context()
         self.ctx.set_matrix(A, symmetric=symmetric)
-        self.ctx.factor()
+
+        # The analysis phase (fill-reducing ordering and symbolic
+        # factorization) and the numerical factorization are timed separately.
+        # The analysis performs no floating-point arithmetic, so it does not
+        # speed up when the factorization precision is lowered; the fraction of
+        # the factorization it accounts for is therefore an upper bound on what
+        # a mixed-precision scheme can save, and is the quantity Zounon et al.
+        # (2022, figures 8 and 9) report to explain why the observed speedup
+        # falls short of 2. factor(reuse_analysis=True) consumes the analysis
+        # performed here instead of repeating it.
+        #
+        # The split is best-effort: python-mumps releases differ in whether
+        # analyze() takes the matrix positionally and in whether factor()
+        # accepts reuse_analysis. Any failure falls back to the fused call,
+        # which reports no split rather than a wrong one, and a genuine MUMPS
+        # error surfaces from that call instead of being masked here.
+        self.symbolic_s = None
+        self.numeric_s = None
+        try:
+            t0 = time.perf_counter()
+            try:
+                self.ctx.analyze()
+            except TypeError:
+                self.ctx.analyze(A)
+            symbolic_s = time.perf_counter() - t0
+            t0 = time.perf_counter()
+            self.ctx.factor(reuse_analysis=True)
+            self.numeric_s = time.perf_counter() - t0
+            self.symbolic_s = symbolic_s
+        except Exception:
+            self.symbolic_s = None
+            self.numeric_s = None
+            self.ctx.factor()
+
+    def factor_breakdown(self):
+        """
+        (analysis_s, numeric_s) of the factorization, or None where this
+        python-mumps release did not allow the two phases to be separated.
+        """
+        if self.symbolic_s is None or self.numeric_s is None:
+            return None
+        return (self.symbolic_s, self.numeric_s)
 
     def solve(self, b):
         b = np.asarray(b, dtype=self.dtype)
@@ -1686,6 +1733,14 @@ class CuDSS:
     def get_LUP(self):
         """None: the factor values are not exposed. See get_metadata()."""
         return None
+
+    def factor_breakdown(self):
+        """
+        (analysis_s, numeric_s): the plan (reordering and symbolic) phase and
+        the numerical factorization, timed separately in __init__. Same
+        convention as MUMPS.factor_breakdown.
+        """
+        return (self.plan_seconds, self.factor_seconds)
 
     def get_metadata(self):
         """Reordering permutations and factor nonzero count, where exposed."""

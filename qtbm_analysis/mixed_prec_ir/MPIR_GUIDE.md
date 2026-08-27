@@ -6,6 +6,11 @@ module docstring (`python mpir.py --help`) carries the same material inline
 with the code; this document exists to be read start to finish once, rather
 than grepped.
 
+`mpir.py` answers whether refinement converges and to what accuracy. Its
+companion `mpcost.py` answers what it costs — time and memory, across solvers,
+at a fixed `complex64` — reusing these same refinement loops and writing its
+own file. See [README.md, section 7](README.md#7-mpcostpy).
+
 ---
 
 ## 1. What it measures
@@ -294,12 +299,37 @@ and energy grid.
 idx, energy, n, nnz, n_rhs, n_blocks, solver, factor_dtype, inner, variant,
 is_refined, u_f, u, u_s, kappa_2, kappa_inf, lu_ir_bound,
 relres, ferr_ref, eta1, eta2, etainf, omega,
-outer_iters, converged, rho_max, phi_final, stop_reason,
+outer_iters, converged, rho_max, psi_final, stop_reason,
 gmres_total, wall_s, factor_s, factor_symbolic_s, factor_numeric_s, inner_s,
-factor_mb, working_mb, reference_solver, reference_nbe
+solve_s, residual_s, other_s, n_solves,
+factor_mb, factor_mb_reported, working_mb, reference_solver, reference_nbe
 ```
 
 All three measured variants appear here (three rows per index).
+
+The timing columns are two nested splits. `factor_symbolic_s` and
+`factor_numeric_s` split the factorization into the analysis phase — the
+fill-reducing ordering and the symbolic factorization, or for the Block Thomas
+families the detection and extraction of the blocks — and the numerical phase.
+The analysis phase performs no floating-point arithmetic, so it costs the same
+at every `u_f` and bounds the speedup a lower precision can produce. cuDSS and
+MUMPS time their own phases and the Block Thomas builders are timed in two
+steps; SuperLU and UMFPACK fuse both into one call and report `nan`.
+
+`solve_s`, `residual_s` and `other_s` split `inner_s` the same way: the
+low-precision solves (`n_solves` of them), the working-precision residuals, and
+what is left — the update, the stopping monitor and, for GMRES-IR, the products
+with `A` and the orthogonalization. Both sub-timers run strictly inside the
+`inner_s` window, so the three sum to it and `other_s` is non-negative by
+construction.
+
+`factor_mb_reported` is 0 where the backend exposed no factor size (MUMPS when
+`INFOG(3)` is unreachable, cuDSS when `lu_nnz` is absent). Zero bytes of
+factors is not a possible measurement, so `factor_mb` is left at 0 rather than
+guessed and `working_mb` is then a lower bound.
+
+These columns are what the companion cost study reads; see `mpcost.py` and
+[README.md, section 7](README.md#7-mpcostpy).
 
 ### `iterations` — one row per (index, outer step)
 

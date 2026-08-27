@@ -342,7 +342,8 @@ RUN_COLUMNS = [
     "relres", "ferr_ref", "eta1", "eta2", "etainf", "omega",
     "outer_iters", "converged", "rho_max", "psi_final", "stop_reason",
     "gmres_total", "wall_s", "factor_s", "factor_symbolic_s",
-    "factor_numeric_s", "inner_s", "factor_mb", "working_mb",
+    "factor_numeric_s", "inner_s", "solve_s", "residual_s", "other_s",
+    "n_solves", "factor_mb", "factor_mb_reported", "working_mb",
     "reference_solver", "reference_nbe",
 ]
 
@@ -383,14 +384,20 @@ def experiment_names(path):
         return sorted(f[EXPERIMENTS_GROUP].keys())
 
 
-def save_experiment(path, attrs, run_rows, iter_rows):
+def new_experiment(path, attrs):
     """
-    Append one experiment to the analysis file and return its name.
+    Create the next numbered experiment group, write `attrs` onto it, and
+    return its name. The caller then writes its own tables under
+    experiments/<name>/.
 
     The number is the lowest unused one, so an experiment deleted by hand is
     reused rather than leaving a gap. The configuration is attached to the
-    experiment group itself and not to the two tables, so that a reader looks
-    in one place for what a run was.
+    experiment group itself and not to the tables beneath it, so that a reader
+    looks in one place for what a run was.
+
+    Separate from save_experiment so that mpcost.py, whose experiments hold a
+    different pair of tables, shares the numbering and the attribute
+    convention rather than reimplementing them.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -403,6 +410,43 @@ def save_experiment(path, attrs, run_rows, iter_rows):
         for key, value in attrs.items():
             if value is not None:
                 g.attrs[key] = _attr_value(value)
+    return name
+
+
+def experiment_attrs(path, name):
+    """Attribute dict of one experiment group, strings decoded."""
+    with h5py.File(path, "r") as f:
+        return {k: (v.decode() if isinstance(v, bytes) else v)
+                for k, v in f[f"{EXPERIMENTS_GROUP}/{name}"].attrs.items()}
+
+
+def resolve_experiment(path, experiment=None):
+    """
+    The name of the requested experiment, the last one by default.
+
+    `experiment` accepts either the padded name or the bare number.
+    """
+    names = experiment_names(path)
+    if not names:
+        raise SystemExit(f"{path} holds no experiments; run the script that "
+                         f"writes them first")
+    if experiment is None:
+        return names[-1]
+    name = f"{int(experiment):04d}" if str(experiment).isdigit() \
+        else str(experiment)
+    if name not in names:
+        raise SystemExit(f"{path} has no experiment {name}; it holds "
+                         f"{', '.join(names)}")
+    return name
+
+
+def save_experiment(path, attrs, run_rows, iter_rows):
+    """
+    Append one experiment to the analysis file and return its name.
+
+    See new_experiment for the numbering and the attribute convention.
+    """
+    name = new_experiment(path, attrs)
     base = f"{EXPERIMENTS_GROUP}/{name}"
     save_table(path, f"{base}/runs", run_rows, columns=RUN_COLUMNS)
     save_table(path, f"{base}/iterations", iter_rows, columns=ITERATION_COLUMNS)
@@ -416,20 +460,8 @@ def load_experiment(path, experiment=None):
     runs and iterations are the column dicts load_table returns. `experiment`
     accepts either the padded name or the bare number.
     """
-    names = experiment_names(path)
-    if not names:
-        raise SystemExit(f"{path} holds no experiments; run mpir.py first")
-    if experiment is None:
-        name = names[-1]
-    else:
-        name = f"{int(experiment):04d}" if str(experiment).isdigit() \
-            else str(experiment)
-        if name not in names:
-            raise SystemExit(f"{path} has no experiment {name}; it holds "
-                             f"{', '.join(names)}")
-    with h5py.File(path, "r") as f:
-        attrs = {k: (v.decode() if isinstance(v, bytes) else v)
-                 for k, v in f[f"{EXPERIMENTS_GROUP}/{name}"].attrs.items()}
+    name = resolve_experiment(path, experiment)
+    attrs = experiment_attrs(path, name)
     base = f"{EXPERIMENTS_GROUP}/{name}"
     runs, _ = load_table(path, f"{base}/runs")
     iters, _ = load_table(path, f"{base}/iterations")
@@ -574,16 +606,48 @@ def _detected_blocks(A):
     return bs
 
 
+def _extract_timed(A):
+    """
+    (D, L, U, structural_s): the block extraction and how long it took.
+
+    Detecting the partition, validating it and slicing the blocks out of the
+    sparse matrix is structural work on the sparsity pattern. It performs no
+    factorization arithmetic and its cost does not depend on the factorization
+    precision, which places it in the same role as the reordering and symbolic
+    phase of a general sparse direct solver: it is the part of the
+    factorization that lowering the precision cannot accelerate. It is timed
+    separately for that reason; see _factor_breakdown.
+    """
+    t0 = time.perf_counter()
+    D, L, U = extract_blocks_sparse(A, _detected_blocks(A))
+    return D, L, U, time.perf_counter() - t0
+
+
+def _tag_phases(solver, structural_s, numeric_s):
+    """
+    Attach a factorization phase split to a solver object built here.
+
+    The two Block Thomas families are constructed in two steps by the builders
+    below rather than inside one class, so the split cannot be recorded by the
+    class itself the way MUMPS and cuDSS record theirs. _factor_breakdown reads
+    either form.
+    """
+    solver.symbolic_s = structural_s
+    solver.numeric_s = numeric_s
+    return solver
+
+
 def _build_block_thomas(A, dtype, bs, b, inv_dtype):
     """
     Implementation 1 (LU with substitution), at complex128, complex64 or
     complex32. `bs` is ignored; see _detected_blocks. `inv_dtype` is ignored;
     this implementation inverts nothing.
     """
-    D, L, U = extract_blocks_sparse(A, _detected_blocks(A))
-    if is_c32(dtype):
-        return BlockThomasFP16(D, L, U)
-    return BlockThomas(D, L, U, dtype=dtype)
+    D, L, U, structural_s = _extract_timed(A)
+    t0 = time.perf_counter()
+    solver = BlockThomasFP16(D, L, U) if is_c32(dtype) \
+        else BlockThomas(D, L, U, dtype=dtype)
+    return _tag_phases(solver, structural_s, time.perf_counter() - t0)
 
 
 def _build_block_thomas_inv(A, dtype, bs, b, inv_dtype):
@@ -593,10 +657,11 @@ def _build_block_thomas_inv(A, dtype, bs, b, inv_dtype):
     at complex32, where it sets the precision the inverses are formed in before
     being rounded to float16; see DEFAULT_INV_DTYPE.
     """
-    D, L, U = extract_blocks_sparse(A, _detected_blocks(A))
-    if is_c32(dtype):
-        return BlockThomasExplicitInvFP16(D, L, U, inv_dtype=inv_dtype)
-    return BlockThomasExplicitInv(D, L, U, dtype=dtype)
+    D, L, U, structural_s = _extract_timed(A)
+    t0 = time.perf_counter()
+    solver = BlockThomasExplicitInvFP16(D, L, U, inv_dtype=inv_dtype) \
+        if is_c32(dtype) else BlockThomasExplicitInv(D, L, U, dtype=dtype)
+    return _tag_phases(solver, structural_s, time.perf_counter() - t0)
 
 
 def _solve_columns(solve_one, b):
@@ -643,25 +708,49 @@ class _CuDSSSolver:
         self._A = A
         self._solver = CuDSS(A, dtype=self.dtype, nrhs=self.nrhs)
         self._buf = np.empty((self.n, self.nrhs), dtype=self.dtype, order="F")
-        self._one = None        # built lazily, for GMRES-IR only
+        self._one = None        # single-vector solver; see prepare_single_rhs
         self._one_buf = None
-        # Symbolic (reordering) and numeric factorization seconds, timed
-        # separately inside solver_classes.CuDSS; see factor_breakdown().
-        self.symbolic_s = self._solver.plan_seconds
-        self.numeric_s = self._solver.factor_seconds
+
+    def prepare_single_rhs(self):
+        """
+        Build the nrhs=1 solver now rather than on the first single-vector
+        solve.
+
+        cuDSS binds the right-hand-side shape at construction, so a
+        single-vector solve needs a solver of its own -- a second full plan and
+        factorization of the same matrix. GMRES applies the preconditioner one
+        vector at a time, so that second factorization is certain to be needed
+        under GMRES-IR, and building it lazily would charge it to the first
+        preconditioner application: the solve stage would absorb a whole
+        factorization while factor_s understated the factorization by the same
+        amount. Callers that know the single-vector path will be taken build it
+        inside their factorization timing instead; see solve_gmres_ir.
+
+        Idempotent.
+        """
+        if self._one is None:
+            self._one = CuDSS(self._A, dtype=self.dtype, nrhs=1)
+            self._one_buf = np.empty((self.n, 1), dtype=self.dtype, order="F")
+        return self._one
 
     def factor_breakdown(self):
-        """(symbolic_s, numeric_s), or None where a solver fuses the two."""
-        return (self.symbolic_s, self.numeric_s)
+        """
+        (analysis_s, numeric_s), summed over the solvers actually built.
+
+        The nrhs=1 solver is a second factorization of the same matrix, so it
+        is counted where it exists and the two phases then account for every
+        factorization factor_s paid for.
+        """
+        built = [self._solver] + ([self._one] if self._one is not None else [])
+        return (sum(x.plan_seconds for x in built),
+                sum(x.factor_seconds for x in built))
 
     def _solve_block(self, b2d):
         self._buf[:, :] = b2d
         return self._solver.solve(self._buf)
 
     def _solve_one(self, v):
-        if self._one is None:
-            self._one = CuDSS(self._A, dtype=self.dtype, nrhs=1)
-            self._one_buf = np.empty((self.n, 1), dtype=self.dtype, order="F")
+        self.prepare_single_rhs()
         self._one_buf[:, 0] = v
         return self._one.solve(self._one_buf)[:, 0]
 
@@ -680,6 +769,37 @@ class _CuDSSSolver:
         self._solver.free()
         if self._one is not None:
             self._one.free()
+
+
+def _factor_breakdown(solver):
+    """
+    (analysis_s, numeric_s) of a built solver's factorization, or None where
+    the backend fuses the two phases and exposes no split.
+
+    The analysis phase -- the fill-reducing ordering and the symbolic
+    factorization, or for the Block Thomas families the detection and
+    extraction of the blocks -- performs no floating-point arithmetic, so its
+    cost is the same at every factorization precision. It therefore bounds the
+    speedup a lower precision can produce: a factorization spending a fraction
+    f of its time there cannot be accelerated by more than 1/f however cheap
+    the arithmetic becomes. Zounon et al. (2022, figures 8 and 9) identify this
+    as the main reason sparse mixed-precision speedups fall short of 2.
+
+    Two forms are read. MUMPS and cuDSS time their own phases and expose
+    factor_breakdown(); the Block Thomas builders here are two-step and tag the
+    solver with symbolic_s and numeric_s instead. SuperLU (scipy's splu) and
+    UMFPACK fuse both phases into one call and return None.
+    """
+    fn = getattr(solver, "factor_breakdown", None)
+    if callable(fn):
+        breakdown = fn()
+        if breakdown is not None:
+            return breakdown
+    symbolic = getattr(solver, "symbolic_s", None)
+    numeric = getattr(solver, "numeric_s", None)
+    if symbolic is None or numeric is None:
+        return None
+    return (float(symbolic), float(numeric))
 
 
 # Keyed by canonical solver name; see solvers/cli.py.
@@ -1079,11 +1199,29 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
     solver = SOLVER_BUILDERS[solver_name](A, low_dtype, bs, b, inv_dtype)
     factor_s = time.perf_counter() - t0
 
+    # Stage timers inside the refinement loop. Each is a pair of
+    # perf_counter calls around work measured in milliseconds, so the
+    # instrumentation sits several orders of magnitude below the resolution of
+    # what it measures. solve_s and residual_s are the two stages the
+    # mixed-precision argument is about -- the low-precision substitutions and
+    # the working-precision residuals -- and whatever is left of inner_s is the
+    # vector arithmetic of the update and of the stopping monitor. Both are
+    # measured strictly inside the inner_s window, so their sum cannot exceed
+    # it and the remainder is non-negative by construction.
+    solve_s = 0.0
+    residual_s = 0.0
+    n_solves = 0
+
+    t_inner = time.perf_counter()
     t0 = time.perf_counter()
     x = solver.solve(b_high.astype(cast)).astype(HIGH_DTYPE)
+    solve_s += time.perf_counter() - t0
+    n_solves += 1
 
     for _ in range(max_iter):
+        t0 = time.perf_counter()
         r = b_high - A_high @ x
+        residual_s += time.perf_counter() - t0
         history.append(np.linalg.norm(r) / norm_b)
         ferr_live = None
         if x_true is not None:
@@ -1100,14 +1238,17 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
         # tested method rounds it on the way in is part of what is measured.
         r_history.append(r)
 
+        t0 = time.perf_counter()
         d = solver.solve(r.astype(cast)).astype(HIGH_DTYPE)
+        solve_s += time.perf_counter() - t0
+        n_solves += 1
         d_history.append(d)
         x_next = x + d
         stop = monitor.update(d, x, ferr=ferr_live)
         x = x_next
         if stop:
             break
-    inner_s = time.perf_counter() - t0
+    inner_s = time.perf_counter() - t_inner
 
     extra = {
         "history": history,
@@ -1119,7 +1260,10 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
         "mem_bytes": solver.factor_nbytes(),
         "factor_s": factor_s,
         "inner_s": inner_s,
-        "factor_breakdown": getattr(solver, "factor_breakdown", lambda: None)(),
+        "solve_s": solve_s,
+        "residual_s": residual_s,
+        "n_solves": n_solves,
+        "factor_breakdown": _factor_breakdown(solver),
     }
     if hasattr(solver, "free"):
         solver.free()
@@ -1398,19 +1542,47 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
 
     t0 = time.perf_counter()
     solver = SOLVER_BUILDERS[solver_name](A, low_dtype, bs, b, inv_dtype)
+    # GMRES applies the preconditioner one vector at a time. Where a solver
+    # binds the right-hand-side shape at construction, a single-vector solve
+    # needs a second factorization of the same matrix; it is built here, inside
+    # the factorization timing, rather than on the first preconditioner
+    # application, where its cost would land in the solve stage and factor_s
+    # would understate the factorization by a whole factorization. Only
+    # _CuDSSSolver defines the hook; every other solver has nothing to prepare.
+    prepare = getattr(solver, "prepare_single_rhs", None)
+    if callable(prepare):
+        prepare()
     factor_s = time.perf_counter() - t0
 
+    # Stage timers, as in solve_mixed_ir. Here the low-precision solves are
+    # the preconditioner applications, one per inner GMRES iteration rather
+    # than one per outer step, so solve_s and n_solves count every call GMRES
+    # makes. What remains of inner_s after solve_s and residual_s is the rest
+    # of GMRES: the products with A, the orthogonalization and the least
+    # squares problem, all at the working precision.
+    stage = {"solve_s": 0.0, "n_solves": 0}
+    residual_s = 0.0
+
     def precond_apply(v):
-        return solver.solve(v.astype(cast)).astype(HIGH_DTYPE)
+        t = time.perf_counter()
+        out = solver.solve(v.astype(cast)).astype(HIGH_DTYPE)
+        stage["solve_s"] += time.perf_counter() - t
+        stage["n_solves"] += 1
+        return out
 
     A_op = spla.LinearOperator((n, n), matvec=lambda v: A_high @ v, dtype=HIGH_DTYPE)
     M_op = spla.LinearOperator((n, n), matvec=precond_apply, dtype=HIGH_DTYPE)
 
+    t_inner = time.perf_counter()
     t0 = time.perf_counter()
     x2 = solver.solve(b2.astype(cast)).astype(HIGH_DTYPE)   # x0: low-precision direct solve
+    stage["solve_s"] += time.perf_counter() - t0
+    stage["n_solves"] += 1
 
     for _ in range(max_iter):
+        t0 = time.perf_counter()
         r2 = b2 - A_high @ x2
+        residual_s += time.perf_counter() - t0
         history.append(np.linalg.norm(r2) / norm_b)
         ferr_live = None
         if x_true2 is not None:
@@ -1448,7 +1620,7 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
         x2 = x_next
         if stop:
             break
-    inner_s = time.perf_counter() - t0
+    inner_s = time.perf_counter() - t_inner
 
     x = x2 if orig_ndim == 2 else x2[:, 0]
 
@@ -1463,7 +1635,10 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
         "mem_bytes": solver.factor_nbytes(),
         "factor_s": factor_s,
         "inner_s": inner_s,
-        "factor_breakdown": getattr(solver, "factor_breakdown", lambda: None)(),
+        "solve_s": stage["solve_s"],
+        "residual_s": residual_s,
+        "n_solves": stage["n_solves"],
+        "factor_breakdown": _factor_breakdown(solver),
     }
     if hasattr(solver, "free"):
         solver.free()
@@ -1489,10 +1664,15 @@ def solve_direct(solver_name, A, b, bs, dtype, inv_dtype=DEFAULT_INV_DTYPE):
     inner_s = time.perf_counter() - t0
 
     mem_bytes = solver.factor_nbytes()
-    factor_breakdown = getattr(solver, "factor_breakdown", lambda: None)()
+    factor_breakdown = _factor_breakdown(solver)
     if hasattr(solver, "free"):
         solver.free()
+    # The stage split of a direct solve is trivial -- one solve call and no
+    # residual -- but it is reported in the same keys as the refinement
+    # variants so that a stage-breakdown figure can read every variant the
+    # same way rather than special-casing the two unrefined ones.
     return x, {"mem_bytes": mem_bytes, "factor_s": factor_s, "inner_s": inner_s,
+              "solve_s": inner_s, "residual_s": 0.0, "n_solves": 1,
               "factor_breakdown": factor_breakdown}
 
 
@@ -1838,6 +2018,18 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
         vals = [r["extra"][key] for r in all_records[name] if key in r["extra"]]
         return float(np.median(vals)) if vals else None
 
+    def stage_other(name):
+        """
+        inner_s minus the solve and residual stages: the working-precision
+        vector arithmetic of the update and the stopping monitor, plus, for
+        GMRES-IR, the products with A and the orthogonalization.
+        """
+        total = med_extra(name, "inner_s")
+        if total is None:
+            return float("nan")
+        return float(total - (med_extra(name, "solve_s") or 0.0)
+                     - (med_extra(name, "residual_s") or 0.0))
+
     def med_opt(name, key):
         """Like med(), but None-safe for a top-level key that may be None
         (eta2 when svds did not converge, or omega/eta1/etainf when normA
@@ -1891,14 +2083,29 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
     print(f"  {'Factorization time (ms)':<{col-2}}" +
           "".join(f"  {v:<28}" for v in factor_vals))
 
-    # Symbolic (reordering) vs. numeric factorization -- a breakdown of the
-    # row directly above, where the backend keeps the two separate; scipy's
-    # splu, UMFPACK and python-mumps fuse both into one call and expose no
-    # split, so this is only populated for cuDSS.
-    breakdowns = {nm: all_records[nm][0]["extra"].get("factor_breakdown")
-                 for nm in names}
+    # Analysis (ordering and symbolic factorization) against numerical
+    # factorization -- a breakdown of the row directly above. Populated for
+    # cuDSS and MUMPS, which time their own phases, and for the two Block
+    # Thomas families, whose block detection and extraction is the
+    # corresponding structural phase. SuperLU (scipy's splu) and UMFPACK fuse
+    # both into one call and expose no split. Only the numerical phase
+    # performs floating-point arithmetic, so only it becomes cheaper at a
+    # lower u_f; see _factor_breakdown.
+    def med_breakdown(name):
+        """
+        Median over repeats of the factorization phase split, reduced the same
+        way factor_s is so that the parts and the whole refer to the same run.
+        """
+        pairs = [r["extra"]["factor_breakdown"] for r in all_records[name]
+                 if r["extra"].get("factor_breakdown") is not None]
+        if not pairs:
+            return None
+        return (float(np.median([p[0] for p in pairs])),
+                float(np.median([p[1] for p in pairs])))
+
+    breakdowns = {nm: med_breakdown(nm) for nm in names}
     if any(bd is not None for bd in breakdowns.values()):
-        for label, i in [("    symbolic (ms)", 0), ("    numeric (ms)", 1)]:
+        for label, i in [("    analysis (ms)", 0), ("    numeric (ms)", 1)]:
             vals = [f"{breakdowns[nm][i]*1e3:.1f}" if breakdowns[nm] is not None
                     else "n/a (fused)" for nm in names]
             print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
@@ -1907,6 +2114,32 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
                   else "n/a" for nm in names]
     print(f"  {'Solve / inner-loop time (ms)':<{col-2}}" +
           "".join(f"  {v:<28}" for v in solve_vals))
+
+    # The row above split into its stages. For a direct variant this is one
+    # solve and nothing else; for a refinement variant it separates the
+    # low-precision solves -- the only stage that becomes cheaper when u_f is
+    # lowered -- from the working-precision residuals and from the remaining
+    # vector work. The solve count is reported with them because the stage
+    # cost is that count times the cost of one solve, and the two variants
+    # differ mainly in the count: LU-IR performs one solve per outer step,
+    # GMRES-IR one per inner GMRES iteration.
+    for label, getter in [
+            ("    low-precision solves (ms)",
+             lambda nm: med_extra(nm, "solve_s")),
+            ("    residual b - Ax (ms)",
+             lambda nm: med_extra(nm, "residual_s")),
+            ("    other (update, Krylov) (ms)", stage_other)]:
+        vals = []
+        for nm in names:
+            v = getter(nm)
+            vals.append(f"{v*1e3:.1f}" if v is not None and np.isfinite(v)
+                        else "n/a")
+        print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
+    count_vals = [f"{int(med_extra(nm, 'n_solves'))}"
+                  if med_extra(nm, "n_solves") is not None else "n/a"
+                  for nm in names]
+    print(f"  {'    solve calls':<{col-2}}" +
+          "".join(f"  {v:<28}" for v in count_vals))
     print()
 
     # 3. Memory: the size of the stored factorization, which is the quantity
@@ -1946,14 +2179,24 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
     def mem_row(label, size):
         vals = []
         for nm in names:
+            # A factorization never occupies zero bytes, so zero means the
+            # backend exposed no size rather than a measurement. Printing
+            # "not reported" keeps that distinct from a small factorization.
+            if not size[nm]:
+                vals.append("not reported")
+                continue
             cell = f"{size[nm]/MIB:.2f}"
-            if mem_ref is not None and size.get(mem_ref) and size[nm]:
+            if mem_ref is not None and size.get(mem_ref):
                 cell += f" ({size[nm]/size[mem_ref]:.2f}x)"
             vals.append(cell)
         print(f"  {label:<{col-2}}" + "".join(f"  {v:<28}" for v in vals))
 
     mem_row("Factor memory (MiB, factor_nbytes)", mem)
     mem_row("Working set (MiB, factor + A + basis)", working)
+    if any(not mem[nm] for nm in names):
+        print("    [note] the working set of a variant whose factor memory is "
+              "not reported\n           counts only A and the Krylov basis "
+              "and so understates the total.")
 
     n_rhs = b_high.shape[1] if b_high.ndim == 2 else 1
     if n_rhs > 1:
@@ -2072,7 +2315,7 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
         mon = extra0.get("monitor")
         summary = mon.summary() if mon is not None else {}
         gm = extra0.get("gmres_iters_history", [])
-        breakdown = extra0.get("factor_breakdown")
+        breakdown = med_breakdown(nm)
         run_rows.append(dict(
             common, variant=nm,
             is_refined=int(mon is not None),
@@ -2100,7 +2343,22 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
             factor_symbolic_s=float(breakdown[0]) if breakdown else float("nan"),
             factor_numeric_s=float(breakdown[1]) if breakdown else float("nan"),
             inner_s=med_extra(nm, "inner_s") or float("nan"),
+            solve_s=med_extra(nm, "solve_s") or float("nan"),
+            residual_s=med_extra(nm, "residual_s") or 0.0,
+            # Both sub-timers run strictly inside the inner_s window, so the
+            # remainder is non-negative: the update, the stopping monitor and,
+            # for GMRES-IR, the Krylov work.
+            other_s=stage_other(nm),
+            n_solves=int(med_extra(nm, "n_solves") or 0),
             factor_mb=mem[nm] / MIB,
+            # factor_nbytes returns 0 rather than raising where a backend does
+            # not expose the size of its factors: MUMPS when INFOG(3) is
+            # unreachable through this python-mumps build, cuDSS when the
+            # factorization info carries no lu_nnz. Zero bytes of factors is
+            # not a possible measurement, so the flag distinguishes "not
+            # reported" from a real value and a memory figure can leave the
+            # entry out instead of drawing a bar at zero.
+            factor_mb_reported=int(mem[nm] > 0),
             working_mb=working[nm] / MIB,
             reference_solver=reference_solver or "",
             reference_nbe=float(ref_eta) if ref_eta is not None else float("nan"),

@@ -87,9 +87,12 @@ which every analysis of that material writes its own top-level group.
     block-thomas/forward_error.py ─► the same file :/forward_error     │
     run_bench/sweep_fp16.py ───────► error-analysis-block-thomas/ ◄────┘
                                        <material>.h5 :/fp16_sweep
-    mixed_prec_ir/mpir.py ─────────► mixed-precision-IR/
+    mixed_prec_ir/mpir.py ─────────► mixed-precision-IR/<material>/
                                        <material>.h5 :/experiments/<NNNN>/
                                                         runs, iterations
+    mixed_prec_ir/mpcost.py ───────► mixed-precision-IR/<material>/
+                                       <material>_cost.h5 :/experiments/<NNNN>/
+                                                        runs, speedups
     non-normal/non-normal.py ──────► non-normal/
                                        <material>.h5 :/non_normality
                     │
@@ -100,6 +103,7 @@ which every analysis of that material writes its own top-level group.
                     plotting/block-thomas/plot_fp16_accuracy.py
                     plotting/block-thomas/plot_speedup.py
                     plotting/mixed_prec_ir/plot_mpir.py
+                    plotting/mixed_prec_ir/plot_mpir_cost.py
                     plotting/non-normal/plot_non_normal.py
                     plotting/matrices2/plot_qtbm_spectra.py
                     plotting/materials/bandstructure.py
@@ -232,11 +236,15 @@ cd ../run_bench
 python sweep_fp16.py /scratch/yimili/matrices2/hdf5/graphene.h5 --stride 20
 cd ../mixed_prec_ir
 # One invocation per solver and precision under test; each appends a new
-# numbered experiment to mixed-precision-IR/graphene.h5 and never overwrites,
-# so the file records every run made.
+# numbered experiment to mixed-precision-IR/graphene/graphene.h5 and never
+# overwrites, so the file records every run made.
 python mpir.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
     --stride 20 --solver block-thomas \
     --factor-dtype complex32 --inner gmres
+# The companion cost study: one invocation covers every solver, since the
+# comparison is between them. Writes graphene_cost.h5 in the same directory.
+python mpcost.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
+    --stride 20 --solvers mumps cudss block-thomas block-thomas-inv
 cd ../non-normal
 python non-normal.py /scratch/yimili/matrices2/hdf5/graphene.h5 --stride 20
 
@@ -248,7 +256,8 @@ python plot_growth_factor.py  /scratch/yimili/error-analysis-block-thomas/graphe
 python plot_forward_error.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 python plot_fp16_accuracy.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 cd ../mixed_prec_ir
-python plot_mpir.py           /scratch/yimili/mixed-precision-IR/graphene.h5 --list
+python plot_mpir.py           /scratch/yimili/mixed-precision-IR/graphene/graphene.h5 --list
+python plot_mpir_cost.py      /scratch/yimili/mixed-precision-IR/graphene/graphene_cost.h5
 cd ../non-normal
 python plot_non_normal.py     /scratch/yimili/non-normal/graphene.h5
 
@@ -423,7 +432,7 @@ solver.
 | [`solvers/`](solvers/) | the solver library: every solver behind one interface, the canonical names, shared CLI and scratch paths, the block-partition utilities, HDF5 persistence, tests | [README](solvers/README.md) |
 | [`run_bench/`](run_bench/) | batch drivers: load, call `bench()`, write results back | [README](run_bench/README.md) |
 | [`block-thomas/`](block-thomas/) | post-hoc stability and spectral analysis, read-only | [README](block-thomas/README.md) |
-| [`mixed_prec_ir/`](mixed_prec_ir/) | mixed-precision iterative refinement, LU-IR and GMRES-IR | [README](mixed_prec_ir/README.md) |
+| [`mixed_prec_ir/`](mixed_prec_ir/) | mixed-precision iterative refinement: accuracy (`mpir.py`) and computational cost (`mpcost.py`) | [README](mixed_prec_ir/README.md) |
 | [`plotting/`](plotting/) | every figure in the project; computes nothing | [README](plotting/README.md) |
 
 | Directory | Contents |
