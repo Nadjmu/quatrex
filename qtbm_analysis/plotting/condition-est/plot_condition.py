@@ -1,39 +1,62 @@
 #!/usr/bin/env python3
 """
-Condition number of M(E) over the energy sweep, in the 1, 2 and infinity norms.
+Condition number of M(E) over the energy sweep, in two panels.
 
 Input
 -----
 The ``condition`` group written by ``condition-est/condition_est.py`` into its
 analysis file, one file per material:
 
-    indices   (P,)  energy index of each row
-    valid     (P,)  bool, row fully computed
-    cond_1    (P,)  ||M||_1 * ||M^-1||_1, the inverse norm estimated
-    cond_inf  (P,)  ||M||_inf * ||M^-1||_inf, the inverse norm estimated
-    cond_2    (P,)  sigma_max / sigma_min
+    indices       (P,)  energy index of each row
+    valid         (P,)  bool, row fully computed
+    cond_inf      (P,)  ||M||_inf * ||M^-1||_inf, the inverse norm estimated
+    cond_skeel    (P,)  || |M^-1| |M| ||_inf, estimated
+    cond_skeel_x  (P,)  || |M^-1| |M| |x| ||_inf / ||x||_inf, estimated
+    cond_2        (P,)  sigma_max / sigma_min
 
 With no path given, every material in --materials is read from --outdir.
 
 Algorithm
 ---------
-The three curves are drawn together on one logarithmic axis per material,
-against energy in eV rather than the energy index, so that the band edges
-recorded in the file's metadata can be marked and materials compared. The
-equivalence of norms bounds the three against each other by factors of n, so
-they are expected to track one another; where they do not, it is the shape of
-M^-1 and not the conditioning that differs between them.
+The upper panel holds the three infinity-norm quantities, which are nested:
 
-kappa_1 and kappa_inf rest on a norm estimate that is a lower bound, so the two
-curves may sit slightly below the exact value; kappa_2 is computed from both
-extreme singular values directly. The gap between the curves therefore mixes
-the choice of norm with the slack of the estimator and is not read as either
-alone.
+    cond_skeel_x <= cond_skeel <= kappa_inf
+
+The second inequality is the classical identity that cond_skeel is the
+infinity-norm condition number after optimal row scaling,
+
+    min over positive diagonal D of kappa_inf(D M) = || |M^-1| |M| ||_inf,
+
+so the vertical gap between the top two curves is the amount of kappa_inf that
+is an artefact of the row scaling of M and not of the difficulty of the
+problem. The gap between the lower two is the further reduction obtained by
+fixing the right-hand side rather than taking the worst case over all of them.
+All three are lower bounds from the same norm estimator, so the gaps between
+them are not inflated by differing estimator slack.
+
+The lower panel holds kappa_2 alone. It belongs to a different norm, has no
+recorded backward error to pair with, and is not a rung of the ladder above;
+it is separated so that it cannot be read as one. It is the quantity by which
+list_by_kappa.py buckets the sweep and the one mpir.py reports, and it is the
+only column checkable against the full SVD stored at export time. By Kahan's
+theorem 1/kappa_2 is the relative 2-norm distance from M(E) to the nearest
+singular matrix.
+
+kappa_1 is not drawn. kappa_1(M) = kappa_inf(M^T) exactly, and M(E) = E S - H -
+Sigma(E) is nearly complex symmetric, so the two coincide to far better than
+the factor of n that holds for a general matrix. The column is still written by
+condition_est.py, where it verifies that the trans="N" and trans="H" solves
+agree; it carries no information a figure can show.
+
+cond_skeel_x depends on the right-hand side and is therefore a property of
+(M, x) rather than of M(E) alone. It is NaN at indices whose rhs has no
+columns, and is dropped there rather than interpolated.
 
 Output
 ------
-    <outdir>/<material>_condition.png   one figure per material
-    <outdir>/condition_all.png          every material as a panel
+    <outdir>/<material>_condition.png   two panels, one material
+    <outdir>/condition_all.png          the ladder panel, every material
+    <outdir>/condition_kappa2_all.png   the kappa_2 panel, every material
 
 The default output directory is the input directory, so the figures are written
 beside the data they were drawn from.
@@ -57,36 +80,40 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import cli
-from style import axis_label, energies_of, mark_band_edges, save_figure
+from style import axis_label, energies_of, mark_band_edges, save_figure, sweep_line
 
 GROUP = "condition"
 
-# The three estimates: dataset name -> (legend label, colour, line style).
-# Colours are distinct from those of SOLVER_STYLE, since no curve here belongs
-# to a solver, and deliberately away from the blue and red of BAND_EDGE_STYLE:
-# a red dashed curve beside a red dashed band edge is not separable at a
-# glance. Saturated to full strength, since three curves that track one another
-# closely are told apart by colour alone.
-ESTIMATE_STYLE = {
-    "cond_1": (r"$\kappa_1$ (estimated)", "#FF6D00", "-"),
-    "cond_2": (r"$\kappa_2 = \sigma_{\max}/\sigma_{\min}$", "#111111", "-"),
-    "cond_inf": (r"$\kappa_\infty$ (estimated)", "#8E24AA", "--"),
+# Upper panel: the three infinity-norm quantities, listed loosest first so that
+# the legend order matches the vertical order of the curves. Colours are
+# saturated and mutually distant, and stay away from the tab:blue and tab:red
+# of BAND_EDGE_STYLE, since a curve sharing a colour with a band edge is not
+# separable at a glance.
+LADDER_STYLE = {
+    "cond_inf": (r"$\kappa_\infty$  (normwise)", "#8E24AA", "--"),
+    "cond_skeel": (r"$\mathrm{cond}(M)$  (Skeel, worst rhs)", "#FF6D00", "-"),
+    "cond_skeel_x": (r"$\mathrm{cond}(M,x)$  (Skeel, this rhs)", "#00897B", "-"),
 }
 
-LINE_WIDTH = 1.8
+# Lower panel: a different norm, drawn alone.
+KAPPA2_STYLE = {
+    "cond_2": (r"$\kappa_2 = \sigma_{\max}/\sigma_{\min}$", "#111111", "-"),
+}
+
+ALL_DATASETS = tuple(LADDER_STYLE) + tuple(KAPPA2_STYLE)
 
 DEFAULT_MATERIALS = ("carbon-nanotube", "carbon-chain", "si-bulk", "graphene")
 
 
 def load_curves(h5path):
     """
-    The three curves of one material, on the valid rows only.
+    The four curves of one material, on the valid rows only.
 
     Returns (x, curves, attrs, have_energy) where x is energy in eV where the
     file records the grid and the energy index otherwise, and curves maps a
-    dataset name to its values. Rows whose value is not finite are dropped per
-    curve rather than per row, so a single failed estimate does not remove the
-    other two.
+    dataset name to its values. A column absent from the file is omitted rather
+    than raising: a group written before cond_skeel existed still plots the
+    curves it does hold, and the missing ones are reported by the caller.
     """
     with h5py.File(h5path, "r") as f:
         if GROUP not in f:
@@ -97,7 +124,7 @@ def load_curves(h5path):
         attrs = dict(group.attrs)
         valid = group["valid"][:]
         indices = group["indices"][:][valid]
-        curves = {name: group[name][:][valid] for name in ESTIMATE_STYLE
+        curves = {name: group[name][:][valid] for name in ALL_DATASETS
                   if name in group}
 
     if indices.size == 0:
@@ -110,21 +137,42 @@ def load_curves(h5path):
     return x, curves, attrs, have_energy
 
 
-def draw(ax, x, curves, attrs, have_energy, title):
-    """One panel: the three curves, the band edges, a logarithmic y axis."""
-    for name, (label, colour, linestyle) in ESTIMATE_STYLE.items():
+def scaling_headroom(curves):
+    """
+    Median of kappa_inf / cond_skeel over the rows where both are finite, or
+    None when either column is missing.
+
+    By the identity quoted in the module docstring this ratio is the factor by
+    which row equilibration of M could reduce kappa_inf, and therefore the
+    factor by which it relaxes the LU-IR condition kappa_inf * u_f < 1. It is
+    printed rather than drawn, and nothing in the figure depends on it.
+    """
+    if "cond_inf" not in curves or "cond_skeel" not in curves:
+        return None
+    top, bottom = curves["cond_inf"], curves["cond_skeel"]
+    usable = np.isfinite(top) & np.isfinite(bottom) & (bottom > 0)
+    if not np.any(usable):
+        return None
+    return float(np.median(top[usable] / bottom[usable]))
+
+
+def draw_panel(ax, x, curves, styles, attrs, have_energy, title, ylabel):
+    """One panel: the curves of `styles` present in `curves`, on a log y axis."""
+    drawn = 0
+    for name, (label, colour, linestyle) in styles.items():
         if name not in curves:
             continue
         y = curves[name]
         finite = np.isfinite(y) & (y > 0)
         if not np.any(finite):
             continue
-        ax.plot(x[finite], y[finite], color=colour, ls=linestyle,
-                lw=LINE_WIDTH, label=label)
+        ax.plot(x[finite], y[finite], color=colour, ls=linestyle, label=label,
+                **sweep_line(int(np.count_nonzero(finite))))
+        drawn += 1
 
     ax.set_yscale("log")
     ax.set_xlabel(axis_label(have_energy))
-    ax.set_ylabel(r"$\kappa(M)$")
+    ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.grid(alpha=0.3, which="both")
 
@@ -133,7 +181,21 @@ def draw(ax, x, curves, attrs, have_energy, title):
     if have_energy:
         mark_band_edges(ax, attrs)
 
-    ax.legend(loc="best", fontsize=8)
+    if drawn:
+        ax.legend(loc="best", fontsize=8)
+    return drawn
+
+
+def draw_ladder(ax, x, curves, attrs, have_energy, title):
+    """The infinity-norm panel: cond_skeel_x <= cond_skeel <= kappa_inf."""
+    return draw_panel(ax, x, curves, LADDER_STYLE, attrs, have_energy, title,
+                      r"$\kappa_\infty(M)$,  $\mathrm{cond}(M)$")
+
+
+def draw_kappa2(ax, x, curves, attrs, have_energy, title):
+    """The 2-norm panel, drawn alone."""
+    return draw_panel(ax, x, curves, KAPPA2_STYLE, attrs, have_energy, title,
+                      r"$\kappa_2(M)$")
 
 
 def main():
@@ -169,28 +231,46 @@ def main():
             continue
         x, curves, attrs, have_energy = load_curves(h5path)
         loaded.append((material, x, curves, attrs, have_energy))
-        print(f"[input] {material}: {len(x)} valid rows")
 
-        fig, ax = plt.subplots(figsize=(7.5, 4.5), constrained_layout=True)
-        draw(ax, x, curves, attrs, have_energy,
-             f"Condition number of M(E): {material}")
+        missing = [name for name in ALL_DATASETS if name not in curves]
+        note = f", missing {' '.join(missing)}" if missing else ""
+        print(f"[input] {material}: {len(x)} valid rows{note}")
+        if "cond_skeel" in missing or "cond_skeel_x" in missing:
+            print(f"[hint]  {material}: run condition_est.py --only-skeel "
+                  f"to fill the Skeel columns of an existing sweep")
+
+        headroom = scaling_headroom(curves)
+        if headroom is not None:
+            print(f"[scaling] {material}: median kappa_inf / cond(M) = "
+                  f"{headroom:.2e}  (factor row equilibration could remove "
+                  f"from kappa_inf)")
+
+        fig, axes = plt.subplots(2, 1, figsize=(7.5, 8.0), sharex=True,
+                                 constrained_layout=True)
+        draw_ladder(axes[0], x, curves, attrs, have_energy,
+                    f"Condition number of M(E): {material}")
+        draw_kappa2(axes[1], x, curves, attrs, have_energy,
+                    "2-norm, for reference and for index selection")
+        axes[0].set_xlabel("")
         save_figure(fig, outdir / f"{material}_condition.png", dpi=args.dpi)
 
     if not loaded:
         raise SystemExit("no analysis file was read")
 
     if len(loaded) > 1:
-        columns = 2
-        rows = int(np.ceil(len(loaded) / columns))
-        fig, axes = plt.subplots(rows, columns,
-                                 figsize=(6.5 * columns, 4.0 * rows),
-                                 constrained_layout=True)
-        axes = np.atleast_1d(axes).ravel()
-        for ax, (material, x, curves, attrs, have_energy) in zip(axes, loaded):
-            draw(ax, x, curves, attrs, have_energy, material)
-        for ax in axes[len(loaded):]:
-            ax.axis("off")
-        save_figure(fig, outdir / "condition_all.png", dpi=args.dpi)
+        for suffix, draw in (("condition_all.png", draw_ladder),
+                             ("condition_kappa2_all.png", draw_kappa2)):
+            columns = 2
+            rows = int(np.ceil(len(loaded) / columns))
+            fig, axes = plt.subplots(rows, columns,
+                                     figsize=(6.5 * columns, 4.0 * rows),
+                                     constrained_layout=True)
+            axes = np.atleast_1d(axes).ravel()
+            for ax, (material, x, curves, attrs, have_energy) in zip(axes, loaded):
+                draw(ax, x, curves, attrs, have_energy, material)
+            for ax in axes[len(loaded):]:
+                ax.axis("off")
+            save_figure(fig, outdir / suffix, dpi=args.dpi)
 
 
 if __name__ == "__main__":
