@@ -231,23 +231,32 @@ phi_i = 2 u_s min(cond(A), kappa_inf(A) mu_i)   +   u_s ||E_i||_inf
 | `ferr_ref` | `‖x_ref − x_i‖_∞ / ‖x_ref‖_∞` — forward error **relative to the reference solution**, not a certified forward error |
 | `rho` | `ferr_ref[i+1] / ferr_ref[i]`, the contraction actually observed |
 | `mu_hat` | `‖A(x_ref − x_i)‖_∞ / (‖A‖_∞ ‖x_ref − x_i‖_∞)` — small exactly when the error points along directions `A` damps, which is what lets refinement work past the plain bound |
-| `phi_cond_hat` | `2 u_s kappa_inf(A) mu_hat` |
+| `phi_cond_hat` | `2 u_s min(cond(A), kappa_inf(A) mu_hat)`, with `cond(A) = ‖|A⁻¹||A|‖_∞` read from the condition-est file's `cond_skeel` column |
+| `phi_cond_binding` | which half of that `min` was taken, `cond` or `kappa_mu`; `cond` means `mu_hat` bought nothing this step |
 | `phi_solve_hat` | `‖d_i − d_i^ref‖_∞ / ‖d_i^ref‖_∞`, against a reference solve of the *same* retained residual |
 | `phi_hat` | `phi_cond_hat + phi_solve_hat`, the estimate of Corollary 3.3's `phi_i` |
 
 `u_s` is `u_f` for LU-IR and `u` for GMRES-IR — the whole reason GMRES-IR
 tolerates condition numbers LU-IR cannot.
 
-Three honest caveats, all visible in the output rather than hidden:
+Four honest caveats, all visible in the output rather than hidden:
 
 - **Everything here is an estimate.** `x_ref` is a numerical reference
   solution, not the exact one, so `ferr_ref` and everything derived from it
   inherit its error. Its own backward error is printed and saved
   (`reference_nbe`) so the floor is visible.
-- **`phi_cond` drops the `min` against `cond(A)`.** `cond(A) = ‖|A⁻¹||A|‖_∞`
-  needs the inverse and isn't among the condition-est pipeline's outputs.
-  Dropping the `min` can only overstate `phi_cond` — conservative, and
-  recorded per row as `phi_cond_form`.
+- **`phi_cond` takes the `min` only over what the condition-est file holds.**
+  Both halves are bounds on the same quantity, so the smaller is the one the
+  Corollary asserts. `cond(A)` comes from `cond_skeel`, added to
+  `condition_est.py` later than `cond_inf`; a file written before then has only
+  the `kappa_inf(A) mu_hat` half, and `mu_hat` itself is undefined once the
+  error reaches zero. Dropping either half can only overstate `phi_cond`, so a
+  partial estimate stays conservative, and `phi_cond_form` records per row
+  which form was actually evaluated.
+- **`cond(A, x)` is not part of `phi_cond`.** `cond_skeel_x` bounds the
+  *limiting accuracy* refinement can reach, about `cond(A, x) u`, not the rate
+  at which it gets there. It is carried in the `runs` table so a figure can
+  draw that floor beside `ferr_ref`.
 - **`phi_solve` is directional**, not the worst case. It measures
   `u_s ‖E_i d_i‖/‖d_i‖`, the error along the direction the correction actually
   took, which is a lower estimate of the worst-case `u_s ‖E_i‖_∞` the
@@ -297,7 +306,8 @@ and energy grid.
 
 ```
 idx, energy, n, nnz, n_rhs, n_blocks, solver, factor_dtype, inner, variant,
-is_refined, u_f, u, u_s, kappa_2, kappa_inf, lu_ir_bound,
+is_refined, u_f, u, u_s, kappa_2, kappa_inf, cond_skeel, cond_skeel_x,
+lu_ir_bound,
 relres, ferr_ref, eta1, eta2, etainf, omega,
 outer_iters, converged, rho_max, psi_final, stop_reason,
 gmres_total, wall_s, factor_s, factor_symbolic_s, factor_numeric_s, inner_s,
@@ -336,7 +346,7 @@ These columns are what the companion cost study reads; see `mpcost.py` and
 ```
 idx, energy, n, nnz, solver, factor_dtype, inner, variant, outer_iteration,
 relres, residual_norm_inf, ferr_ref, rho, etainf, omega,
-mu_hat, phi_cond_hat, phi_solve_hat, phi_hat, phi_cond_form,
+mu_hat, phi_cond_hat, phi_solve_hat, phi_hat, phi_cond_binding, phi_cond_form,
 z, v, rho_max, phi_demmel, ferr_ratio,
 correction_norm_inf, reference_correction_norm_inf,
 gmres_inner_iterations, gmres_inner_max, note

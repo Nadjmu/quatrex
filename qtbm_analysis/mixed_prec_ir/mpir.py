@@ -134,7 +134,12 @@ experiments:
     phi_i = 2 u_s min(cond(A), kappa_inf(A) mu_i) + u_s ||E_i||_inf
 
 split into a conditioning term and a correction-solver term, together with the
-contraction actually observed. All of them are reconstructed after the run,
+contraction actually observed. Both halves of the min are evaluated:
+kappa_inf(A) and cond(A) = || |A^-1| |A| ||_inf come from the condition-est
+pipeline, as its cond_inf and cond_skeel columns, and mu_i from the iterates
+themselves, so the term is the Corollary's rather than an upper bound on it.
+Which of the two halves the min selected is recorded per step. All of them are
+reconstructed after the run,
 from the iterates, corrections and residuals the loop retained, and never
 inside it: the loop is timed and its memory is measured, so a diagnostic solve
 performed there would corrupt the figures the report exists to give. See

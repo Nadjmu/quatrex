@@ -42,6 +42,8 @@ Usage
     python run_benchmarks.py                  # all materials, one process
     python run_benchmarks.py --material si-bulk  # one material only
     python run_benchmarks.py --material si-bulk --exclude-solvers superlu
+    python run_benchmarks.py --material carbon-nanotube \
+        --solvers block-thomas-fp16 --stride 20   # add the fp16 factors
 
 Run each material as its own process (e.g. one `nohup ... &` per material) to
 keep them independent: a crash or OOM kill in one no longer takes the others
@@ -137,10 +139,13 @@ def load_sparse(g):
                          shape=shape)
 
 
-def run_material(material, h5path, solvers=SOLVERS):
+def run_material(material, h5path, solvers=SOLVERS, wanted=None):
     """
-    Benchmark every energy index of one material and append the results into
-    its HDF5 file. Returns the number of indices benchmarked.
+    Benchmark the requested energy indices of one material and append the
+    results into its HDF5 file. Returns the number of indices benchmarked.
+
+    `wanted`, if given, is the index list the selection flags resolved to; the
+    default is every index the file holds.
 
     M and rhs are loaded one index at a time, inside the loop, rather than for
     every index up front: a material's matrices held all at once can run into
@@ -153,10 +158,14 @@ def run_material(material, h5path, solvers=SOLVERS):
         energies = f["metadata/energies"][:]
         first_M = load_sparse(f[f"E_{indices[0]}/M"])
 
+    if wanted is not None:
+        wanted_set = set(wanted)
+        indices = [i for i in indices if i in wanted_set]
+
     idx_arr = np.array(indices)
     print(f"{material} | n_energies = {len(indices)} | E[-1] = {energies[-1]}")
-    if solvers != SOLVERS:
-        print(f"Solvers: {', '.join(solvers)} (--exclude-solvers applied)")
+    if tuple(solvers) != SOLVERS:
+        print(f"Solvers: {', '.join(solvers)}")
 
     bs = resolve_partition(material, first_M)
     print(f"Partition: {len(bs)} detected blocks, "
@@ -181,6 +190,15 @@ def main():
     parser.add_argument("--material", choices=sorted(MATERIAL_BS),
                         help="benchmark only this material, as its own "
                              "process (default: all, in one process)")
+    parser.add_argument("--solvers", nargs="+",
+                        choices=tuple(SOLVERS) + cli.FP16_SOLVERS,
+                        default=None, metavar="NAME",
+                        help="run exactly these solvers instead of the "
+                             "default set. The half-precision Block Thomas "
+                             "variants (block-thomas-fp16, "
+                             "block-thomas-inv-fp16) are only reachable this "
+                             "way; their NumPy kernels are too slow for a "
+                             "default full sweep, so pair them with --stride.")
     parser.add_argument("--exclude-solvers", nargs="+", choices=SOLVERS,
                         default=(), metavar="NAME",
                         help="drop these solvers for this invocation only, "
@@ -189,9 +207,11 @@ def main():
                              "already benchmarked with the full solver set "
                              "are unaffected; plot_speedup.py's baseline is "
                              "chosen at plot time and need not be superlu.")
+    cli.add_index_selection(parser, default_all=True)
     args = parser.parse_args()
     materials = [args.material] if args.material else MATERIAL_BS
-    solvers = tuple(s for s in SOLVERS if s not in args.exclude_solvers)
+    base = tuple(args.solvers) if args.solvers else SOLVERS
+    solvers = tuple(s for s in base if s not in args.exclude_solvers)
 
     for material in materials:
         print("=" * 80)
@@ -203,7 +223,10 @@ def main():
             print(f"Warning: {h5path} not found, skipping.")
             continue
 
-        count = run_material(material, h5path, solvers=solvers)
+        with h5py.File(h5path, "r") as f:
+            wanted = cli.resolve_indices(parser, args, cli.available_indices(f))
+
+        count = run_material(material, h5path, solvers=solvers, wanted=wanted)
         print(f"Finished {material}: appended solver results for {count} "
               f"indices into {h5path}")
         print(f"Plot with: python ../plotting/block-thomas/plot_speedup.py {h5path}\n")

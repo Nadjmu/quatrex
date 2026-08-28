@@ -269,7 +269,8 @@ phi_i = 2 u_s min(cond(A), kappa_inf(A) mu_i)  +  u_s ‖E_i‖_inf
 | `ferr_ref` | `‖x_ref − x_i‖_∞ / ‖x_ref‖_∞`, the forward error **relative to the reference solution**; not a certified forward error |
 | `rho` | `ferr_ref[i+1] / ferr_ref[i]`, the contraction actually observed |
 | `mu_hat` | `‖A(x_ref − x_i)‖_∞ / (‖A‖_∞ ‖x_ref − x_i‖_∞)`; small exactly when the error points along the directions `A` damps, which is what lets refinement converge past the plain bound |
-| `phi_cond_hat` | `2 u_s kappa_inf(A) mu_hat` |
+| `phi_cond_hat` | `2 u_s min(cond(A), kappa_inf(A) mu_hat)`, with `cond(A) = ‖|A⁻¹||A|‖_∞` read from the condition-est file's `cond_skeel` column |
+| `phi_cond_binding` | which half of that `min` was taken, `cond` or `kappa_mu`; `cond` means `mu_hat` bought nothing this step |
 | `phi_solve_hat` | `‖d_i − d_i^ref‖_∞ / ‖d_i^ref‖_∞`, against a reference solve of the *same* retained residual |
 | `phi_hat` | their sum, the estimate of the Corollary's `phi_i` |
 
@@ -278,15 +279,24 @@ whose correction is whatever the low-precision factors return, and `u` for
 GMRES-IR, whose inner solve runs at the working precision. That difference is
 the whole reason GMRES-IR tolerates condition numbers LU-IR cannot.
 
-Three honest caveats, all recorded in the output rather than hidden:
+Four honest caveats, all recorded in the output rather than hidden:
 
 - **Everything is an estimate.** `x_ref` is a numerical reference, not the
   exact solution, so `ferr_ref` and everything derived from it inherit its
   error. Its own backward error is reported so the floor is visible.
-- **`phi_cond` drops the `min` against `cond(A)`.** `cond(A) = ‖|A⁻¹||A|‖_∞`
-  needs the inverse and is not among the condition-est pipeline's outputs.
-  Dropping the `min` can only overstate `phi_cond`, so the estimate is
-  conservative; the form used is recorded per row as `phi_cond_form`.
+- **`phi_cond` takes the `min` only over what the condition-est file holds.**
+  Both halves bound the same quantity, `‖|A⁻¹||A||e_i|‖_∞ / ‖e_i‖_∞`: the left
+  one worst-case over the direction of the error, the right one along the
+  direction this step's error actually took. `cond(A)` comes from
+  `cond_skeel`, which `condition_est.py` gained after `cond_inf`, so a file
+  written before then carries only the `kappa_inf(A) mu_hat` half; `mu_hat` is
+  in turn undefined once the error reaches zero. Dropping either half can only
+  overstate `phi_cond`, so a partial estimate stays conservative, and
+  `phi_cond_form` records per row which form was evaluated.
+- **`cond(A, x)` is not part of `phi_cond`.** `cond_skeel_x` bounds the
+  *limiting accuracy* refinement can reach, roughly `cond(A, x) u`, not the
+  rate at which it gets there. It is carried in the `runs` table instead, so a
+  figure can draw that floor beside `ferr_ref`.
 - **`phi_solve` is directional.** Under `d̂ = (I + u_s E) d` it measures
   `u_s ‖E_i d_i‖/‖d_i‖`, the error along the direction the correction actually
   took, not the worst case `u_s ‖E_i‖_∞` the Corollary bounds with. It is
@@ -461,7 +471,7 @@ performs outer steps, so only it appears in `iterations`.
 **`runs`** — what each variant achieved and what it cost:
 `idx`, `energy`, `n`, `nnz`, `n_rhs`, `n_blocks`, `solver`, `factor_dtype`,
 `inner`, `variant`, `is_refined`, `u_f`, `u`, `u_s`, `kappa_2`, `kappa_inf`,
-`lu_ir_bound`, `relres`, `ferr_ref`, `eta1`, `eta2`, `etainf`, `omega`,
+`cond_skeel`, `cond_skeel_x`, `lu_ir_bound`, `relres`, `ferr_ref`, `eta1`, `eta2`, `etainf`, `omega`,
 `outer_iters`, `converged`, `rho_max`, `psi_final`, `stop_reason`,
 `gmres_total`, `wall_s`, `factor_s`, `factor_symbolic_s`, `factor_numeric_s`,
 `inner_s`, `solve_s`, `residual_s`, `other_s`, `n_solves`, `factor_mb`,
@@ -495,7 +505,8 @@ rather than draw the zero.
 **`iterations`** — the convergence trajectory and the quantities Corollary 3.3
 is stated in: `outer_iteration`, `relres`, `residual_norm_inf`, `ferr_ref`,
 `rho`, `etainf`, `omega`, `mu_hat`, `phi_cond_hat`, `phi_solve_hat`,
-`phi_hat`, `phi_cond_form`, `z`, `v`, `rho_max`, `phi_demmel`, `ferr_ratio`,
+`phi_hat`, `phi_cond_binding`, `phi_cond_form`, `z`, `v`, `rho_max`,
+`phi_demmel`, `ferr_ratio`,
 `correction_norm_inf`, `reference_correction_norm_inf`,
 `gmres_inner_iterations`, `gmres_inner_max`, `note`, alongside the same
 identifying columns.
