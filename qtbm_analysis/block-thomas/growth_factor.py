@@ -644,12 +644,21 @@ def process_index(f, idx, solvers, dtypes, records, with_schur=True):
                 print(f"    {solver} / {dt}: FAILED ({type(exc).__name__}: {exc})")
                 continue
 
+            # The half-precision factors are stored as a complex32 child of the
+            # complex Block Thomas group, so this loop reads them under the
+            # solver name "block-thomas". forward_error.py records the same
+            # rows under "block-thomas-fp16", the canonical name of the
+            # half-precision variant; match that here so the two analysis
+            # groups join on (idx, solver, dtype).
+            stored = (f"{solver}-fp16"
+                      if dt == "complex32" and solver in BLOCK_VARIANTS
+                      else solver)
             per_key[(solver, dt)] = res
             profiles = schur.pop(PROFILE_KEY, {})
-            print(_fmt_block(solver, dt, res, schur))
+            print(_fmt_block(stored, dt, res, schur))
             for label in NORMS:
                 r = res[label]
-                records.append(dict(idx=idx, solver=solver, dtype=dt, norm=label,
+                records.append(dict(idx=idx, solver=stored, dtype=dt, norm=label,
                                     nA=r["nA"], nL=r["nL"], nU=r["nU"],
                                     prod=r["prod"], LU_abs=r["LU_abs"],
                                     rho=r["rho"], loose=r["loose"],

@@ -84,7 +84,7 @@ GROUP = "forward_error"
 # Block Thomas (inv) is left out by default: its explicit-inversion instability
 # at the band edges (omega -> O(1) at complex64) dwarfs every other curve and
 # hides the LU variant drawn beneath it. --solvers puts it back.
-DEFAULT_EXCLUDE = ("block-thomas-inv",)
+DEFAULT_EXCLUDE = ("block-thomas-inv", "block-thomas-inv-fp16")
 
 # Unit roundoff u = 2^-(p+1) for a precision with p bits of mantissa.
 UNIT_ROUNDOFF = {

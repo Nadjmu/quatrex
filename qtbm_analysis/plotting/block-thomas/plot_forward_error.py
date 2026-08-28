@@ -93,7 +93,7 @@ DTYPE_ORDER = ("complex32", "complex64", "complex128")
 
 # Block Thomas (inv) is left out by default: its explicit-inversion instability
 # at the band edges dwarfs every other curve. --solvers puts it back.
-DEFAULT_EXCLUDE = ("block-thomas-inv",)
+DEFAULT_EXCLUDE = ("block-thomas-inv", "block-thomas-inv-fp16")
 
 
 def read_records(h5path):

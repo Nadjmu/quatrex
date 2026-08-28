@@ -633,13 +633,16 @@ def main():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap, help=f"analysis file written by "
                               f"block-thomas/growth_factor.py, group {GROUP}")
-    cli.add_solver_selection(ap, choices=cli.FACTOR_SOLVERS, default=None,
+    cli.add_solver_selection(ap,
+                             choices=cli.FACTOR_SOLVERS + cli.FP16_SOLVERS,
+                             default=None,
                              help="restrict to these solvers (default: "
                                   f"{', '.join(DEFAULT_SOLVERS)}; UMFPACK and "
                                   "block-thomas-inv are excluded by default, "
                                   "the first for its row scaling, the second "
                                   "as a duplicate of the block-thomas Schur "
-                                  "recursion)")
+                                  "recursion. Pass block-thomas-fp16 to draw "
+                                  "the half-precision variant)")
     cli.add_dtypes(ap, choices=cli.COMPLEX_DTYPES, default=None,
                    help="restrict to these precisions "
                         "(default: all present in the file)")
