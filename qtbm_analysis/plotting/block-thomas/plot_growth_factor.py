@@ -45,9 +45,9 @@ rounding -- so the dashed line sits under the solid one; the two separate only
 in panel 2, which is a roundoff quantity.
 
 A second figure splits that ratio into the two factors it is made of, for the
-Block Thomas variants: ||U|| / ||A_eff|| and max_k ||L_k|| with
-L_k = A_{k+1,k} S_k^-1. Their product is the ratio panel 1 bounds, and the
-figure says which half is responsible. The second is the term scalar partial
+Block Thomas variants: max_k ||L_k|| with L_k = A_{k+1,k} S_k^-1, and
+||U|| / ||A_eff||. Their product is the ratio panel 1 bounds, and the figure
+says which half is responsible. The second is the term scalar partial
 pivoting does not have, since it bounds |L_ij| <= 1 by construction and block
 Thomas cannot. See plot_schur.
 
@@ -227,14 +227,14 @@ def plot_schur(records, attrs, material, out_path):
     (column) sum of |L| is one identity entry plus the corresponding row
     (column) sum of one L_k.
 
-    Panel 1, ||U|| / ||A_eff||. The U side. It carries the Schur complements
-    S_k, so this is where growth in the recursion shows up.
+    Panel 1, max_k ||L_k||. The L side, and usually the dominant one, so it is
+    drawn first. Scalar LU with partial pivoting has |L_ij| <= 1 by
+    construction and therefore no such term; block Thomas pivots only inside a
+    diagonal block, cannot bound its block multipliers, and picks this up as a
+    second and independent source of instability.
 
-    Panel 2, max_k ||L_k||. The L side, and usually the dominant one. Scalar LU
-    with partial pivoting has |L_ij| <= 1 by construction and therefore no such
-    term; block Thomas pivots only inside a diagonal block, cannot bound its
-    block multipliers, and picks this up as a second and independent source of
-    instability.
+    Panel 2, ||U|| / ||A_eff||. The U side. It carries the Schur complements
+    S_k, so this is where growth in the recursion shows up.
 
     max_k ||S_k|| ||S_k^-1|| is deliberately not drawn. It is a surrogate for
     max_k ||L_k||, exact only when ||A_{k+1,k}|| = ||S_k||, and it is scale
@@ -258,7 +258,7 @@ def plot_schur(records, attrs, material, out_path):
         return False
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.8), squeeze=False)
-    ax_u, ax_l = axes[0]
+    ax_l, ax_u = axes[0]
     have_energy = energies_of(attrs, [0]) is not None
     solvers_present, dtypes_present = set(), set()
 
@@ -294,7 +294,7 @@ def plot_schur(records, attrs, material, out_path):
                    f"$L_k = A_{{k+1,k}} S_k^{{-1}}$  [{norm}]")
     ax_l.set_ylabel(r"$\max_k \|L_k\|$")
 
-    for ax in (ax_u, ax_l):
+    for ax in (ax_l, ax_u):
         ax.set_xlabel(axis_label(have_energy))
         ax.grid(True, which="both", ls=":", alpha=0.4)
         if have_energy:
