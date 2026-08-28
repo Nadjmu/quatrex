@@ -44,10 +44,12 @@ coincide almost exactly -- factor growth is precision-independent up to
 rounding -- so the dashed line sits under the solid one; the two separate only
 in panel 2, which is a roundoff quantity.
 
-A second figure carries the Schur-complement recursion of the two Block Thomas
-variants: the block growth max_k ||S_k|| / max_k ||A_kk|| and the pivot
-conditioning max_k kappa_2(S_k). These are what the scalar growth factor cannot
-see, and are drawn only when the analysis file carries them; see plot_schur.
+A second figure splits that ratio into the two factors it is made of, for the
+Block Thomas variants: ||U|| / ||A_eff|| and max_k ||L_k|| with
+L_k = A_{k+1,k} S_k^-1. Their product is the ratio panel 1 bounds, and the
+figure says which half is responsible. The second is the term scalar partial
+pivoting does not have, since it bounds |L_ij| <= 1 by construction and block
+Thomas cannot. See plot_schur.
 
 UMFPACK and block-thomas-inv are excluded by default. UMFPACK factorizes A
 with its rows rescaled, so its ratios are measured against a different A_eff
@@ -57,8 +59,8 @@ adds either back.
 
 Only the infinity norm is drawn by default. The 1-norm carries the same
 conclusion for these matrices and merely doubles the figure height; --norms
-restores it when a specific reason to compare the two arises. The Schur columns
-are 2-norm quantities and are unaffected either way.
+restores it when a specific reason to compare the two arises. The second figure
+follows whichever norm is drawn first, since its identity holds in both.
 
 The legend is shared across both panels and placed below the figure: one colour
 per solver, one line style per precision.
@@ -199,36 +201,49 @@ def plot(records, attrs, material, norms, out_path):
 
 
 # ---------------------------------------------------------------------------
-# Schur-complement recursion, Block Thomas only
+# The two factors of the growth ratio, Block Thomas only
 # ---------------------------------------------------------------------------
-SCHUR_COLUMNS = ("schur_growth", "schur_cond_max")
+SCHUR_COLUMNS = ("nA", "nL", "nU")
 
 
 def plot_schur(records, attrs, material, out_path):
     """
-    Block growth and pivot conditioning of the Schur-complement recursion, for
-    the Block Thomas variants.
+    The two factors that make up the growth ratio, for the Block Thomas
+    variants.
 
-    These are the quantities the scalar growth factor cannot see. Block LU
-    pivots only inside a diagonal block, so its backward error is governed by
-    the recursion S_k = A_kk - A_{k,k-1} S_{k-1}^-1 A_{k-1,k}: by how much the
-    blocks grew (panel 1) and by how well conditioned the pivot blocks stayed
-    (panel 2). Every step solves systems with S_k as the coefficient matrix --
-    to form the next Schur complement and in the substitution phase -- and such
-    a solve loses kappa_2(S_k) u relative accuracy, so the block LU backward
-    error carries max_k kappa_2(S_k) as a factor that scalar partial pivoting
-    does not have. Both variants share S_k exactly, so the curves coincide; the
-    inverse-based variant's extra error from forming S_k^-1 explicitly is not
-    analysed here.
+    The backward error of a block LU is governed by ||L|| ||U|| / ||A||, and
+    the point of this figure is to say which of the two halves is responsible.
+    Block Thomas produces
 
-    kappa_2(S_k) is computed by an SVD per block. The block size is fixed by
-    the material, not by the matrix size, so this is one SVD of a modest dense
-    block per layer and stays linear in the number of blocks; a production code
-    would use a 1-norm condition estimate on the pivot-block LU instead.
+        U = block-bidiagonal(S_k ;   A_{k,k+1})
+        L = block-bidiagonal(I   ;   L_k = A_{k+1,k} S_k^-1)
 
-    The values are 2-norm quantities and are stored on every norm row, so one
-    norm is selected to avoid drawing each series twice. Returns False when the
-    file predates these columns.
+    so the ratio splits as
+
+        ||L|| ||U|| / ||A||  =  (1 + max_k ||L_k||) * (||U|| / ||A||)
+
+    the second identity being exact for both the 1-norm and the infinity norm,
+    since L is block bidiagonal with the identity on its diagonal: every row
+    (column) sum of |L| is one identity entry plus the corresponding row
+    (column) sum of one L_k.
+
+    Panel 1, ||U|| / ||A_eff||. The U side. It carries the Schur complements
+    S_k, so this is where growth in the recursion shows up.
+
+    Panel 2, max_k ||L_k||. The L side, and usually the dominant one. Scalar LU
+    with partial pivoting has |L_ij| <= 1 by construction and therefore no such
+    term; block Thomas pivots only inside a diagonal block, cannot bound its
+    block multipliers, and picks this up as a second and independent source of
+    instability.
+
+    max_k ||S_k|| ||S_k^-1|| is deliberately not drawn. It is a surrogate for
+    max_k ||L_k||, exact only when ||A_{k+1,k}|| = ||S_k||, and it is scale
+    invariant: a Schur complement that collapses in norm -- the actual failure
+    mode near a band edge -- leaves kappa unchanged while ||L_k|| explodes. The
+    growth_factor group still records it as schur_cond_max.
+
+    One norm is selected so that each series is drawn once. Returns False when
+    the file lacks the columns.
     """
     present_norms = {r["norm"] for r in records}
     norm = "inf-norm" if "inf-norm" in present_norms else sorted(present_norms)[0]
@@ -243,7 +258,7 @@ def plot_schur(records, attrs, material, out_path):
         return False
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.8), squeeze=False)
-    ax_growth, ax_cond = axes[0]
+    ax_u, ax_l = axes[0]
     have_energy = energies_of(attrs, [0]) is not None
     solvers_present, dtypes_present = set(), set()
 
@@ -259,19 +274,27 @@ def plot_schur(records, attrs, material, out_path):
         _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
         prim = sweep_line(len(rows), "primary")
 
-        growth = np.asarray([r["schur_growth"] for r in rows], dtype=float)
-        cond = np.asarray([r["schur_cond_max"] for r in rows], dtype=float)
-        xg, gg, cg = split_gaps(indices, x, growth, cond)
-        ax_growth.semilogy(xg, gg, ls, color=colour, **prim)
-        ax_cond.semilogy(xg, cg, ls, color=colour, **prim)
+        nA = np.asarray([r["nA"] for r in rows], dtype=float)
+        nL = np.asarray([r["nL"] for r in rows], dtype=float)
+        nU = np.asarray([r["nU"] for r in rows], dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            u_ratio = np.where(nA > 0, nU / nA, np.nan)
+        # ||L|| = 1 + max_k ||L_k|| exactly for a block-bidiagonal L with the
+        # identity on its diagonal, in the 1-norm and the infinity norm alike.
+        multiplier = np.where(nL > 1.0, nL - 1.0, np.nan)
 
-    ax_growth.set_title(r"block growth  "
-                        r"$\max_k \|S_k\|_2 / \max_k \|A_{kk}\|_2$")
-    ax_growth.set_ylabel("block growth")
-    ax_cond.set_title(r"pivot conditioning  $\max_k \kappa_2(S_k)$")
-    ax_cond.set_ylabel(r"$\kappa_2(S_k)$")
+        xg, ug, mg = split_gaps(indices, x, u_ratio, multiplier)
+        ax_u.semilogy(xg, ug, ls, color=colour, **prim)
+        ax_l.semilogy(xg, mg, ls, color=colour, **prim)
 
-    for ax in (ax_growth, ax_cond):
+    ax_u.set_title(f"$U$ factor  $\\|U\\| / \\|A_{{\\mathrm{{eff}}}}\\|$  "
+                   f"[{norm}]")
+    ax_u.set_ylabel(r"$\|U\| / \|A_{\mathrm{eff}}\|$")
+    ax_l.set_title(f"$L$ factor  $\\max_k \\|L_k\\|$,  "
+                   f"$L_k = A_{{k+1,k}} S_k^{{-1}}$  [{norm}]")
+    ax_l.set_ylabel(r"$\max_k \|L_k\|$")
+
+    for ax in (ax_u, ax_l):
         ax.set_xlabel(axis_label(have_energy))
         ax.grid(True, which="both", ls=":", alpha=0.4)
         if have_energy:
@@ -281,7 +304,8 @@ def plot_schur(records, attrs, material, out_path):
     dtypes = _ordered(dtypes_present, DTYPE_STYLE)
     handles, labels = legend_handles(solvers, dtypes)
 
-    fig.suptitle(f"Block Thomas: Schur-complement recursion — {material}",
+    fig.suptitle(f"Block Thomas: the two factors of "
+                 f"$\\|L\\|\\,\\|U\\| / \\|A\\|$ — {material}",
                  fontsize=14, y=1.01)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
@@ -332,8 +356,8 @@ def main():
 
     if not plot_schur(records, attrs, material,
                       outdir / f"{material}_schur_growth.png"):
-        print("no Schur columns in this file; rerun growth_factor.py without "
-              "--no-schur for the Schur figure")
+        print("no Block Thomas rows in this file; the factor-split figure "
+              "needs at least one")
 
 
 if __name__ == "__main__":

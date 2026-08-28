@@ -14,6 +14,11 @@ analysis file, one file per material:
     cond_skeel_x  (P,)  || |M^-1| |M| |x| ||_inf / ||x||_inf, estimated
     cond_2        (P,)  sigma_max / sigma_min
 
+Where the same file also holds the ``condition_exact`` group written by
+``condition-est/exact_condition.py``, its columns are drawn over the curves as
+hollow markers: the exact value of the same quantity, at the handful of indices
+it was run on.
+
 With no path given, every material in --materials is read from --outdir.
 
 Algorithm
@@ -47,6 +52,12 @@ Sigma(E) is nearly complex symmetric, so the two coincide to far better than
 the factor of n that holds for a general matrix. The column is still written by
 condition_est.py, where it verifies that the trans="N" and trans="H" solves
 agree; it carries no information a figure can show.
+
+The reference markers are the only reading of estimator quality the figure
+offers. Every estimated curve is a lower bound, so a marker lies on or above
+its curve; the vertical distance is the slack of the norm estimator at that
+index, and it is reported numerically on stdout as well. A marker below its
+curve would indicate a fault, not slack.
 
 cond_skeel_x depends on the right-hand side and is therefore a property of
 (M, x) rather than of M(E) alone. It is NaN at indices whose rhs has no
@@ -86,6 +97,7 @@ import cli
 from style import axis_label, energies_of, mark_band_edges, save_figure, sweep_line
 
 GROUP = "condition"
+EXACT_GROUP = "condition_exact"
 
 # Infinity-norm figure: the three nested quantities, listed loosest first so that
 # the legend order matches the vertical order of the curves. Colours are
@@ -104,6 +116,18 @@ KAPPA2_STYLE = {
 }
 
 ALL_DATASETS = tuple(LADDER_STYLE) + tuple(KAPPA2_STYLE)
+
+# The reference points exact_condition.py writes, mapped onto the estimated
+# curve each one is the reference for. Drawn as markers in the curve's own
+# colour: the pair is a value and its exact counterpart, not two quantities, so
+# a second colour would misrepresent them. Hollow, so a marker sitting on the
+# curve still shows the curve through it.
+EXACT_OF = {
+    "cond_inf": ("cond_inf_exact", "o"),
+    "cond_skeel": ("cond_skeel_exact", "s"),
+    "cond_skeel_x": ("cond_skeel_x_exact", "^"),
+    "cond_2": ("cond_2_exact", "D"),
+}
 
 DEFAULT_MATERIALS = ("carbon-nanotube", "carbon-chain", "si-bulk", "graphene")
 
@@ -140,6 +164,61 @@ def load_curves(h5path):
     return x, curves, attrs, have_energy
 
 
+def load_exact(h5path):
+    """
+    The reference points of one material, or (None, {}) where the file has no
+    condition_exact group.
+
+    exact_condition.py is run on a handful of indices rather than on the sweep,
+    so these are scattered points and never a curve. Returns (x, points) with x
+    on the same axis load_curves() produced.
+    """
+    with h5py.File(h5path, "r") as f:
+        if EXACT_GROUP not in f:
+            return None, {}
+        group = f[EXACT_GROUP]
+        attrs = dict(group.attrs)
+        valid = group["valid"][:]
+        indices = group["indices"][:][valid]
+        points = {name: group[name][:][valid]
+                  for _, (name, _m) in EXACT_OF.items() if name in group}
+
+    if indices.size == 0:
+        return None, {}
+
+    energies = energies_of(attrs, indices)
+    x = energies if energies is not None else indices.astype(float)
+    return x, points
+
+
+def estimator_slack(curves, x_curve, x_exact, points):
+    """
+    {column: (n_points, worst ratio estimate/exact)} at the indices where both
+    a curve and a reference point exist.
+
+    The estimator returns a lower bound, so the ratio is at most 1 and the
+    distance below it is the slack. Reported on stdout only; the figure shows
+    the points themselves and computes nothing.
+    """
+    if x_exact is None:
+        return {}
+    out = {}
+    for column, (exact_name, _marker) in EXACT_OF.items():
+        if column not in curves or exact_name not in points:
+            continue
+        matched = []
+        for value_exact, position in zip(points[exact_name], x_exact):
+            if not np.isfinite(value_exact) or value_exact <= 0:
+                continue
+            nearest = int(np.argmin(np.abs(x_curve - position)))
+            value_est = curves[column][nearest]
+            if np.isfinite(value_est) and value_est > 0:
+                matched.append(value_est / value_exact)
+        if matched:
+            out[column] = (len(matched), float(np.min(matched)))
+    return out
+
+
 def scaling_headroom(curves):
     """
     Median of kappa_inf / cond_skeel over the rows where both are finite, or
@@ -159,9 +238,21 @@ def scaling_headroom(curves):
     return float(np.median(top[usable] / bottom[usable]))
 
 
-def draw_panel(ax, x, curves, styles, attrs, have_energy, title, ylabel):
-    """One panel: the curves of `styles` present in `curves`, on a log y axis."""
+def draw_panel(ax, x, curves, styles, attrs, have_energy, title, ylabel,
+               x_exact=None, points=None):
+    """
+    One panel: the curves of `styles` present in `curves`, on a log y axis,
+    with the exact reference points of `points` over them where those exist.
+
+    A reference marker is drawn in its curve's own colour, since the two are
+    the same quantity estimated and computed. It is hollow and drawn on top, so
+    a marker that sits on the curve does not hide it -- which is the reading
+    the figure is there to support: the estimator is a lower bound, so a marker
+    on the curve means no slack and a marker above it means the estimate is
+    low.
+    """
     drawn = 0
+    points = points or {}
     for name, (label, colour, linestyle) in styles.items():
         if name not in curves:
             continue
@@ -172,6 +263,17 @@ def draw_panel(ax, x, curves, styles, attrs, have_energy, title, ylabel):
         ax.plot(x[finite], y[finite], color=colour, ls=linestyle, label=label,
                 **sweep_line(int(np.count_nonzero(finite))))
         drawn += 1
+
+        exact_name, marker = EXACT_OF.get(name, (None, None))
+        if exact_name is None or x_exact is None or exact_name not in points:
+            continue
+        y_exact = points[exact_name]
+        ok = np.isfinite(y_exact) & (y_exact > 0)
+        if not np.any(ok):
+            continue
+        ax.plot(x_exact[ok], y_exact[ok], ls="none", marker=marker, ms=6,
+                mfc="none", mec=colour, mew=1.4, zorder=5,
+                label=f"{label}, exact")
 
     ax.set_yscale("log")
     ax.set_xlabel(axis_label(have_energy))
@@ -189,16 +291,20 @@ def draw_panel(ax, x, curves, styles, attrs, have_energy, title, ylabel):
     return drawn
 
 
-def draw_ladder(ax, x, curves, attrs, have_energy, title):
+def draw_ladder(ax, x, curves, attrs, have_energy, title,
+                x_exact=None, points=None):
     """The infinity-norm panel: cond_skeel_x <= cond_skeel <= kappa_inf."""
     return draw_panel(ax, x, curves, LADDER_STYLE, attrs, have_energy, title,
-                      r"$\kappa_\infty(M)$,  $\mathrm{cond}(M)$")
+                      r"$\kappa_\infty(M)$,  $\mathrm{cond}(M)$",
+                      x_exact=x_exact, points=points)
 
 
-def draw_kappa2(ax, x, curves, attrs, have_energy, title):
+def draw_kappa2(ax, x, curves, attrs, have_energy, title,
+                x_exact=None, points=None):
     """The 2-norm panel, drawn alone."""
     return draw_panel(ax, x, curves, KAPPA2_STYLE, attrs, have_energy, title,
-                      r"$\kappa_2(M)$")
+                      r"$\kappa_2(M)$",
+                      x_exact=x_exact, points=points)
 
 
 def main():
@@ -233,6 +339,7 @@ def main():
             print(f"[skip] {material}: {h5path} not found")
             continue
         x, curves, attrs, have_energy = load_curves(h5path)
+        x_exact, points = load_exact(h5path)
         n_loaded += 1
 
         missing = [name for name in ALL_DATASETS if name not in curves]
@@ -242,6 +349,17 @@ def main():
             print(f"[hint]  {material}: run condition_est.py --only-skeel "
                   f"to fill the Skeel columns of an existing sweep")
 
+        if x_exact is None:
+            print(f"[exact]   {material}: no {EXACT_GROUP} group; run "
+                  f"condition-est/exact_condition.py on a few indices to add "
+                  f"the reference points")
+        else:
+            print(f"[exact]   {material}: {len(x_exact)} reference indices")
+            for column, (count, worst) in estimator_slack(
+                    curves, x, x_exact, points).items():
+                print(f"[slack]   {material}: {column} estimate/exact over "
+                      f"{count} indices, worst {worst:.4f}")
+
         headroom = scaling_headroom(curves)
         if headroom is not None:
             print(f"[scaling] {material}: median kappa_inf / cond(M) = "
@@ -250,12 +368,14 @@ def main():
 
         fig, ax = plt.subplots(figsize=(7.5, 4.5), constrained_layout=True)
         draw_ladder(ax, x, curves, attrs, have_energy,
-                    f"Condition number of M(E), infinity norm: {material}")
+                    f"Condition number of M(E), infinity norm: {material}",
+                    x_exact=x_exact, points=points)
         save_figure(fig, outdir / f"{material}_condition.png", dpi=args.dpi)
 
         fig, ax = plt.subplots(figsize=(7.5, 4.5), constrained_layout=True)
         draw_kappa2(ax, x, curves, attrs, have_energy,
-                    f"Condition number of M(E), 2-norm: {material}")
+                    f"Condition number of M(E), 2-norm: {material}",
+                    x_exact=x_exact, points=points)
         save_figure(fig, outdir / f"{material}_condition_kappa2.png",
                     dpi=args.dpi)
 
