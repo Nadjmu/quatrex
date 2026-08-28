@@ -155,7 +155,7 @@ def plot(records, attrs, material, out_path):
         if u is not None:
             ax_omega.axhline(u, color="k", lw=1.0, ls="--")
 
-        ax_omega.set_title(f"{dtype_label}")
+        ax_omega.set_title(dtype_label)
         ax_eta.set_title("")
         for ax in (ax_omega, ax_eta):
             ax.set_xlabel(axis_label(have_energy))
@@ -163,17 +163,15 @@ def plot(records, attrs, material, out_path):
             if have_energy:
                 mark_band_edges(ax, attrs)
 
-    axes[0][0].set_ylabel(r"$\omega$  (componentwise backward error)")
-    axes[1][0].set_ylabel(r"$\eta_\infty$  (normwise — secondary, see"
-                          r" docstring)")
+    axes[0][0].set_ylabel(r"$\omega$")
+    axes[1][0].set_ylabel(r"$\eta_\infty$")
 
     handles, labels = legend_handles(
         solvers, [],
         extra=[(plt.Line2D([], [], color="k", lw=1.0, ls="--"),
                "unit roundoff u")])
 
-    fig.suptitle(f"Backward error, all solvers — {material}",
-                 fontsize=14, y=1.01)
+    fig.suptitle(material, fontsize=13, y=1.01)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 7),
               fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.05))

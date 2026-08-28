@@ -46,25 +46,27 @@ plotted: it watches the largest entry of U alone, is blind to L, and for block
 LU -- whose multipliers are not bounded by pivoting -- understates the growth
 Psi captures.
 
-The assembly residual ||A_eff - LU|| / ||A_eff|| is recorded as resid_rel and
-is no longer drawn. It is a correctness guard on the reconstruction rather than
-a stability metric: values far above the unit roundoff of the stored precision
-mean the assumed factor convention does not hold for the build that produced
-the file, and Psi must then be discarded. Check it in the per-index report
-growth_factor.py prints.
-
 complex64 and complex128 are both drawn (dashed and solid). They coincide
 almost exactly, since factor growth is precision-independent up to rounding, so
 the dashed line is hidden under the solid one.
 
-Figure 2 splits Psi into the two factors it is made of, ||L|| and
+Figure 2, the assembly residual ||A_eff - LU|| / ||A_eff||, same layout. This
+is a correctness guard on the reconstruction rather than a stability metric.
+Values near the unit roundoff of the stored precision mean the assembled
+factors do reproduce A_eff and Psi may be trusted; values far above it mean
+the assumed factor convention does not hold for the build that produced the
+file, and every figure drawn from those factors must be discarded. It is
+separate from figure 1 because it answers a different question. See
+plot_residual.
+
+Figure 3 splits Psi into the two factors it is made of, ||L|| and
 ||U|| / ||A_eff||, whose product is Psi exactly. It says which of the two
 halves is responsible. For block LU ||L|| = 1 + max_k ||L_k|| with
 L_k = A_{k+1,k} S_k^-1, and it is the term scalar partial pivoting does not
 have, since that bounds |L_ij| <= 1 by construction and block Thomas cannot.
 See plot_schur.
 
-Figure 3 puts the growth factor against the backward error it bounds.
+Figure 4 puts the growth factor against the backward error it bounds.
 Theorem 2.1 of Demmel, Higham and Schreiber gives, for a block LU solve,
 
     ||dA|| / ||A||  <=  c(n) u ( 1 + Psi ),    Psi = ||L|| ||U|| / ||A||
@@ -89,18 +91,21 @@ adds either back.
 
 Only the infinity norm is drawn by default. The 1-norm carries the same
 conclusion for these matrices and merely doubles the figure height; --norms
-restores it when a specific reason to compare the two arises. Figures 2 and 3
+restores it when a specific reason to compare the two arises. Figures 3 and 4
 follow whichever norm is drawn first, since their identities hold in both.
 
-Every legend is shared and placed below its figure: one colour per solver, one
-line style per precision.
+Panel titles carry the formula drawn and nothing else; the norm is appended to
+the y-label, and the precision is the column title where a figure has one
+column per precision. Every legend is shared and placed below its figure: one
+colour per solver, one line style per precision.
 
 Output
 ------
-Three figures, written to the analysis file's own directory by default so that
+Four figures, written to the analysis file's own directory by default so that
 each sits beside the data it was drawn from:
 
     <material>_growth_factor.png       Psi, one panel per norm drawn
+    <material>_assembly_residual.png   ||A_eff - LU|| / ||A_eff||, same layout
     <material>_schur_growth.png        the two factors of Psi, one norm
     <material>_backward_vs_growth.png  eta_inf as a fraction of the bound
 
@@ -189,14 +194,23 @@ def group_by_series(records, norm):
             for key, rows in sorted(grouped.items())}
 
 
-def plot(records, attrs, material, norms, out_path):
+def _sweep_figure(records, attrs, material, norms, out_path, column,
+                  title, ylabel):
+    """
+    One column of the growth_factor group against energy, one panel per norm.
+
+    `column` names the column to draw, `title` and `ylabel` its labels; the
+    norm is appended to `ylabel`, since the title carries the formula alone.
+    Shared by the factor-growth and assembly-residual figures, which differ in
+    nothing else.
+    """
     fig, axes = plt.subplots(len(norms), 1, figsize=(7.5, 4.8 * len(norms)),
                              squeeze=False)
     have_energy = energies_of(attrs, [0]) is not None
     solvers_present, dtypes_present = set(), set()
 
     for row_index, norm in enumerate(norms):
-        ax_ratio = axes[row_index][0]
+        ax = axes[row_index][0]
         series = group_by_series(records, norm)
 
         for (solver, dtype), rows in series.items():
@@ -208,31 +222,50 @@ def plot(records, attrs, material, norms, out_path):
                 x = indices
             _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
             _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
-            psi = np.asarray([r["loose"] for r in rows], dtype=float)
+            values = np.asarray([r[column] for r in rows], dtype=float)
             prim = sweep_line(len(rows), "primary")
 
-            xg, tg = split_gaps(indices, x, psi)
-            ax_ratio.semilogy(xg, tg, ls, color=colour, **prim)
+            xg, vg = split_gaps(indices, x, values)
+            ax.semilogy(xg, vg, ls, color=colour, **prim)
 
-        ax_ratio.set_title(f"factor growth  "
-                           f"$\\Psi = \\|L\\|\\,\\|U\\| / "
-                           f"\\|A_{{\\mathrm{{eff}}}}\\|$  [{norm}]")
-        ax_ratio.set_ylabel(r"$\Psi = \|L\|\,\|U\| / \|A_{\mathrm{eff}}\|$")
-        ax_ratio.set_xlabel(axis_label(have_energy))
-        ax_ratio.grid(True, which="both", ls=":", alpha=0.4)
+        ax.set_title(title)
+        ax.set_ylabel(f"{ylabel}  [{norm}]")
+        ax.set_xlabel(axis_label(have_energy))
+        ax.grid(True, which="both", ls=":", alpha=0.4)
         if have_energy:
-            mark_band_edges(ax_ratio, attrs, label=False)
+            mark_band_edges(ax, attrs, label=False)
 
     solvers = _ordered(solvers_present, SOLVER_STYLE)
     dtypes = _ordered(dtypes_present, DTYPE_STYLE)
     handles, labels = legend_handles(solvers, dtypes)
 
-    fig.suptitle(f"Factor growth — {material}", fontsize=14, y=1.005)
+    fig.suptitle(material, fontsize=13, y=1.005)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 5),
                fontsize=8, frameon=False,
                bbox_to_anchor=(0.5, -0.14 / len(norms)))
     save_figure(fig, out_path, dpi=140)
+
+
+def plot(records, attrs, material, norms, out_path):
+    """Psi = ||L|| ||U|| / ||A_eff||, the ratio Theorem 2.1 is stated with."""
+    _sweep_figure(records, attrs, material, norms, out_path, "loose",
+                  r"$\Psi = \|L\|\,\|U\| / \|A_{\mathrm{eff}}\|$", r"$\Psi$")
+
+
+def plot_residual(records, attrs, material, norms, out_path):
+    """
+    ||A_eff - LU|| / ||A_eff||, the reconstruction guard.
+
+    Not a stability metric. It verifies that the factor convention assumed by
+    growth_factor.py holds for the build that produced the file. Values near
+    the unit roundoff of the stored precision mean the assembled factors do
+    reproduce A_eff, and Psi may be trusted; values far above it mean they do
+    not, and every other figure drawn from those factors must be discarded.
+    """
+    _sweep_figure(records, attrs, material, norms, out_path, "resid_rel",
+                  r"$\|A_{\mathrm{eff}} - LU\| / \|A_{\mathrm{eff}}\|$",
+                  "relative residual")
 
 
 # ---------------------------------------------------------------------------
@@ -329,12 +362,10 @@ def plot_schur(records, attrs, material, out_path):
         ax_u.semilogy(xg, ug, ls, color=colour, **prim)
         ax_l.semilogy(xg, mg, ls, color=colour, **prim)
 
-    ax_u.set_title(f"$U$ factor  $\\|U\\| / \\|A_{{\\mathrm{{eff}}}}\\|$  "
-                   f"[{norm}]")
-    ax_u.set_ylabel(r"$\|U\| / \|A_{\mathrm{eff}}\|$")
-    ax_l.set_title(f"$L$ factor  $\\|L\\|$   "
-                   f"($= 1 + \\max_k \\|L_k\\|$ for block LU)  [{norm}]")
-    ax_l.set_ylabel(r"$\|L\|$")
+    ax_l.set_title(r"$\|L\|$")
+    ax_l.set_ylabel(f"$\\|L\\|$  [{norm}]")
+    ax_u.set_title(r"$\|U\| / \|A_{\mathrm{eff}}\|$")
+    ax_u.set_ylabel(f"$\\|U\\| / \\|A_{{\\mathrm{{eff}}}}\\|$  [{norm}]")
 
     for ax in (ax_l, ax_u):
         ax.set_xlabel(axis_label(have_energy))
@@ -346,9 +377,8 @@ def plot_schur(records, attrs, material, out_path):
     dtypes = _ordered(dtypes_present, DTYPE_STYLE)
     handles, labels = legend_handles(solvers, dtypes)
 
-    fig.suptitle(f"The two factors of $\\Psi = \\|L\\|\\,\\|U\\| / \\|A\\|$, "
-                 f"block LU against global pivoting — {material}",
-                 fontsize=14, y=1.01)
+    fig.suptitle(f"$\\Psi = \\|L\\| \\cdot \\|U\\| / \\|A\\|$  —  {material}",
+                 fontsize=13, y=1.01)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
                fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.12))
@@ -576,22 +606,22 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
             ax.semilogy(xg, rg, "-", color=colour, **prim)
 
         ax.axhline(1.0, color="k", lw=1.0, ls="--")
-        ax.set_title(f"[{dtype_label}, {norm}]")
+        ax.set_title(dtype_label)
         ax.set_xlabel(axis_label(have_energy))
         ax.grid(True, which="both", ls=":", alpha=0.4)
         if have_energy:
             mark_band_edges(ax, attrs, label=False)
 
-    axes[0][0].set_ylabel(r"$\eta_\infty \,/\, [\,u\,(1+\Psi)\,]$")
+    axes[0][0].set_ylabel(f"$\\eta_\\infty \\,/\\, [\\,u\\,(1+\\Psi)\\,]$  "
+                          f"[{norm}]")
 
     solvers = _ordered(solvers_present, SOLVER_STYLE)
     extra = [(plt.Line2D([], [], color="k", ls="--", lw=1.0),
               r"bound attained with $c(n)=1$")]
     handles, labels = legend_handles(solvers, [], extra=extra)
 
-    fig.suptitle(f"Normwise backward error as a fraction of "
-                 f"$u\\,(1+\\Psi)$, $\\Psi = \\|L\\|\\,\\|U\\| / \\|A\\|$ "
-                 f"— {material}", fontsize=14, y=1.02)
+    fig.suptitle(f"$\\eta_\\infty \\,/\\, [\\,u\\,(1+\\Psi)\\,]$  —  "
+                 f"{material}", fontsize=13, y=1.02)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 4),
                fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.08))
@@ -638,6 +668,8 @@ def main():
     norms = norms or sorted(present_norms)
     plot(records, attrs, material, norms,
          outdir / f"{material}_growth_factor.png")
+    plot_residual(records, attrs, material, norms,
+                  outdir / f"{material}_assembly_residual.png")
 
     if not plot_schur(records, attrs, material,
                       outdir / f"{material}_schur_growth.png"):

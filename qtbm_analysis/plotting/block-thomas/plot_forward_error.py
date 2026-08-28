@@ -176,13 +176,14 @@ def plot(records, attrs, material, out_path):
         if have_energy:
             mark_band_edges(ax_fwd, attrs)
 
-    axes[0][0].set_ylabel(r"forward error  $\|\hat{x}-x\|_\infty/\|x\|_\infty$")
+    axes[0][0].set_ylabel(r"$\|\hat{x}-x\|_\infty / \|x\|_\infty$")
 
     extra = [(Line2D([], [], color="k", ls="--", lw=1.0),
               r"reference floor $\kappa_\infty(A)\,\varepsilon_{\mathrm{ext}}$")]
     handles, labels = legend_handles(solvers, [], extra=extra)
 
-    fig.suptitle(f"Forward error — {material}", fontsize=14, y=1.02)
+    fig.suptitle(f"$\\|\\hat{{x}}-x\\|_\\infty / \\|x\\|_\\infty$  —  "
+                 f"{material}", fontsize=13, y=1.02)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
                fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.09))
@@ -247,14 +248,15 @@ def plot_ratios(records, attrs, material, out_path):
             if have_energy:
                 mark_band_edges(ax, attrs)
 
-    axes[0][0].set_ylabel(r"forward error / $\kappa_\infty(A)\,\eta_\infty$")
-    axes[1][0].set_ylabel(r"forward error / $\mathrm{cond}(A,x)\,\omega$")
+    axes[0][0].set_ylabel(r"$\frac{\|\hat{x}-x\|_\infty / \|x\|_\infty}"
+                          r"{\kappa_\infty(A)\,\eta_\infty}$", fontsize=16)
+    axes[1][0].set_ylabel(r"$\frac{\|\hat{x}-x\|_\infty / \|x\|_\infty}"
+                          r"{\mathrm{cond}(A,x)\,\omega}$", fontsize=16)
 
     extra = [(Line2D([], [], color="k", ls="--", lw=1.0), "bound attained")]
     handles, labels = legend_handles(solvers, [], extra=extra)
 
-    fig.suptitle(f"Forward error as a fraction of its bounds — {material}",
-                 fontsize=14, y=1.01)
+    fig.suptitle(material, fontsize=13, y=1.01)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
                fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.05))
