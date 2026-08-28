@@ -24,15 +24,28 @@ Algorithm
 No computation is performed. The recorded quantities are plotted per norm,
 two panels each.
 
-Panel 1, factor growth relative to A_eff. The entrywise bound
-|A - LU| <= gamma_n |L| |U| gives, in a monotone norm,
-||A - LU|| <= gamma_n || |L| |U| ||, so || |L| |U| || / ||A_eff|| is the
-quantity that enters the backward-error bound directly. That is the only ratio
-drawn. The looser ||L|| ||U|| / ||A_eff|| and the pivot growth factor
-rho = max|U| / max|A_eff| are recorded by growth_factor.py but not plotted: the
-first only over-estimates this one, and rho watches the largest entry of U
-alone, is blind to L, and for block LU -- whose multipliers are not bounded by
-pivoting -- understates the growth this ratio captures.
+Panel 1, factor growth relative to A_eff:
+
+    Psi = ||L|| ||U|| / ||A_eff||        the `loose` column.
+
+This is the ratio Theorem 2.1 of Demmel, Higham and Schreiber is stated with,
+and every other figure here is built on the same quantity, so one Psi runs
+through the whole set.
+
+The sharper `tight` = || |L| |U| || / ||A_eff|| is recorded by
+growth_factor.py but not plotted. It descends from the entrywise bound
+|A - LU| <= gamma_n |L| |U|, which is a point-LU result: it is proved by
+tracking each scalar multiply-and-subtract of Gaussian elimination. Block LU
+forms its Schur complements with block solves against S_k, whose error analysis
+is normwise and admits no entrywise counterpart, so for the Block Thomas
+factorization tight is a measurement of the assembled factors and not a
+quantity any theorem bounds the backward error by. It is smaller than Psi by a
+median factor of 2.2 on carbon-chain, so nothing is lost by drawing Psi.
+
+The pivot growth factor rho = max|U| / max|A_eff| is likewise recorded and not
+plotted: it watches the largest entry of U alone, is blind to L, and for block
+LU -- whose multipliers are not bounded by pivoting -- understates the growth
+Psi captures.
 
 Panel 2, assembly residual. This is a correctness guard on the reconstruction,
 not a stability metric: values far above the unit roundoff of the stored
@@ -44,12 +57,12 @@ coincide almost exactly -- factor growth is precision-independent up to
 rounding -- so the dashed line sits under the solid one; the two separate only
 in panel 2, which is a roundoff quantity.
 
-A second figure splits that ratio into the two factors it is made of, for the
-Block Thomas variants: max_k ||L_k|| with L_k = A_{k+1,k} S_k^-1, and
-||U|| / ||A_eff||. Their product is the ratio panel 1 bounds, and the figure
-says which half is responsible. The second is the term scalar partial
-pivoting does not have, since it bounds |L_ij| <= 1 by construction and block
-Thomas cannot. See plot_schur.
+A second figure splits Psi into the two factors it is made of, ||L|| and
+||U|| / ||A_eff||, whose product is Psi exactly. It says which of the two
+halves is responsible. For block LU ||L|| = 1 + max_k ||L_k|| with
+L_k = A_{k+1,k} S_k^-1, and it is the term scalar partial pivoting does not
+have, since that bounds |L_ij| <= 1 by construction and block Thomas cannot.
+See plot_schur.
 
 A third figure draws ||L_k|| for every block k against energy as a heat map,
 so that the block in the recursion where the multipliers grow is located, not
@@ -58,14 +71,15 @@ only the fact that one of them does. See plot_profile.
 A fourth figure puts the growth factor against the backward error it bounds.
 Theorem 2.1 of Demmel, Higham and Schreiber gives, for a block LU solve,
 
-    omega  <=  c(n) u ( 1 + ||L|| ||U|| / ||A|| )
+    ||dA|| / ||A||  <=  c(n) u ( 1 + Psi ),    Psi = ||L|| ||U|| / ||A||
 
 with c(n) a low-degree polynomial. The figure draws the single ratio
-omega / [u (1 + tight)] against energy, one panel per precision, with a line at
-1. Where it is far below 1 the growth factor bounds the backward error but
-overestimates it; where it approaches 1 the bound is attained up to c(n). omega
-is read from the forward_error group of the same file, matched on (index,
-solver, precision). See plot_backward_vs_growth.
+omega / [u (1 + Psi)] against energy, one panel per precision, with a line at
+1. c(n) is left out of the denominator, so the ratio measures c(n) as much as
+the solver: 1e3 means the bound is attained with c(n) = 1e3, which for a matrix
+of a few thousand rows is still inside the theorem. omega is read from the
+forward_error group of the same file, matched on (index, solver, precision).
+See plot_backward_vs_growth.
 
 UMFPACK and block-thomas-inv are excluded by default. UMFPACK factorizes A
 with its rows rescaled, so its ratios are measured against a different A_eff
@@ -86,8 +100,8 @@ Output
 Four figures, written to the analysis file's own directory by default so that
 each sits beside the data it was drawn from:
 
-    <material>_growth_factor.png       one row of two panels per norm drawn
-    <material>_schur_growth.png        the L and U factors, one norm
+    <material>_growth_factor.png       Psi and the assembly residual, per norm
+    <material>_schur_growth.png        the two factors of Psi, one norm
     <material>_multiplier_profile.png  ||L_k|| per block, heat map
     <material>_backward_vs_growth.png  omega as a fraction of the bound
 
@@ -181,7 +195,7 @@ def plot(records, attrs, material, norms, out_path):
     for row_index, norm in enumerate(norms):
         ax_ratio, ax_resid = axes[row_index]
         series = group_by_series(records, norm)
-        tight_all = []
+        psi_all = []
 
         for (solver, dtype), rows in series.items():
             solvers_present.add(solver)
@@ -192,30 +206,30 @@ def plot(records, attrs, material, norms, out_path):
                 x = indices
             _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
             _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
-            tight = np.asarray([r["tight"] for r in rows], dtype=float)
+            psi = np.asarray([r["loose"] for r in rows], dtype=float)
             resid = np.asarray([r["resid_rel"] for r in rows], dtype=float)
-            tight_all.append(tight)
+            psi_all.append(psi)
             prim = sweep_line(len(rows), "primary")
 
-            xg, tg, rg = split_gaps(indices, x, tight, resid)
+            xg, tg, rg = split_gaps(indices, x, psi, resid)
             ax_ratio.semilogy(xg, tg, ls, color=colour, **prim)
             ax_resid.semilogy(xg, rg, ls, color=colour, **prim)
 
-        # A near-singular pivot block at a band edge sends the ratios over 1e6
+        # A near-singular pivot block at a band edge sends the ratio over 1e6
         # at a handful of indices and, drawn to scale, flattens the plateau
         # where the solvers actually differ. Cap the axis just above the bulk
-        # of the tight ratios; the excursions clip and the Schur figure
-        # carries them.
-        bulk = np.concatenate(tight_all) if tight_all else np.array([1.0])
+        # of Psi; the excursions clip and the Schur figure carries them.
+        bulk = np.concatenate(psi_all) if psi_all else np.array([1.0])
         bulk = bulk[np.isfinite(bulk) & (bulk > 0)]
         if bulk.size:
             top = 10.0 ** (np.ceil(np.log10(np.percentile(bulk, 95))) + 1)
             if np.nanmax(bulk) > top:
                 ax_ratio.set_ylim(top=top)
 
-        ax_ratio.set_title(f"factor growth relative to "
-                           f"$A_{{\\mathrm{{eff}}}}$  [{norm}]")
-        ax_ratio.set_ylabel(r"$\| |L||U| \| / \|A_{\mathrm{eff}}\|$")
+        ax_ratio.set_title(f"factor growth  "
+                           f"$\\Psi = \\|L\\|\\,\\|U\\| / "
+                           f"\\|A_{{\\mathrm{{eff}}}}\\|$  [{norm}]")
+        ax_ratio.set_ylabel(r"$\Psi = \|L\|\,\|U\| / \|A_{\mathrm{eff}}\|$")
         ax_resid.set_title(f"assembly residual "
                            f"$\\|A_{{\\mathrm{{eff}}}} - LU\\| / "
                            f"\\|A_{{\\mathrm{{eff}}}}\\|$  [{norm}]")
@@ -241,28 +255,29 @@ def plot(records, attrs, material, norms, out_path):
 
 
 # ---------------------------------------------------------------------------
-# The two factors of the growth ratio, Block Thomas only
+# The two factors of Psi
 # ---------------------------------------------------------------------------
 SCHUR_COLUMNS = ("nA", "nL", "nU")
 
 
 def plot_schur(records, attrs, material, out_path):
     """
-    The two factors that make up the growth ratio, per solver.
+    The two factors that make up Psi, per solver.
 
-    The backward error of any LU is governed by ||L|| ||U|| / ||A||, and the
-    point of this figure is to say which of the two halves is responsible and
-    how that differs from a globally pivoted factorization. Block Thomas
-    produces
+    The backward error of any LU is governed by Psi = ||L|| ||U|| / ||A||, the
+    ratio the first figure plots, and the point of this one is to say which of
+    the two halves is responsible and how that differs from a globally pivoted
+    factorization. Block Thomas produces
 
         U = block-bidiagonal(S_k ;   A_{k,k+1})
         L = block-bidiagonal(I   ;   L_k = A_{k+1,k} S_k^-1)
 
     so the ratio splits as
 
-        ||L|| ||U|| / ||A||  =  (1 + max_k ||L_k||) * (||U|| / ||A||)
+        Psi  =  ||L|| * (||U|| / ||A||)  =  (1 + max_k ||L_k||) * (||U|| / ||A||)
 
-    the second identity being exact for both the 1-norm and the infinity norm,
+    the first identity holding by definition and the second exactly for both
+    the 1-norm and the infinity norm,
     since L is block bidiagonal with the identity on its diagonal: every row
     (column) sum of |L| is one identity entry plus the corresponding row
     (column) sum of one L_k.
@@ -350,7 +365,7 @@ def plot_schur(records, attrs, material, out_path):
     dtypes = _ordered(dtypes_present, DTYPE_STYLE)
     handles, labels = legend_handles(solvers, dtypes)
 
-    fig.suptitle(f"The two factors of $\\|L\\|\\,\\|U\\| / \\|A\\|$, "
+    fig.suptitle(f"The two factors of $\\Psi = \\|L\\|\\,\\|U\\| / \\|A\\|$, "
                  f"block LU against global pivoting — {material}",
                  fontsize=14, y=1.01)
     fig.tight_layout()
@@ -488,21 +503,26 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
     Theorem 2.1 of Demmel, Higham and Schreiber bounds the backward error of a
     block LU solve by
 
-        omega  <=  c(n) u ( 1 + ||L|| ||U|| / ||A|| ),
+        ||dA|| / ||A||  <=  c(n) u ( 1 + Psi ),    Psi = ||L|| ||U|| / ||A||,
 
     with c(n) a low-degree polynomial in the matrix and block dimensions. This
     figure draws the ratio
 
-        omega / [ u ( 1 + tight ) ],    tight = || |L| |U| || / ||A_eff||,
+        omega / [ u ( 1 + Psi ) ]
 
-    one panel per precision, with a line at 1. tight is the sharper entrywise
-    form of the growth ratio, the one the growth figure plots.
+    one panel per precision, with a line at 1. Psi is the `loose` column, which
+    is the ratio the theorem is stated with; the sharper entrywise form
+    || |L| |U| || / ||A_eff|| is what the growth figure plots, but it is not the
+    quantity this bound contains.
 
-    The ratio is the fraction of the predicted backward error that is realised.
-    Well below 1 means the growth factor bounds the backward error but
-    overestimates it; near or above 1 means the bound is attained, up to the
-    constant c(n). Read against energy it shows whether the margin between omega
-    and its bound is constant over the sweep or closes at the band edges.
+    The ratio is the fraction of the predicted backward error that is realised,
+    with the unknown c(n) left out of the denominator. It is therefore a
+    measurement of c(n) as much as of the solver: a value of 1 means the bound
+    is attained with c(n) = 1, and a value of 1e3 means it is attained with
+    c(n) = 1e3, which for a matrix of a few thousand rows is still inside the
+    theorem. What the figure shows is the shape of that quantity over the
+    energy sweep, and whether it is the same for block LU and for a globally
+    pivoted factorization.
 
     omega comes from the forward_error group of the same file, matched to the
     growth rows on (index, solver, precision) at the infinity norm. Returns
@@ -524,7 +544,7 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
         if omega is None:
             continue
         series[(record["dtype"], record["solver"])].append(
-            (int(record["idx"]), float(record["tight"]), omega))
+            (int(record["idx"]), float(record["loose"]), omega))
     if not series:
         return False
 
@@ -550,9 +570,9 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
             solvers_present.add(solver)
             triples.sort()
             indices = np.asarray([t[0] for t in triples])
-            tight = np.asarray([t[1] for t in triples], dtype=float)
+            psi = np.asarray([t[1] for t in triples], dtype=float)
             omega = np.asarray([t[2] for t in triples], dtype=float)
-            bound = u * (1.0 + tight)
+            bound = u * (1.0 + psi)
             ratio = np.where(np.isfinite(bound) & (bound > 0),
                              omega / bound, np.nan)
 
@@ -572,14 +592,15 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
         if have_energy:
             mark_band_edges(ax, attrs, label=False)
 
-    axes[0][0].set_ylabel(r"$\omega \,/\, [\,u\,(1+\mathrm{tight})\,]$")
+    axes[0][0].set_ylabel(r"$\omega \,/\, [\,u\,(1+\Psi)\,]$")
 
     solvers = _ordered(solvers_present, SOLVER_STYLE)
     extra = [(plt.Line2D([], [], color="k", ls="--", lw=1.0),
-              r"bound attained, $\omega = u\,(1+\mathrm{tight})$")]
+              r"bound attained with $c(n)=1$")]
     handles, labels = legend_handles(solvers, [], extra=extra)
 
-    fig.suptitle(f"Backward error as a fraction of the growth-factor bound "
+    fig.suptitle(f"Backward error as a fraction of "
+                 f"$u\\,(1+\\Psi)$, $\\Psi = \\|L\\|\\,\\|U\\| / \\|A\\|$ "
                  f"— {material}", fontsize=14, y=1.02)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 4),
