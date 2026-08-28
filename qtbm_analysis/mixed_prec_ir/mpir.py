@@ -351,7 +351,8 @@ ITERATION_COLUMNS = [
     "idx", "energy", "n", "nnz", "solver", "factor_dtype", "inner", "variant",
     "outer_iteration", "relres", "residual_norm_inf", "ferr_ref", "rho",
     "etainf", "omega",
-    "mu_hat", "phi_cond_hat", "phi_solve_hat", "phi_hat", "phi_cond_form",
+    "mu_hat", "phi_cond_hat", "phi_solve_hat", "phi_hat",
+    "phi_cond_binding", "phi_cond_form",
     "z", "v", "rho_max", "psi_demmel", "ferr_ratio",
     "correction_norm_inf", "reference_correction_norm_inf",
     "gmres_inner_iterations", "gmres_inner_max", "note",
@@ -864,26 +865,58 @@ def idx_of_energy(indices, energies, energy):
     return int(indices[nearest])
 
 
+# Datasets read out of the condition-estimate file, and the key each becomes
+# in the dict load_condition_numbers returns. cond_skeel and cond_skeel_x were
+# added to condition_est.py after cond_2 and cond_inf, so a file written before
+# then holds only the first two; each is read independently and a missing one
+# becomes None rather than failing the whole lookup.
+CONDITION_DATASETS = {
+    "cond_2": 2,
+    "cond_inf": "inf",
+    "cond_skeel": "skeel",
+    "cond_skeel_x": "skeel_x",
+}
+
+
 def load_condition_numbers(h5path, idx):
     """
-    {2: kappa_2, "inf": kappa_inf} for one energy index, from the material's
-    own condition-estimate file, cli.CONDITION_DIR/<material>.h5 -- a separate
-    file from h5path, written by the condition-est pipeline, not by
+    The condition numbers of one energy index, from the material's own
+    condition-estimate file, cli.CONDITION_DIR/<material>.h5 -- a separate file
+    from h5path, written by the condition-est pipeline, not by
     run_benchmarks.py. Its /condition/indices holds the same energy indices as
-    h5path's metadata/indices, /condition/cond_2 and /condition/cond_inf the
-    corresponding condition numbers, and /condition/valid marks rows where the
+    h5path's metadata/indices and /condition/valid marks rows where the
     estimate succeeded; condition_est.py computes all norms of one row
-    together, so validity is shared between them. Returns {2: None, "inf":
-    None} if the file, the index, or a valid row for it isn't present.
+    together, so validity is shared between them.
 
-    kappa_2 (from sigma_max/sigma_min) is the general-purpose conditioning
-    figure reported throughout this project. kappa_inf is reported alongside
-    it here specifically because the classical LU-IR convergence requirement,
-    kappa_inf(A) u_f < 1 (see the module docstring), is stated in the infinity
-    norm, not the 2-norm; the two can differ enough that only one of them
-    crosses the threshold near a band edge.
+    Returns {2: kappa_2, "inf": kappa_inf, "skeel": cond(A),
+    "skeel_x": cond(A, x)}, each None where the file, the index, a valid row
+    for it, or that particular dataset is absent, or where the stored value is
+    not finite -- cond_skeel_x is written as NaN at an index whose right-hand
+    side has no columns.
+
+    What each is for:
+
+    kappa_2   = sigma_max / sigma_min, the general-purpose conditioning figure
+                reported throughout this project.
+    kappa_inf = ||A||_inf ||A^-1||_inf. Reported alongside kappa_2 because the
+                classical LU-IR convergence requirement, kappa_inf(A) u_f < 1
+                (see the module docstring), is stated in the infinity norm, not
+                the 2-norm; the two can differ enough that only one of them
+                crosses the threshold near a band edge.
+    skeel     = cond(A) = || |A^-1| |A| ||_inf, Skeel's condition number. This
+                is the cond(A) of Carson and Higham's Corollary 3.3, the left
+                half of its min(cond(A), kappa_inf(A) mu_i); see
+                refinement_metrics. cond(A) <= kappa_inf(A) always, since the
+                latter is the former's worst case over row scalings, so where
+                the min binds on this term phi_cond is strictly smaller than
+                the kappa_inf form alone would give.
+    skeel_x   = cond(A, x) = || |A^-1| |A| |x| ||_inf / ||x||_inf. Not part of
+                the convergence factor: it sets the limiting accuracy
+                refinement can reach, roughly cond(A, x) u, rather than the
+                rate at which it gets there. Carried through to the run table
+                so a figure can draw that floor beside the forward error.
     """
-    missing = {2: None, "inf": None}
+    missing = {key: None for key in CONDITION_DATASETS.values()}
     cond_path = cli.CONDITION_DIR / f"{Path(h5path).stem}.h5"
     if not cond_path.exists():
         return missing
@@ -891,16 +924,21 @@ def load_condition_numbers(h5path, idx):
         if "condition/cond_2" not in f or "condition/cond_inf" not in f:
             return missing
         indices = f["condition/indices"][:]
-        cond2 = f["condition/cond_2"][:]
-        condinf = f["condition/cond_inf"][:]
+        hit = np.flatnonzero(indices == idx)
+        if hit.size == 0:
+            return missing
+        i = hit[0]
         valid = f["condition/valid"][:] if "condition/valid" in f else None
-    hit = np.flatnonzero(indices == idx)
-    if hit.size == 0:
-        return missing
-    i = hit[0]
-    if valid is not None and not valid[i]:
-        return missing
-    return {2: float(cond2[i]), "inf": float(condinf[i])}
+        if valid is not None and not valid[i]:
+            return missing
+        out = dict(missing)
+        for name, key in CONDITION_DATASETS.items():
+            path = f"condition/{name}"
+            if path not in f:
+                continue
+            value = float(f[path][i])
+            out[key] = value if np.isfinite(value) else None
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1292,7 +1330,8 @@ def _backward_error_histories(A_high, b_high, x_history, normA):
     return etainf_history, omega_history
 
 
-def refinement_metrics(A_high, x_true, extra, u_s, kappa_inf, ref_solve=None):
+def refinement_metrics(A_high, x_true, extra, u_s, kappa_inf, ref_solve=None,
+                       cond_skeel=None):
     """
     The per-iteration convergence quantities of Carson and Higham, Corollary
     3.3, reconstructed from the arrays a refinement run retained.
@@ -1330,11 +1369,23 @@ def refinement_metrics(A_high, x_true, extra, u_s, kappa_inf, ref_solve=None):
                1/kappa_inf(A) and 1 and is small exactly when the error points
                along the directions A damps, which is what lets refinement
                converge at condition numbers the plain bound forbids.
-    phi_cond   2 u_s kappa_inf(A) mu_hat. The min against cond(A) of the
-               Corollary is not taken: cond(A) = || |A^-1| |A| ||_inf needs the
-               inverse and is not among the condition-est pipeline's outputs.
-               Dropping the min can only overstate phi_cond, so the estimate is
-               conservative; the form used is recorded as phi_cond_form.
+    phi_cond   2 u_s min(cond(A), kappa_inf(A) mu_hat), the Corollary's term
+               as stated, with cond(A) = || |A^-1| |A| ||_inf read from the
+               condition-est pipeline's cond_skeel column. Both halves are
+               bounds on the same quantity, || |A^-1| |A| |e_i| ||_inf /
+               ||e_i||_inf: the left one holds it worst-case over the direction
+               of the error, the right one uses the direction this step's error
+               actually took. Whichever is smaller is the one the Corollary
+               asserts, and which of the two bound is recorded per step in
+               phi_cond_binding, since a run in which the min is always taken
+               on cond(A) is one where mu_hat carries no information.
+
+               Only one of the two is used where the other is unavailable: an
+               older condition-est file has no cond_skeel column, and mu_hat is
+               undefined once the error reaches zero. The form actually
+               evaluated is recorded as phi_cond_form, so a row is never
+               ambiguous about which it holds. Dropping either half can only
+               overstate phi_cond, so a partial estimate stays conservative.
     phi_solve  ||d_i - d_i_ref||_inf / ||d_i_ref||_inf, where d_i_ref solves
                A d = r_i for the same retained residual r_i with the reference
                solver. Under d_hat = (I + u_s E) d this measures
@@ -1348,6 +1399,9 @@ def refinement_metrics(A_high, x_true, extra, u_s, kappa_inf, ref_solve=None):
     u_s : effective precision of the correction solve; u_f for LU-IR and u for
           GMRES-IR, set by whichever driver produced `extra`.
     kappa_inf : kappa_inf(A) from the condition-est pipeline, or None.
+    cond_skeel : cond(A) = || |A^-1| |A| ||_inf from the same pipeline, or
+          None. Supplying it is what makes phi_cond the Corollary's min rather
+          than its kappa_inf(A) mu_hat half alone.
     ref_solve : callable solving A d = r at the working precision, used for
           phi_solve. None skips that term, and phi_hat is then phi_cond alone.
 
@@ -1390,14 +1444,28 @@ def refinement_metrics(A_high, x_true, extra, u_s, kappa_inf, ref_solve=None):
             if norm_err > 0 and normA_inf:
                 row["mu_hat"] = _inf_norm(A_high @ err) / (normA_inf * norm_err)
 
-        # The conditioning term. Recorded as None rather than 0 when kappa is
-        # unavailable, so that a missing input is never read as a small one.
+        # The conditioning term, min(cond(A), kappa_inf(A) mu_hat), with each
+        # half dropped where its input is missing rather than substituted for:
+        # recorded as None rather than 0 when neither is available, so that a
+        # missing input is never read as a small one.
         mu = row.get("mu_hat")
+        candidates = {}
+        if cond_skeel is not None:
+            candidates["cond"] = cond_skeel
         if kappa_inf is not None and mu is not None:
-            row["phi_cond_hat"] = 2.0 * u_s * kappa_inf * mu
-            row["phi_cond_form"] = "2*u_s*kappa_inf*mu_hat"
+            candidates["kappa_mu"] = kappa_inf * mu
+        if candidates:
+            binding = min(candidates, key=candidates.get)
+            row["phi_cond_hat"] = 2.0 * u_s * candidates[binding]
+            row["phi_cond_binding"] = binding
+            row["phi_cond_form"] = ("2*u_s*min(cond_skeel, kappa_inf*mu_hat)"
+                                    if len(candidates) == 2
+                                    else "2*u_s*cond_skeel"
+                                    if binding == "cond"
+                                    else "2*u_s*kappa_inf*mu_hat")
         else:
             row["phi_cond_hat"] = None
+            row["phi_cond_binding"] = "unavailable"
             row["phi_cond_form"] = "unavailable"
 
         # The correction-solver term, against a reference solve of the same
@@ -2219,7 +2287,8 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
     ir_name = names[0]
     ir_extra = all_records[ir_name][0]["extra"]
     metrics = refinement_metrics(A_high, x_true, ir_extra, u_s, kappa["inf"],
-                                 ref_solve=ref_solve if ref is not None else None)
+                                 ref_solve=ref_solve if ref is not None else None,
+                                 cond_skeel=kappa["skeel"])
     monitor = ir_extra.get("monitor")
     etainf_history = ir_extra.get("etainf_history", [])
     omega_history = ir_extra.get("omega_history", [])
@@ -2323,6 +2392,13 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
             u_s=float(u_s) if mon is not None else float("nan"),
             kappa_2=kappa[2] if kappa[2] is not None else float("nan"),
             kappa_inf=kappa["inf"] if kappa["inf"] is not None else float("nan"),
+            # cond(A) enters phi_cond as the left half of the Corollary's min;
+            # cond(A, x) is not part of the rate at all, and is carried so that
+            # a figure can draw the limiting accuracy cond(A, x) u beside the
+            # forward error. See load_condition_numbers and refinement_metrics.
+            cond_skeel=kappa["skeel"] if kappa["skeel"] is not None else float("nan"),
+            cond_skeel_x=kappa["skeel_x"] if kappa["skeel_x"] is not None
+                         else float("nan"),
             lu_ir_bound=(kappa["inf"] * u_f) if kappa["inf"] is not None
                         else float("nan"),
             relres=med(nm, "residual"),
@@ -2372,9 +2448,11 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
                 continue
             value = m.get(key)
             row[key] = (float("nan") if value is None and key not in
-                        ("phi_cond_form", "note", "gmres_inner_iterations",
-                         "gmres_inner_max", "outer_iteration")
+                        ("phi_cond_binding", "phi_cond_form", "note",
+                         "gmres_inner_iterations", "gmres_inner_max",
+                         "outer_iteration")
                         else value)
+        row.setdefault("phi_cond_binding", "unavailable")
         row.setdefault("phi_cond_form", "unavailable")
         row.setdefault("note", "")
         for key in ("gmres_inner_iterations", "gmres_inner_max"):

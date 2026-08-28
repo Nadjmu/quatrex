@@ -15,11 +15,10 @@ analysis file, one file per material:
     cond_2        (P,)  sigma_max / sigma_min
 
 Where the same file also holds the ``condition_exact`` group written by
-``condition-est/exact_condition.py``, its columns are drawn over the curves as
-hollow markers: the exact value of the same quantity, at the handful of indices
-it was run on.
-
-With no path given, every material in --materials is read from --outdir.
+``condition-est/exact_condition.py``, each figure grows a second, shorter
+panel below the curves: estimate / exact at the indices exact_condition.py was
+run on, matched by energy index. With no path given, every material in
+--materials is read from --outdir.
 
 Algorithm
 ---------
@@ -42,10 +41,10 @@ them are not inflated by differing estimator slack.
 The second figure holds kappa_2 alone. It belongs to a different norm, has no
 recorded backward error to pair with, and is not a rung of the ladder above;
 it is a separate figure so that it cannot be read as one. It is the quantity
-by which list_by_kappa.py buckets the sweep and the one mpir.py reports, and it is the
-only column checkable against the full SVD stored at export time. By Kahan's
-theorem 1/kappa_2 is the relative 2-norm distance from M(E) to the nearest
-singular matrix.
+by which list_by_kappa.py buckets the sweep and the one mpir.py reports, and it
+is the only column checkable against the full SVD stored at export time. By
+Kahan's theorem 1/kappa_2 is the relative 2-norm distance from M(E) to the
+nearest singular matrix.
 
 kappa_1 is not drawn. kappa_1(M) = kappa_inf(M^T) exactly, and M(E) = E S - H -
 Sigma(E) is nearly complex symmetric, so the two coincide to far better than
@@ -53,11 +52,18 @@ the factor of n that holds for a general matrix. The column is still written by
 condition_est.py, where it verifies that the trans="N" and trans="H" solves
 agree; it carries no information a figure can show.
 
-The reference markers are the only reading of estimator quality the figure
-offers. Every estimated curve is a lower bound, so a marker lies on or above
-its curve; the vertical distance is the slack of the norm estimator at that
-index, and it is reported numerically on stdout as well. A marker below its
-curve would indicate a fault, not slack.
+The ratio panel is the only reading of estimator quality the figure offers.
+Every estimated curve is a lower bound, so estimate / exact is at most 1 at
+every matched index; the distance below 1 is the slack of the norm estimator,
+drawn on the same convention as the bound-ratio panels of
+block-thomas/plot_forward_error.py: a log y axis, unity marked with a dashed
+line, and the worst value over the matched indices reported on stdout as well.
+A value above 1 would indicate a fault, not slack. Overlaying the exact values
+directly on the curve panel was tried first and abandoned: once
+exact_condition.py --all supplies a reference at every index, a same-coloured
+overlay coincides with the curve almost everywhere and the two become
+indistinguishable; the ratio panel remains legible at any reference density,
+sparse or full.
 
 cond_skeel_x depends on the right-hand side and is therefore a property of
 (M, x) rather than of M(E) alone. It is NaN at indices whose rhs has no
@@ -117,11 +123,8 @@ KAPPA2_STYLE = {
 
 ALL_DATASETS = tuple(LADDER_STYLE) + tuple(KAPPA2_STYLE)
 
-# The reference points exact_condition.py writes, mapped onto the estimated
-# curve each one is the reference for. Drawn as markers in the curve's own
-# colour: the pair is a value and its exact counterpart, not two quantities, so
-# a second colour would misrepresent them. Hollow, so a marker sitting on the
-# curve still shows the curve through it.
+# The reference column exact_condition.py writes for each estimated column,
+# with the marker its ratio line uses in the panel legend.
 EXACT_OF = {
     "cond_inf": ("cond_inf_exact", "o"),
     "cond_skeel": ("cond_skeel_exact", "s"),
@@ -136,11 +139,13 @@ def load_curves(h5path):
     """
     The four curves of one material, on the valid rows only.
 
-    Returns (x, curves, attrs, have_energy) where x is energy in eV where the
-    file records the grid and the energy index otherwise, and curves maps a
-    dataset name to its values. A column absent from the file is omitted rather
-    than raising: a group written before cond_skeel existed still plots the
-    curves it does hold, and the missing ones are reported by the caller.
+    Returns (x, curves, attrs, have_energy, indices) where x is energy in eV
+    where the file records the grid and the energy index otherwise, indices is
+    the underlying integer energy index of each point in ascending order (as
+    condition_est.py writes them), and curves maps a dataset name to its
+    values. A column absent from the file is omitted rather than raising: a
+    group written before cond_skeel existed still plots the curves it does
+    hold, and the missing ones are reported by the caller.
     """
     with h5py.File(h5path, "r") as f:
         if GROUP not in f:
@@ -161,21 +166,23 @@ def load_curves(h5path):
     have_energy = energies is not None
     x = energies if have_energy else indices.astype(float)
 
-    return x, curves, attrs, have_energy
+    return x, curves, attrs, have_energy, indices
 
 
 def load_exact(h5path):
     """
-    The reference points of one material, or (None, {}) where the file has no
-    condition_exact group.
+    The reference points of one material, or (None, {}, None) where the file
+    has no condition_exact group.
 
-    exact_condition.py is run on a handful of indices rather than on the sweep,
-    so these are scattered points and never a curve. Returns (x, points) with x
-    on the same axis load_curves() produced.
+    Returns (x, points, indices) on the same convention as load_curves(): x is
+    energy where available, points maps an *_exact column name to its values,
+    and indices is the underlying integer energy index of each point -- the
+    key matched against load_curves()'s own indices in matched_ratios(),
+    rather than matching by position on the axis.
     """
     with h5py.File(h5path, "r") as f:
         if EXACT_GROUP not in f:
-            return None, {}
+            return None, {}, None
         group = f[EXACT_GROUP]
         attrs = dict(group.attrs)
         valid = group["valid"][:]
@@ -184,38 +191,64 @@ def load_exact(h5path):
                   for _, (name, _m) in EXACT_OF.items() if name in group}
 
     if indices.size == 0:
-        return None, {}
+        return None, {}, None
 
     energies = energies_of(attrs, indices)
     x = energies if energies is not None else indices.astype(float)
-    return x, points
+    return x, points, indices
 
 
-def estimator_slack(curves, x_curve, x_exact, points):
+def matched_ratios(curves, indices_curve, x_curve, column, points,
+                    indices_exact, exact_name):
     """
-    {column: (n_points, worst ratio estimate/exact)} at the indices where both
-    a curve and a reference point exist.
+    (x, ratio) of estimate / exact for one column, at the indices present in
+    both the sweep and the reference.
 
-    The estimator returns a lower bound, so the ratio is at most 1 and the
-    distance below it is the slack. Reported on stdout only; the figure shows
-    the points themselves and computes nothing.
+    Matching is by energy index, via searchsorted against indices_curve (kept
+    ascending by both writers), not by nearest position on the energy axis:
+    exact_condition.py is commonly run with its own --stride, so a reference
+    index need not coincide with any curve index at all, and a nearest-position
+    match would silently pair it with the wrong row.
     """
-    if x_exact is None:
+    if (indices_exact is None or column not in curves
+            or exact_name not in points):
+        return np.array([]), np.array([])
+
+    y_exact = points[exact_name]
+    ok = np.isfinite(y_exact) & (y_exact > 0)
+    if not np.any(ok):
+        return np.array([]), np.array([])
+    idx_exact, val_exact = indices_exact[ok], y_exact[ok]
+
+    pos = np.clip(np.searchsorted(indices_curve, idx_exact), 0,
+                  len(indices_curve) - 1)
+    matched = indices_curve[pos] == idx_exact
+    if not np.any(matched):
+        return np.array([]), np.array([])
+    pos, val_exact = pos[matched], val_exact[matched]
+
+    val_est = curves[column][pos]
+    finite = np.isfinite(val_est) & (val_est > 0)
+    if not np.any(finite):
+        return np.array([]), np.array([])
+
+    return x_curve[pos[finite]], val_est[finite] / val_exact[finite]
+
+
+def estimator_slack(curves, indices_curve, x_curve, points, indices_exact):
+    """
+    {column: (n_points, worst ratio estimate/exact)} over the matched indices
+    of each column, for the stdout summary; the ratio panel draws the same
+    quantity in full.
+    """
+    if indices_exact is None:
         return {}
     out = {}
     for column, (exact_name, _marker) in EXACT_OF.items():
-        if column not in curves or exact_name not in points:
-            continue
-        matched = []
-        for value_exact, position in zip(points[exact_name], x_exact):
-            if not np.isfinite(value_exact) or value_exact <= 0:
-                continue
-            nearest = int(np.argmin(np.abs(x_curve - position)))
-            value_est = curves[column][nearest]
-            if np.isfinite(value_est) and value_est > 0:
-                matched.append(value_est / value_exact)
-        if matched:
-            out[column] = (len(matched), float(np.min(matched)))
+        _, ratio = matched_ratios(curves, indices_curve, x_curve, column,
+                                  points, indices_exact, exact_name)
+        if ratio.size:
+            out[column] = (int(ratio.size), float(np.min(ratio)))
     return out
 
 
@@ -238,53 +271,9 @@ def scaling_headroom(curves):
     return float(np.median(top[usable] / bottom[usable]))
 
 
-# Above this count of exact points, they are drawn as a line instead of as
-# individual markers. A handful of hand-picked indices (exact_condition.py run
-# with --idx) are easy to find as large hollow markers; once --all has put a
-# reference at every index, markers at that density paint a band far thicker
-# than the estimated curve, which is the effect being corrected here.
-EXACT_MARKER_LIMIT = 60
-
-
-def exact_style(n_exact, marker, colour):
-    """
-    Draw kwargs for one curve's exact reference points, scaled to how many
-    there are so the reference never reads as thicker than the estimate it
-    is checking.
-
-    Sparse (a chosen handful of indices): large hollow markers in the curve's
-    own colour, easy to pick out against the line.
-
-    Dense (--all, a reference at every index): drawn as a line instead, dotted
-    so it stays visually distinct from the solid estimated curve underneath
-    it, and at the same weight sweep_line() gives the estimated curve at that
-    point count -- so a gap between the two is the only thing that reads as
-    thickness.
-    """
-    if n_exact <= EXACT_MARKER_LIMIT:
-        return dict(ls="none", marker=marker, ms=6, mfc="none", mec=colour,
-                   mew=1.4)
-    style = dict(ls=":", color=colour)
-    style.update(sweep_line(n_exact, weight="secondary"))
-    style["marker"] = ""
-    return style
-
-
-def draw_panel(ax, x, curves, styles, attrs, have_energy, title, ylabel,
-               x_exact=None, points=None):
-    """
-    One panel: the curves of `styles` present in `curves`, on a log y axis,
-    with the exact reference points of `points` over them where those exist.
-
-    A reference marker is drawn in its curve's own colour, since the two are
-    the same quantity estimated and computed. It is hollow and drawn on top, so
-    a marker that sits on the curve does not hide it -- which is the reading
-    the figure is there to support: the estimator is a lower bound, so a marker
-    on the curve means no slack and a marker above it means the estimate is
-    low.
-    """
+def draw_panel(ax, x, curves, styles, attrs, have_energy, title, ylabel):
+    """The curves of `styles` present in `curves`, on a log y axis."""
     drawn = 0
-    points = points or {}
     for name, (label, colour, linestyle) in styles.items():
         if name not in curves:
             continue
@@ -295,17 +284,6 @@ def draw_panel(ax, x, curves, styles, attrs, have_energy, title, ylabel,
         ax.plot(x[finite], y[finite], color=colour, ls=linestyle, label=label,
                 **sweep_line(int(np.count_nonzero(finite))))
         drawn += 1
-
-        exact_name, marker = EXACT_OF.get(name, (None, None))
-        if exact_name is None or x_exact is None or exact_name not in points:
-            continue
-        y_exact = points[exact_name]
-        ok = np.isfinite(y_exact) & (y_exact > 0)
-        n_exact = int(np.count_nonzero(ok))
-        if n_exact == 0:
-            continue
-        ax.plot(x_exact[ok], y_exact[ok], zorder=5, label=f"{label}, exact",
-                **exact_style(n_exact, marker, colour))
 
     ax.set_yscale("log")
     ax.set_xlabel(axis_label(have_energy))
@@ -323,20 +301,85 @@ def draw_panel(ax, x, curves, styles, attrs, have_energy, title, ylabel,
     return drawn
 
 
-def draw_ladder(ax, x, curves, attrs, have_energy, title,
-                x_exact=None, points=None):
+def draw_ratio_panel(ax, curves, indices_curve, x_curve, points,
+                      indices_exact, styles, have_energy, attrs):
+    """
+    estimate / exact for every column of `styles` that has a matched
+    reference, unity marked.
+
+    Same convention as the bound-ratio panels of
+    block-thomas/plot_forward_error.py: log y axis, a dashed line at 1, grid
+    lines at both decades and half-decades. The estimator is a lower bound, so
+    every value is at most 1; the distance below 1 is the slack.
+    """
+    drawn = 0
+    for name, (label, colour, _linestyle) in styles.items():
+        exact_name, marker = EXACT_OF.get(name, (None, None))
+        if exact_name is None:
+            continue
+        x, ratio = matched_ratios(curves, indices_curve, x_curve, name,
+                                  points, indices_exact, exact_name)
+        if ratio.size == 0:
+            continue
+        ax.semilogy(x, ratio, color=colour, ls="-", label=label,
+                    **sweep_line(ratio.size, marker=marker))
+        drawn += 1
+
+    ax.axhline(1.0, color="k", lw=1.0, ls="--")
+    ax.set_xlabel(axis_label(have_energy))
+    ax.set_ylabel("estimate / exact")
+    ax.grid(True, which="both", ls=":", alpha=0.4)
+    if have_energy:
+        mark_band_edges(ax, attrs, label=False)
+    if drawn:
+        ax.legend(loc="lower left", fontsize=7, ncol=max(drawn, 1))
+    return drawn
+
+
+def draw_ladder(ax, x, curves, attrs, have_energy, title):
     """The infinity-norm panel: cond_skeel_x <= cond_skeel <= kappa_inf."""
     return draw_panel(ax, x, curves, LADDER_STYLE, attrs, have_energy, title,
-                      r"$\kappa_\infty(M)$,  $\mathrm{cond}(M)$",
-                      x_exact=x_exact, points=points)
+                      r"$\kappa_\infty(M)$,  $\mathrm{cond}(M)$")
 
 
-def draw_kappa2(ax, x, curves, attrs, have_energy, title,
-                x_exact=None, points=None):
+def draw_kappa2(ax, x, curves, attrs, have_energy, title):
     """The 2-norm panel, drawn alone."""
     return draw_panel(ax, x, curves, KAPPA2_STYLE, attrs, have_energy, title,
-                      r"$\kappa_2(M)$",
-                      x_exact=x_exact, points=points)
+                      r"$\kappa_2(M)$")
+
+
+def draw_ladder_ratio(ax, curves, indices_curve, x_curve, points,
+                      indices_exact, have_energy, attrs):
+    return draw_ratio_panel(ax, curves, indices_curve, x_curve, points,
+                            indices_exact, LADDER_STYLE, have_energy, attrs)
+
+
+def draw_kappa2_ratio(ax, curves, indices_curve, x_curve, points,
+                      indices_exact, have_energy, attrs):
+    return draw_ratio_panel(ax, curves, indices_curve, x_curve, points,
+                            indices_exact, KAPPA2_STYLE, have_energy, attrs)
+
+
+def render_figure(outdir, filename, title, draw_value, draw_ratio, x, curves,
+                  indices, attrs, have_energy, points, indices_exact, dpi):
+    """
+    One material's figure for one norm: the value panel alone where there is
+    no exact reference, or the value panel with a shorter ratio panel below it
+    where there is.
+    """
+    if indices_exact is not None:
+        fig, (ax_top, ax_bot) = plt.subplots(
+            2, 1, figsize=(7.5, 6.4), sharex=True,
+            gridspec_kw=dict(height_ratios=(3, 1)), constrained_layout=True)
+        draw_value(ax_top, x, curves, attrs, have_energy, title)
+        ax_top.set_xlabel("")
+        draw_ratio(ax_bot, curves, indices, x, points, indices_exact,
+                  have_energy, attrs)
+    else:
+        fig, ax_top = plt.subplots(figsize=(7.5, 4.5), constrained_layout=True)
+        draw_value(ax_top, x, curves, attrs, have_energy, title)
+
+    save_figure(fig, outdir / filename, dpi=dpi)
 
 
 def main():
@@ -370,27 +413,28 @@ def main():
         if not Path(h5path).exists():
             print(f"[skip] {material}: {h5path} not found")
             continue
-        x, curves, attrs, have_energy = load_curves(h5path)
-        x_exact, points = load_exact(h5path)
+        x, curves, attrs, have_energy, indices = load_curves(h5path)
+        x_exact, points, indices_exact = load_exact(h5path)
         n_loaded += 1
 
         missing = [name for name in ALL_DATASETS if name not in curves]
         note = f", missing {' '.join(missing)}" if missing else ""
-        print(f"[input] {material}: {len(x)} valid rows{note}")
+        print(f"[input]   {material}: {len(x)} valid rows{note}")
         if "cond_skeel" in missing or "cond_skeel_x" in missing:
-            print(f"[hint]  {material}: run condition_est.py --only-skeel "
+            print(f"[hint]    {material}: run condition_est.py --only-skeel "
                   f"to fill the Skeel columns of an existing sweep")
 
-        if x_exact is None:
+        if indices_exact is None:
             print(f"[exact]   {material}: no {EXACT_GROUP} group; run "
                   f"condition-est/exact_condition.py on a few indices to add "
                   f"the reference points")
         else:
-            print(f"[exact]   {material}: {len(x_exact)} reference indices")
+            print(f"[exact]   {material}: {len(indices_exact)} reference "
+                  f"indices")
             for column, (count, worst) in estimator_slack(
-                    curves, x, x_exact, points).items():
+                    curves, indices, x, points, indices_exact).items():
                 print(f"[slack]   {material}: {column} estimate/exact over "
-                      f"{count} indices, worst {worst:.4f}")
+                      f"{count} matched indices, worst {worst:.4f}")
 
         headroom = scaling_headroom(curves)
         if headroom is not None:
@@ -398,21 +442,23 @@ def main():
                   f"{headroom:.2e}  (factor row equilibration could remove "
                   f"from kappa_inf)")
 
-        fig, ax = plt.subplots(figsize=(7.5, 4.5), constrained_layout=True)
-        draw_ladder(ax, x, curves, attrs, have_energy,
-                    f"Condition number of M(E), infinity norm: {material}",
-                    x_exact=x_exact, points=points)
-        save_figure(fig, outdir / f"{material}_condition.png", dpi=args.dpi)
+        render_figure(
+            outdir, f"{material}_condition.png",
+            f"Condition number of M(E), infinity norm: {material}",
+            draw_ladder, draw_ladder_ratio,
+            x, curves, indices, attrs, have_energy, points, indices_exact,
+            args.dpi)
 
-        fig, ax = plt.subplots(figsize=(7.5, 4.5), constrained_layout=True)
-        draw_kappa2(ax, x, curves, attrs, have_energy,
-                    f"Condition number of M(E), 2-norm: {material}",
-                    x_exact=x_exact, points=points)
-        save_figure(fig, outdir / f"{material}_condition_kappa2.png",
-                    dpi=args.dpi)
+        render_figure(
+            outdir, f"{material}_condition_kappa2.png",
+            f"Condition number of M(E), 2-norm: {material}",
+            draw_kappa2, draw_kappa2_ratio,
+            x, curves, indices, attrs, have_energy, points, indices_exact,
+            args.dpi)
 
     if not n_loaded:
         raise SystemExit("no analysis file was read")
+
 
 if __name__ == "__main__":
     main()
