@@ -7,9 +7,13 @@ against.
 Input
 -----
 A material HDF5 file providing E_<idx>/M as a CSC triplet, and E_<idx>/rhs
-where the componentwise reference is wanted. The index selection is REQUIRED:
+where the componentwise reference is wanted. An index selection is REQUIRED:
 one row costs a dense inversion and a full SVD, both O(n^3), so there is no
-default-all sweep here as there is in condition_est.py.
+default-all sweep here as there is in condition_est.py. Pass --idx, --start
+and --end, or --all to opt in explicitly to every available index; --all is
+appropriate for a small matrix such as carbon-nanotube (n=768) and not for a
+large one, since one dense array costs 16 n^2 bytes and n^3 grows the wall
+time -- check --max-n against the material's n first.
 
 Algorithm
 ---------
@@ -78,6 +82,7 @@ Usage
     python exact_condition.py /scratch/yimili/matrices2/hdf5/graphene.h5 \\
         --idx 120 250 400 --resume
     python exact_condition.py --material si-bulk --idx 254 --no-svd
+    python exact_condition.py --material carbon-nanotube --all
     python ../plotting/condition-est/plot_condition.py --materials carbon-chain
 """
 
@@ -163,10 +168,19 @@ def parse_args():
         help="material HDF5 file. With no path given, --material selects it "
              "from the standard scratch layout")
 
-    # default_all=False: an index selection is mandatory. A dense inversion and
-    # a full SVD per index is not something to start by accident over a sweep
-    # of thousands.
-    cli.add_index_selection(parser, default_all=False)
+    # default_all=True only so that argparse does not force --idx or --start;
+    # the actual requirement is enforced by hand in main(), where omitting
+    # every selection is an error unless --all is given explicitly. A dense
+    # inversion and a full SVD per index is not something to start by accident
+    # over a sweep of thousands.
+    cli.add_index_selection(parser, default_all=True)
+
+    parser.add_argument(
+        "--all", action="store_true",
+        help="run every index found in the material file, instead of an "
+             "explicit --idx or --start/--end. Only safe for a small matrix; "
+             "check n against --max-n first, since this is the flag that "
+             "removes the guard against starting an accidental full sweep.")
 
     cli.add_output(
         parser,
@@ -364,6 +378,9 @@ def main():
     out_path = cli.analysis_h5(args.outdir, material_name)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    if args.idx is None and args.start is None and not args.all:
+        parser.error("give --idx N [N ...], --start S --end E, or --all")
+
     with h5py.File(h5_path, "r") as h5_file:
         available = cli.available_indices(h5_file, require="M")
         if not available:
@@ -372,6 +389,10 @@ def main():
 
     if not selected:
         raise RuntimeError(f"{h5_path}: no indices selected.")
+
+    if args.all:
+        print(f"[--all] every available index selected: {len(selected)} "
+              f"indices, {selected[0]}..{selected[-1]}")
 
     num_indices = len(selected)
 
