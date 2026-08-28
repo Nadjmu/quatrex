@@ -74,12 +74,16 @@ Theorem 2.1 of Demmel, Higham and Schreiber gives, for a block LU solve,
     ||dA|| / ||A||  <=  c(n) u ( 1 + Psi ),    Psi = ||L|| ||U|| / ||A||
 
 with c(n) a low-degree polynomial. The figure draws the single ratio
-omega / [u (1 + Psi)] against energy, one panel per precision, with a line at
-1. c(n) is left out of the denominator, so the ratio measures c(n) as much as
-the solver: 1e3 means the bound is attained with c(n) = 1e3, which for a matrix
-of a few thousand rows is still inside the theorem. omega is read from the
-forward_error group of the same file, matched on (index, solver, precision).
-See plot_backward_vs_growth.
+eta_inf / [u (1 + Psi)] against energy, one panel per precision, with a line at
+1. Both quantities match the theorem: eta_inf, the Rigal-Gaches normwise
+backward error, is the smallest ||dA|| / ||A|| the computed solution admits and
+so is exactly the left-hand side, and Psi is the ratio the right-hand side is
+written with. The componentwise omega is not used here; it measures a stricter
+perturbation the theorem does not bound. c(n) is left out of the denominator,
+so the ratio measures c(n) as much as the solver: 1e3 means the bound is
+attained with c(n) = 1e3, which for a matrix of a few thousand rows is still
+inside the theorem. eta_inf is read from the forward_error group of the same
+file, matched on (index, solver, precision). See plot_backward_vs_growth.
 
 UMFPACK and block-thomas-inv are excluded by default. UMFPACK factorizes A
 with its rows rescaled, so its ratios are measured against a different A_eff
@@ -103,7 +107,7 @@ each sits beside the data it was drawn from:
     <material>_growth_factor.png       Psi and the assembly residual, per norm
     <material>_schur_growth.png        the two factors of Psi, one norm
     <material>_multiplier_profile.png  ||L_k|| per block, heat map
-    <material>_backward_vs_growth.png  omega as a fraction of the bound
+    <material>_backward_vs_growth.png  eta_inf as a fraction of the bound
 
 The last needs the forward_error group in the same file; it is skipped with a
 message when that group has not been written.
@@ -136,12 +140,12 @@ from style import (SOLVER_STYLE, DTYPE_STYLE, FP16_UNIT_ROUNDOFF, axis_label,
 
 GROUP = "growth_factor"
 
-# The forward_error group of the same analysis file, read only for its omega
+# The forward_error group of the same analysis file, read only for its eta_inf
 # column by the backward-error-against-growth figure.
 FORWARD_GROUP = "forward_error"
 
 # Unit roundoff u of each working precision. The same values as
-# plot_backward_error.py, so the two figures place omega against one reference.
+# plot_backward_error.py, so both figures use one reference.
 UNIT_ROUNDOFF = {
     "complex128": 2.0 ** -52,
     "complex64":  2.0 ** -23,
@@ -477,9 +481,9 @@ def plot_profile(records, attrs, material, out_path):
 # ---------------------------------------------------------------------------
 # The growth factor against the backward error it bounds
 # ---------------------------------------------------------------------------
-def _omega_by_key(h5path):
+def _eta_by_key(h5path):
     """
-    {(index, solver, dtype): omega} from the forward_error group of the same
+    {(index, solver, dtype): eta_inf} from the forward_error group of the same
     analysis file, dropping non-finite values. Returns {} when that group has
     not been written, so the caller can skip its figure rather than fail.
     """
@@ -489,9 +493,9 @@ def _omega_by_key(h5path):
         return {}
     out = {}
     for row in table_rows(columns):
-        omega = float(row["omega"])
-        if np.isfinite(omega):
-            out[(int(row["idx"]), str(row["solver"]), str(row["dtype"]))] = omega
+        eta = float(row["eta_inf"])
+        if np.isfinite(eta):
+            out[(int(row["idx"]), str(row["solver"]), str(row["dtype"]))] = eta
     return out
 
 
@@ -508,12 +512,21 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
     with c(n) a low-degree polynomial in the matrix and block dimensions. This
     figure draws the ratio
 
-        omega / [ u ( 1 + Psi ) ]
+        eta_inf / [ u ( 1 + Psi ) ]
 
-    one panel per precision, with a line at 1. Psi is the `loose` column, which
-    is the ratio the theorem is stated with; the sharper entrywise form
-    || |L| |U| || / ||A_eff|| is what the growth figure plots, but it is not the
-    quantity this bound contains.
+    one panel per precision, with a line at 1.
+
+    Both quantities are chosen to match the theorem rather than to be the
+    sharpest available. Psi is the `loose` column, the ratio the theorem is
+    stated with, not the entrywise || |L| |U| || / ||A_eff||. eta_inf is the
+    normwise backward error of Rigal and Gaches, which is the smallest
+    ||dA|| / ||A|| making the computed x exact, so it is exactly the left-hand
+    side the theorem bounds. omega, the componentwise backward error, is not:
+    it measures a different, stricter perturbation that this theorem says
+    nothing about, and on carbon-chain it is 15 to 22 times larger than eta_inf
+    in the median. As recorded, eta_inf carries ||B|| in its denominator and so
+    allows the right-hand side to be perturbed as well; the theorem perturbs A
+    alone, which differs by at most a small factor.
 
     The ratio is the fraction of the predicted backward error that is realised,
     with the unknown c(n) left out of the denominator. It is therefore a
@@ -524,12 +537,12 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
     energy sweep, and whether it is the same for block LU and for a globally
     pivoted factorization.
 
-    omega comes from the forward_error group of the same file, matched to the
+    eta_inf comes from the forward_error group of the same file, matched to the
     growth rows on (index, solver, precision) at the infinity norm. Returns
     False when that group is absent or shares no rows with this one.
     """
-    omega_by_key = _omega_by_key(h5path)
-    if not omega_by_key:
+    eta_by_key = _eta_by_key(h5path)
+    if not eta_by_key:
         return False
 
     present_norms = {r["norm"] for r in records}
@@ -540,11 +553,11 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
         if record["norm"] != norm:
             continue
         key = (int(record["idx"]), str(record["solver"]), str(record["dtype"]))
-        omega = omega_by_key.get(key)
-        if omega is None:
+        eta = eta_by_key.get(key)
+        if eta is None:
             continue
         series[(record["dtype"], record["solver"])].append(
-            (int(record["idx"]), float(record["loose"]), omega))
+            (int(record["idx"]), float(record["loose"]), eta))
     if not series:
         return False
 
@@ -571,10 +584,10 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
             triples.sort()
             indices = np.asarray([t[0] for t in triples])
             psi = np.asarray([t[1] for t in triples], dtype=float)
-            omega = np.asarray([t[2] for t in triples], dtype=float)
+            eta = np.asarray([t[2] for t in triples], dtype=float)
             bound = u * (1.0 + psi)
             ratio = np.where(np.isfinite(bound) & (bound > 0),
-                             omega / bound, np.nan)
+                             eta / bound, np.nan)
 
             x = energies_of(attrs, indices)
             if x is None:
@@ -592,14 +605,14 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
         if have_energy:
             mark_band_edges(ax, attrs, label=False)
 
-    axes[0][0].set_ylabel(r"$\omega \,/\, [\,u\,(1+\Psi)\,]$")
+    axes[0][0].set_ylabel(r"$\eta_\infty \,/\, [\,u\,(1+\Psi)\,]$")
 
     solvers = _ordered(solvers_present, SOLVER_STYLE)
     extra = [(plt.Line2D([], [], color="k", ls="--", lw=1.0),
               r"bound attained with $c(n)=1$")]
     handles, labels = legend_handles(solvers, [], extra=extra)
 
-    fig.suptitle(f"Backward error as a fraction of "
+    fig.suptitle(f"Normwise backward error as a fraction of "
                  f"$u\\,(1+\\Psi)$, $\\Psi = \\|L\\|\\,\\|U\\| / \\|A\\|$ "
                  f"— {material}", fontsize=14, y=1.02)
     fig.tight_layout()
