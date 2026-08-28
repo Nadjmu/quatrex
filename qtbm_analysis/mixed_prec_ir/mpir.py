@@ -100,6 +100,15 @@ kind:
                                                 reference stopped improving;
                                                 needs --reference-solver
 
+Condition 2 is a stopping rule, and for a convergence study it is the wrong
+one: at --rho-thresh 0.5 a run that is still converging, only slowly, is cut
+off, and that happens exactly where kappa_inf is largest, which biases the
+iteration count downward at the end of the sweep that the study is about. Pass
+--rho-thresh 1.0 there, so condition 2 fires on divergence alone and the run
+goes to the accuracy floor. The 0.5 is then applied offline instead, as the
+label separating the contracting steps from the plateau; see
+contraction_summary.
+
 Condition 5 is not from Oktay and Carson; it measures the thing that actually
 matters rather than a proxy for it. The reference solution is the best
 available estimate of the exact answer, so once the iterate stops getting
@@ -144,6 +153,25 @@ from the iterates, corrections and residuals the loop retained, and never
 inside it: the loop is timed and its memory is measured, so a diagnostic solve
 performed there would corrupt the figures the report exists to give. See
 refinement_metrics, which also states which of these are estimates and why.
+
+Two summary quantities are derived from the same history, and they are what a
+convergence-versus-conditioning study reads:
+
+    outer_iters  how many outer steps the run took
+    rho_bar      the geometric mean of the observed contraction, taken over
+                 the contracting steps alone
+
+The restriction matters. The forward error falls roughly geometrically and then
+flattens at the limiting accuracy of Corollary 3.3, of order cond(A, x) u here
+since u_r = u; averaging the observed ratio over the whole run mixes a rate
+with a plateau and reports something far closer to 1 than anything the method
+did. n_contract records how many steps the mean was taken over, and is 1 often
+enough -- GMRES-IR converges in two or three steps -- that a figure must show
+it rather than present every rho_bar as a mean. See contraction_summary.
+
+Both quantities are only as good as the reference solution they are measured
+against, which is why --reference-solver extended exists; see
+_ExtendedReference for what a complex128 reference does to them.
 
 The preconditioner in the GMRES variant requires only the action of the
 factorization as an operator, never explicit access to L and U. That is what
@@ -343,13 +371,15 @@ EXPERIMENTS_GROUP = "experiments"
 RUN_COLUMNS = [
     "idx", "energy", "n", "nnz", "n_rhs", "n_blocks",
     "solver", "factor_dtype", "inner", "variant", "is_refined",
-    "u_f", "u", "u_s", "kappa_2", "kappa_inf", "lu_ir_bound",
+    "u_f", "u", "u_s", "kappa_2", "kappa_inf", "cond_skeel", "cond_skeel_x",
+    "lu_ir_bound",
     "relres", "ferr_ref", "eta1", "eta2", "etainf", "omega",
     "outer_iters", "converged", "rho_max", "psi_final", "stop_reason",
+    "n_contract", "rho_bar",
     "gmres_total", "wall_s", "factor_s", "factor_symbolic_s",
     "factor_numeric_s", "inner_s", "solve_s", "residual_s", "other_s",
     "n_solves", "factor_mb", "factor_mb_reported", "working_mb",
-    "reference_solver", "reference_nbe",
+    "reference_solver", "reference_nbe", "reference_floor",
 ]
 
 ITERATION_COLUMNS = [
@@ -844,6 +874,148 @@ def load_system(h5path, idx):
     return A, b
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# The reference solution
+#
+# Every "forward error" this script reports is measured against a reference
+# solution, so it is only as good as that reference. A reference computed by a
+# complex128 direct solver carries a forward error of order cond(A, x) u, which
+# on these matrices is 1e-11 or worse -- the same order as the limiting
+# accuracy of refinement itself (Carson and Higham, Corollary 3.3, eq. 3.10).
+# Measured against such a reference, ferr_ref stops decreasing when the
+# reference runs out, not when the method does, and both of the quantities a
+# convergence study wants are corrupted by it:
+#
+#   the iteration count, because stopping condition 5 fires when ferr stops
+#   improving, so a coarse reference stops the loop early -- and it is coarsest
+#   exactly where kappa is largest, which flattens the very trend being
+#   measured;
+#
+#   the contraction rate, because the last steps then sit on the reference's
+#   plateau rather than the method's.
+#
+# _ExtendedReference removes that by refining the complex128 solution with the
+# residual accumulated in np.clongdouble, exactly as
+# block-thomas/forward_error.py does. See its class docstring for what the
+# gain actually is; it is not u^2.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 80-bit on x86-64, eps = 1.1e-19, so u_ext = 5.4e-20 against complex128's
+# 1.1e-16. numpy falls back to float64 where the platform has no wider type,
+# in which case the reference is no better than a plain complex128 solve;
+# reference_floor below makes that visible rather than silent.
+EXT_DTYPE = np.clongdouble
+EPS_EXT = float(np.finfo(np.longdouble).eps)
+
+# Refinement steps taken to build the reference. Three is what
+# forward_error.py uses and is ample: the iteration contracts by roughly
+# kappa_inf * u per step from a complex128 solve, so it reaches the residual
+# precision's own limit within two.
+DEFAULT_REF_STEPS = 3
+
+
+class _ExtendedReference:
+    """
+    x_true by iterative refinement with an extended-precision residual.
+
+    The initial solve and every correction use one SuperLU complex128
+    factorization; only the residual b - A x is accumulated in np.clongdouble.
+    SciPy has no sparse type in that precision, so the product is formed from
+    the CSR arrays directly: elementwise products in extended precision, summed
+    per row with np.add.reduceat.
+
+    How much better this is, and why not more
+    ----------------------------------------
+    Refinement in a residual precision u_r converges to a relative error of
+    order kappa_inf(A) u_r, so this reference improves on a plain complex128
+    solve by eps_double / eps_ext, about 2e3 -- not by the u^2 a true
+    double-double residual would give. That is enough for the purpose here:
+    the limiting accuracy being measured is of order cond(A, x) u, and the
+    reference sits about three orders of magnitude below it. It is not enough
+    to be treated as exact, and reference_floor = kappa_inf(A) eps_ext is
+    recorded per index so that a measured forward error within an order of
+    magnitude of it can be recognised as a measurement of the reference rather
+    than of the method.
+
+    The solution is returned at complex128. Storing it wider would not help:
+    what limits the measurement is the reference's error, about 1e-14 here, not
+    the 1e-16 of rounding it for storage, and returning complex128 keeps it
+    usable by every caller including the sparse products in
+    refinement_metrics.
+    """
+
+    def __init__(self, A, max_steps=DEFAULT_REF_STEPS):
+        self._csr = A.tocsr().astype(HIGH_DTYPE)
+        self._lu = spla.splu(A.tocsc().astype(HIGH_DTYPE))
+        self._max_steps = int(max_steps)
+        # Diagnostics of the last solve, read by run_benchmarks for the report.
+        self.steps = 0
+        self.residual = float("nan")
+
+    def _matvec_ext(self, x):
+        """A @ x accumulated in EXT_DTYPE, one column."""
+        indptr = self._csr.indptr
+        products = self._csr.data.astype(EXT_DTYPE) \
+            * x.astype(EXT_DTYPE)[self._csr.indices]
+        out = np.zeros(self._csr.shape[0], dtype=EXT_DTYPE)
+        if products.size:
+            # reduceat returns the element at the start offset for an empty
+            # row rather than zero, so empty rows are left at zero explicitly.
+            nonempty = np.flatnonzero(np.diff(indptr) > 0)
+            out[nonempty] = np.add.reduceat(products, indptr[nonempty])
+        return out
+
+    def _solve_one(self, b):
+        b = np.asarray(b, dtype=HIGH_DTYPE)
+        x = self._lu.solve(b)
+        tol = EPS_EXT * 10
+        for _ in range(self._max_steps):
+            r = b.astype(EXT_DTYPE) - self._matvec_ext(x)
+            d = self._lu.solve(np.asarray(r, dtype=HIGH_DTYPE))
+            # The iterate is carried in extended precision between steps:
+            # rounded back to complex128 every step it could never become more
+            # accurate than the solutions it exists to judge.
+            x = x.astype(EXT_DTYPE) + d.astype(EXT_DTYPE)
+            self.steps += 1
+            norm_x = float(np.max(np.abs(x)))
+            if norm_x and float(np.max(np.abs(d))) <= tol * norm_x:
+                break
+        r = b.astype(EXT_DTYPE) - self._matvec_ext(x)
+        denom = (float(abs(self._csr).sum(axis=1).max()) * float(np.max(np.abs(x)))
+                 + float(np.max(np.abs(b))))
+        if denom:
+            self.residual = max(0.0 if np.isnan(self.residual) else self.residual,
+                                float(np.max(np.abs(r)) / denom))
+        return np.asarray(x, dtype=HIGH_DTYPE)
+
+    def solve(self, b):
+        self.steps = 0
+        self.residual = float("nan")
+        return _solve_columns(self._solve_one, b)
+
+    def factor_nbytes(self):
+        return 0
+
+    def free(self):
+        self._lu = None
+
+
+# The --reference-solver name of the extended-precision reference. Kept out of
+# SOLVER_BUILDERS deliberately: it is not a solver under test and must never be
+# selectable as --solver.
+EXTENDED_REFERENCE = "extended"
+
+
+def build_reference(name, A, bs, b):
+    """
+    The reference solver named by --reference-solver, as an object with
+    solve(b) and free().
+    """
+    if name == EXTENDED_REFERENCE:
+        return _ExtendedReference(A)
+    return SOLVER_BUILDERS[name](A, HIGH_DTYPE, bs, b, DEFAULT_INV_DTYPE)
+
+
 def load_energy_metadata(h5path):
     """
     (indices, energies, valence_band_edge, conduction_band_edge) from a
@@ -1311,6 +1483,79 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
     if hasattr(solver, "free"):
         solver.free()
     return x, extra
+
+
+# Threshold separating a genuinely contracting step from one already on the
+# limiting-accuracy plateau, used by contraction_summary. It is the same 0.5 as
+# DEFAULT_RHO_THRESH -- Wilkinson's, and Oktay and Carson's 'cautious' setting
+# -- but applied offline as a label rather than online as a stopping rule. The
+# two uses are deliberately separated: as a stopping rule 0.5 truncates a run
+# that is still converging slowly, which is exactly what happens at the large
+# kappa_inf end of a sweep and would bias the iteration count downward there;
+# as a label it only says which steps the mean rate should be taken over.
+DEFAULT_CONTRACTION_THRESH = 0.5
+
+
+def contraction_summary(metrics, threshold=DEFAULT_CONTRACTION_THRESH):
+    """
+    The mean contraction of the forward error, over the steps that were
+    actually contracting.
+
+    A refinement run has two regimes: the forward error falls roughly
+    geometrically, then flattens at the limiting accuracy of Corollary 3.3
+    (eq. 3.10, of order cond(A, x) u here since u_r = u). Averaging the
+    observed ratio rho over the whole run mixes the two and reports a rate
+    closer to 1 than anything the method did; the shorter the run, the worse
+    the distortion, and a GMRES-IR run is typically two or three steps.
+
+    So the leading steps with rho < threshold are taken as the contraction
+    phase and the mean is taken over those alone:
+
+        n_contract  how many steps that was
+        rho_bar     the geometric mean of rho over them
+
+    rho_bar is computed as (ferr[n_contract] / ferr[0]) ** (1 / n_contract),
+    which is that geometric mean exactly -- the product of successive ratios
+    telescopes -- and so needs no fit and no per-step averaging.
+
+    n_contract is reported beside rho_bar and is not decoration: at
+    n_contract = 1 there is no averaging at all and rho_bar is a single
+    measured ratio, which a figure should show as such rather than as a mean.
+
+    Note that rho_bar is a summary, not a parameter. The predicted factor phi_i
+    of eq. (3.9) varies over a run through mu_i, which Carson and Higham
+    observe is smallest in the early iterations, so the contraction genuinely
+    slows before the plateau is reached and no single rate describes the run.
+
+    Returns a dict with n_contract, rho_bar, ferr_first and ferr_last, the last
+    two being the endpoints the mean was taken between. n_contract is 0 and the
+    rest NaN when no step contracted, or when there is no forward error to
+    measure (no --reference-solver).
+    """
+    empty = {"n_contract": 0, "rho_bar": float("nan"),
+             "ferr_first": float("nan"), "ferr_last": float("nan")}
+    ferr = [m.get("ferr_ref") for m in metrics]
+    if len(ferr) < 2 or ferr[0] is None or not ferr[0]:
+        return empty
+
+    n = 0
+    for i in range(len(ferr) - 1):
+        this, nxt = ferr[i], ferr[i + 1]
+        if this is None or nxt is None or not this:
+            break
+        if nxt / this >= threshold:
+            break
+        n += 1
+    if n == 0:
+        return empty
+
+    first, last = float(ferr[0]), float(ferr[n])
+    return {
+        "n_contract": n,
+        "rho_bar": (last / first) ** (1.0 / n),
+        "ferr_first": first,
+        "ferr_last": last,
+    }
 
 
 def _backward_error_histories(A_high, b_high, x_history, normA):
@@ -1999,17 +2244,30 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
     x_true = None
     ref = None
     ref_eta = None
+    # kappa_inf(A) * eps_ext, the accuracy the extended-precision reference
+    # itself reaches; see _ExtendedReference. A forward error within an order of
+    # magnitude of it is measuring the reference, not the method.
+    ref_floor = float("nan")
     if reference_solver is not None:
-        print(f"Reference: x_true = {reference_solver} complex128", flush=True)
+        if reference_solver == EXTENDED_REFERENCE:
+            print(f"Reference: x_true = superlu complex128 + "
+                  f"{DEFAULT_REF_STEPS} refinement steps with a "
+                  f"clongdouble residual (eps_ext={EPS_EXT:.1e})", flush=True)
+        else:
+            print(f"Reference: x_true = {reference_solver} complex128", flush=True)
         try:
-            ref = SOLVER_BUILDERS[reference_solver](A, HIGH_DTYPE, bs, b,
-                                                    DEFAULT_INV_DTYPE)
+            ref = build_reference(reference_solver, A, bs, b)
             x_true = ref.solve(b_high).astype(HIGH_DTYPE)
             ref_res = np.linalg.norm(A_high @ x_true - b_high) / np.linalg.norm(b_high)
             _, ref_etas, _ = backward_errors(A_high, x_true, b_high, normA)
             ref_eta = ref_etas[np.inf]
             print(f"           ||A@x_true - b|| / ||b|| for x_true itself: {ref_res:.2e}"
                   f"   nbe_inf: {ref_eta:.2e}")
+            if reference_solver == EXTENDED_REFERENCE and kappa["inf"] is not None:
+                ref_floor = kappa["inf"] * EPS_EXT
+                print(f"           reference floor kappa_inf*eps_ext = "
+                      f"{ref_floor:.2e}; a ferr_ref near it measures the "
+                      f"reference, not the method")
         except (ImportError, TypeError, RuntimeError) as e:
             raise SystemExit(f"--reference-solver {reference_solver} failed: {e}")
 
@@ -2318,6 +2576,22 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
                   f"rho_max = {summary['rho_max']:.3e}   "
                   f"sqrt(n)*u = {monitor.limit:.3e}")
 
+    contraction = contraction_summary(metrics)
+    if metrics and contraction["n_contract"]:
+        # The two quantities a convergence-versus-kappa study reads: how many
+        # outer steps the run took, and how fast the forward error fell while
+        # it was still falling. See contraction_summary for why the mean is
+        # taken over the contracting steps alone.
+        note = " (a single ratio, not a mean)" if contraction["n_contract"] == 1 else ""
+        print(f"\n  Contraction: rho_bar = {contraction['rho_bar']:.3e} over "
+              f"{contraction['n_contract']} contracting step"
+              f"{'' if contraction['n_contract'] == 1 else 's'}{note}   "
+              f"ferr {contraction['ferr_first']:.2e} -> "
+              f"{contraction['ferr_last']:.2e}")
+    elif metrics:
+        print(f"\n  Contraction: no step contracted by more than "
+              f"{DEFAULT_CONTRACTION_THRESH}; rho_bar is not defined")
+
     if metrics:
         print(f"\n  Convergence history (first run, {ir_name}):")
         for i, m in enumerate(metrics):
@@ -2464,8 +2738,14 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
             # entry out instead of drawing a bar at zero.
             factor_mb_reported=int(mem[nm] > 0),
             working_mb=working[nm] / MIB,
+            # The convergence-rate columns, on the refinement row only: the
+            # other two variants perform no outer steps. See
+            # contraction_summary.
+            n_contract=int(contraction["n_contract"]) if mon is not None else -1,
+            rho_bar=float(contraction["rho_bar"]) if mon is not None else float("nan"),
             reference_solver=reference_solver or "",
             reference_nbe=float(ref_eta) if ref_eta is not None else float("nan"),
+            reference_floor=ref_floor,
         ))
 
     iter_rows = []
@@ -2548,11 +2828,20 @@ def main():
                          f"condition")
     ap.add_argument("--repeats", type=int, default=1,
                     help="repeats per variant; the median is reported")
-    ap.add_argument("--reference-solver", choices=["superlu", "mumps", "cudss"],
+    ap.add_argument("--reference-solver",
+                    choices=["superlu", "mumps", "cudss", EXTENDED_REFERENCE],
                     default="mumps", metavar="NAME",
-                    help="compute x_true with this solver at complex128, and "
-                         "the reference corrections phi_solve is measured "
-                         "against (default: mumps)")
+                    help="compute x_true with this solver, and the reference "
+                         "corrections phi_solve is measured against. The three "
+                         "named solvers run at complex128 and so carry a "
+                         "forward error of order cond(A,x)*u, the same order "
+                         "as the limiting accuracy of refinement itself, which "
+                         "makes them unusable as a ruler for a convergence "
+                         f"study; '{EXTENDED_REFERENCE}' refines a complex128 "
+                         "solve with a clongdouble residual and is about 2e3 "
+                         "times more accurate. Use it for any run whose "
+                         "iteration count or contraction rate is being "
+                         "measured (default: mumps)")
     ap.add_argument("--gmres-tol", type=float, default=1e-8,
                     help="relative tolerance of the inner GMRES solve "
                          "(--inner gmres only)")
@@ -2679,6 +2968,7 @@ def main():
         indices=np.asarray(indices, dtype=np.int64),
         n_requested=len(indices),
         n_skipped=len(skipped),
+        contraction_thresh=float(DEFAULT_CONTRACTION_THRESH),
         criteria="Oktay and Carson 2021, section 2.1.1",
         convergence_factor="Carson and Higham 2018, Corollary 3.3",
         **material_metadata(h5path),

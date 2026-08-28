@@ -302,6 +302,59 @@ Four honest caveats, all recorded in the output rather than hidden:
   took, not the worst case `u_s ‖E_i‖_∞` the Corollary bounds with. It is
   therefore a lower estimate.
 
+### The reference solution, and why it decides the statistics
+
+Every forward error here is measured against `x_true`, so `ferr_ref` cannot go
+below the reference's own error. A complex128 direct solver carries a forward
+error of order `cond(A,x)·u` — the *same order* as refinement's own limiting
+accuracy (3.10) — so it is not a usable ruler for a convergence study:
+
+- **the iteration count** is corrupted, because stopping condition 5 fires when
+  `ferr` stops improving, so a coarse reference ends the loop early — and it is
+  coarsest exactly where `kappa_inf` is largest, flattening the trend being
+  measured;
+- **the contraction rate** is corrupted, because the last steps then sit on the
+  reference's plateau rather than the method's.
+
+`--reference-solver extended` refines a complex128 solve with the residual
+accumulated in `np.clongdouble`, as `block-thomas/forward_error.py` does. The
+gain is `eps_double / eps_ext ≈ 2×10³`, **not** `u²`: refinement in a residual
+precision `u_r` converges to about `kappa_inf(A)·u_r`. Measured against an
+exact rational solution the improvement is 1600–3200× over a plain SuperLU
+complex128 solve. `reference_floor = kappa_inf(A)·eps_ext` is recorded per
+index — a `ferr_ref` within an order of magnitude of it is measuring the
+reference, not the method.
+
+### Convergence rate: `n_contract` and `rho_bar`
+
+A run has two regimes — roughly geometric decay, then a plateau at the limiting
+accuracy. Averaging the observed `rho` over the whole run mixes them and
+reports a rate far closer to 1 than anything the method did. So the leading
+steps with `rho < 0.5` are taken as the contraction phase and the mean is taken
+over those alone:
+
+```
+n_contract  how many steps that was
+rho_bar     (ferr[n_contract] / ferr[0]) ** (1/n_contract)
+```
+
+which *is* the geometric mean of `rho` over those steps — successive ratios
+telescope — so it needs no fit.
+
+Two things to keep in mind when plotting it. At `n_contract == 1` there is no
+averaging and `rho_bar` is a single measured ratio; short runs are the norm for
+GMRES-IR, so a figure must show `n_contract` beside it. And `rho_bar` is a
+summary, not a parameter: `phi_i` in (3.9) varies over a run through `mu_i`,
+which Carson and Higham observe is smallest early, so the contraction genuinely
+slows before the plateau and no single rate describes the run.
+
+The same 0.5 appears here and as `--rho-thresh`, deliberately in two different
+roles. As a *stopping rule* it truncates a run that is still converging slowly,
+which happens precisely at large `kappa_inf` and biases the iteration count
+downward there — so a convergence sweep should pass `--rho-thresh 1.0`, leaving
+condition 2 to catch divergence only. As an *offline label* it just says which
+steps the mean is taken over.
+
 **None of this is computed inside the refinement loop.** The loop retains its
 iterates, corrections and residual vectors and nothing else; every metric is
 reconstructed afterwards by `refinement_metrics`. The loop is timed and its
@@ -473,9 +526,11 @@ performs outer steps, so only it appears in `iterations`.
 `inner`, `variant`, `is_refined`, `u_f`, `u`, `u_s`, `kappa_2`, `kappa_inf`,
 `cond_skeel`, `cond_skeel_x`, `lu_ir_bound`, `relres`, `ferr_ref`, `eta1`, `eta2`, `etainf`, `omega`,
 `outer_iters`, `converged`, `rho_max`, `psi_final`, `stop_reason`,
+`n_contract`, `rho_bar`,
 `gmres_total`, `wall_s`, `factor_s`, `factor_symbolic_s`, `factor_numeric_s`,
 `inner_s`, `solve_s`, `residual_s`, `other_s`, `n_solves`, `factor_mb`,
-`factor_mb_reported`, `working_mb`, `reference_solver`, `reference_nbe`.
+`factor_mb_reported`, `working_mb`, `reference_solver`, `reference_nbe`,
+`reference_floor`.
 
 `factor_symbolic_s` and `factor_numeric_s` split the factorization into the
 analysis phase — the fill-reducing ordering and the symbolic factorization,

@@ -98,6 +98,7 @@ sys.path.append(str((_HERE / ".." / ".." / "solvers").resolve()))
 import h5py
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import ScalarFormatter
 
 import cli
 from style import axis_label, energies_of, mark_band_edges, save_figure, sweep_line
@@ -301,6 +302,17 @@ def draw_panel(ax, x, curves, styles, attrs, have_energy, title, ylabel):
     return drawn
 
 
+# Below this spread in the matched ratio values, the panel is drawn on a
+# linear y axis instead of a log one. cond_2 comes from svds, a converged
+# computation rather than a lower-bound estimate, so its ratio to the exact
+# value sits within a hair of 1 with almost no spread; on a log axis that
+# narrow a range makes matplotlib's tick generator print the same value twice
+# under two different labels, for example "1x10^0" next to "10x10^-1", which
+# are the same number. cond_inf and cond_skeel are true lower bounds with a
+# wide spread and keep the log axis, where this problem does not occur.
+RATIO_LINEAR_SPREAD = 0.1
+
+
 def draw_ratio_panel(ax, curves, indices_curve, x_curve, points,
                       indices_exact, styles, have_energy, attrs):
     """
@@ -308,32 +320,43 @@ def draw_ratio_panel(ax, curves, indices_curve, x_curve, points,
     reference, unity marked.
 
     Same convention as the bound-ratio panels of
-    block-thomas/plot_forward_error.py: log y axis, a dashed line at 1, grid
-    lines at both decades and half-decades. The estimator is a lower bound, so
-    every value is at most 1; the distance below 1 is the slack.
+    block-thomas/plot_forward_error.py: a dashed line at 1, grid lines at both
+    decades and half-decades. The axis is log by default, since a true
+    estimator lower bound can be many times smaller than the exact value and
+    the distance below 1 is then read as a ratio; it switches to linear when
+    the matched values all fall within RATIO_LINEAR_SPREAD of each other, see
+    the constant above.
     """
-    drawn = 0
+    series = []
     for name, (label, colour, _linestyle) in styles.items():
         exact_name, marker = EXACT_OF.get(name, (None, None))
         if exact_name is None:
             continue
         x, ratio = matched_ratios(curves, indices_curve, x_curve, name,
                                   points, indices_exact, exact_name)
-        if ratio.size == 0:
-            continue
-        ax.semilogy(x, ratio, color=colour, ls="-", label=label,
-                    **sweep_line(ratio.size, marker=marker))
-        drawn += 1
+        if ratio.size:
+            series.append((label, colour, marker, x, ratio))
+
+    all_ratio = (np.concatenate([s[4] for s in series]) if series
+                else np.array([]))
+    linear = all_ratio.size > 0 and (np.ptp(all_ratio) < RATIO_LINEAR_SPREAD)
+
+    for label, colour, marker, x, ratio in series:
+        plot = ax.plot if linear else ax.semilogy
+        plot(x, ratio, color=colour, ls="-", label=label,
+             **sweep_line(ratio.size, marker=marker))
 
     ax.axhline(1.0, color="k", lw=1.0, ls="--")
+    if linear:
+        ax.yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
     ax.set_xlabel(axis_label(have_energy))
     ax.set_ylabel("estimate / exact")
     ax.grid(True, which="both", ls=":", alpha=0.4)
     if have_energy:
         mark_band_edges(ax, attrs, label=False)
-    if drawn:
-        ax.legend(loc="lower left", fontsize=7, ncol=max(drawn, 1))
-    return drawn
+    if series:
+        ax.legend(loc="lower left", fontsize=7, ncol=max(len(series), 1))
+    return len(series)
 
 
 def draw_ladder(ax, x, curves, attrs, have_energy, title):

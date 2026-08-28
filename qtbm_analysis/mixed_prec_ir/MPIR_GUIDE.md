@@ -213,6 +213,54 @@ than silently misread as failure.
 
 ---
 
+## 3b. Measuring convergence speed
+
+Two numbers per index, both in the `runs` table:
+
+| Column | Meaning |
+|---|---|
+| `outer_iters` | how many outer steps the run took |
+| `n_contract` | how many of those steps were still contracting (`rho < 0.5`) |
+| `rho_bar` | `(ferr[n_contract]/ferr[0]) ** (1/n_contract)`, the geometric mean of `rho` over the contracting steps |
+
+Plotted against `kappa_inf` these are the convergence-speed result. Restricting
+the mean to the contracting steps is not optional: the forward error decays
+geometrically and then flattens at the limiting accuracy of `(3.10)`, and a
+mean over the whole run reports a rate far closer to 1 than anything the method
+did.
+
+**For such a sweep, change two flags:**
+
+```
+--reference-solver extended     an accurate enough ruler; see below
+--rho-thresh 1.0                stop on divergence, not on slow convergence
+--max-iter 40                   a safety net that should not bind
+```
+
+`--rho-thresh 0.5` is the right *stopping* default but the wrong setting here:
+it cuts off a run that is still converging slowly, which is what happens at
+large `kappa_inf`, biasing the iteration count downward at exactly the end of
+the sweep the study is about. The same 0.5 is still applied, offline, as the
+label defining `n_contract`.
+
+**Why the reference has to be `extended`.** `ferr_ref` cannot fall below
+`x_true`'s own error. A complex128 direct solve carries `cond(A,x)·u`, the same
+order as refinement's limiting accuracy, so stopping condition 5 fires when the
+*reference* runs out — earliest where `kappa_inf` is largest, flattening the
+trend — and the last `rho` values sit on the reference's plateau.
+`--reference-solver extended` refines with a `np.clongdouble` residual and is
+about `2×10³` times more accurate (measured: 1600–3200× against an exact
+rational solution). `reference_floor = kappa_inf·eps_ext` is recorded so a
+`ferr_ref` near it can be recognised as measuring the reference.
+
+Two caveats for the figure: at `n_contract == 1` there is no averaging at all,
+and short runs are normal for GMRES-IR; and `rho_bar` is a summary rather than
+a parameter, since `phi_i` varies over a run through `mu_i`, so the contraction
+genuinely slows before the plateau.
+
+Runs that stopped on `max_iter` or `k_max` did not finish — filter on
+`stop_reason` and report their count separately rather than averaging them in.
+
 ## 4. Convergence metrics
 
 Beyond the stopping decision, every experiment reconstructs the quantities of
@@ -310,9 +358,11 @@ is_refined, u_f, u, u_s, kappa_2, kappa_inf, cond_skeel, cond_skeel_x,
 lu_ir_bound,
 relres, ferr_ref, eta1, eta2, etainf, omega,
 outer_iters, converged, rho_max, psi_final, stop_reason,
+n_contract, rho_bar,
 gmres_total, wall_s, factor_s, factor_symbolic_s, factor_numeric_s, inner_s,
 solve_s, residual_s, other_s, n_solves,
-factor_mb, factor_mb_reported, working_mb, reference_solver, reference_nbe
+factor_mb, factor_mb_reported, working_mb, reference_solver, reference_nbe,
+reference_floor
 ```
 
 All three measured variants appear here (three rows per index).
