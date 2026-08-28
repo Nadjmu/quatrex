@@ -21,10 +21,9 @@ see the header of ``block-thomas/growth_factor.py``.
 
 Algorithm
 ---------
-No computation is performed. The recorded quantities are plotted per norm,
-two panels each.
+No computation is performed; the recorded quantities are plotted as they stand.
 
-Panel 1, factor growth relative to A_eff:
+Figure 1, factor growth relative to A_eff, one panel per norm drawn:
 
     Psi = ||L|| ||U|| / ||A_eff||        the `loose` column.
 
@@ -47,28 +46,25 @@ plotted: it watches the largest entry of U alone, is blind to L, and for block
 LU -- whose multipliers are not bounded by pivoting -- understates the growth
 Psi captures.
 
-Panel 2, assembly residual. This is a correctness guard on the reconstruction,
-not a stability metric: values far above the unit roundoff of the stored
-precision indicate that the assumed factor convention does not hold for the
-build that produced the file, and panel 1 must then be discarded.
+The assembly residual ||A_eff - LU|| / ||A_eff|| is recorded as resid_rel and
+is no longer drawn. It is a correctness guard on the reconstruction rather than
+a stability metric: values far above the unit roundoff of the stored precision
+mean the assumed factor convention does not hold for the build that produced
+the file, and Psi must then be discarded. Check it in the per-index report
+growth_factor.py prints.
 
-complex64 and complex128 are both drawn (dashed and solid). In panel 1 they
-coincide almost exactly -- factor growth is precision-independent up to
-rounding -- so the dashed line sits under the solid one; the two separate only
-in panel 2, which is a roundoff quantity.
+complex64 and complex128 are both drawn (dashed and solid). They coincide
+almost exactly, since factor growth is precision-independent up to rounding, so
+the dashed line is hidden under the solid one.
 
-A second figure splits Psi into the two factors it is made of, ||L|| and
+Figure 2 splits Psi into the two factors it is made of, ||L|| and
 ||U|| / ||A_eff||, whose product is Psi exactly. It says which of the two
 halves is responsible. For block LU ||L|| = 1 + max_k ||L_k|| with
 L_k = A_{k+1,k} S_k^-1, and it is the term scalar partial pivoting does not
 have, since that bounds |L_ij| <= 1 by construction and block Thomas cannot.
 See plot_schur.
 
-A third figure draws ||L_k|| for every block k against energy as a heat map,
-so that the block in the recursion where the multipliers grow is located, not
-only the fact that one of them does. See plot_profile.
-
-A fourth figure puts the growth factor against the backward error it bounds.
+Figure 3 puts the growth factor against the backward error it bounds.
 Theorem 2.1 of Demmel, Higham and Schreiber gives, for a block LU solve,
 
     ||dA|| / ||A||  <=  c(n) u ( 1 + Psi ),    Psi = ||L|| ||U|| / ||A||
@@ -93,24 +89,27 @@ adds either back.
 
 Only the infinity norm is drawn by default. The 1-norm carries the same
 conclusion for these matrices and merely doubles the figure height; --norms
-restores it when a specific reason to compare the two arises. The second figure
-follows whichever norm is drawn first, since its identity holds in both.
+restores it when a specific reason to compare the two arises. Figures 2 and 3
+follow whichever norm is drawn first, since their identities hold in both.
 
-The legend is shared across both panels and placed below the figure: one colour
-per solver, one line style per precision.
+Every legend is shared and placed below its figure: one colour per solver, one
+line style per precision.
 
 Output
 ------
-Four figures, written to the analysis file's own directory by default so that
+Three figures, written to the analysis file's own directory by default so that
 each sits beside the data it was drawn from:
 
-    <material>_growth_factor.png       Psi and the assembly residual, per norm
+    <material>_growth_factor.png       Psi, one panel per norm drawn
     <material>_schur_growth.png        the two factors of Psi, one norm
-    <material>_multiplier_profile.png  ||L_k|| per block, heat map
     <material>_backward_vs_growth.png  eta_inf as a fraction of the bound
 
 The last needs the forward_error group in the same file; it is skipped with a
 message when that group has not been written.
+
+plot_profile() draws ||L_k|| for every block k as a heat map from the l_profile
+column. It is not called: the column has no consumer at present and the figure
+is not part of the chapter. Call it from main() to bring it back.
 
 Usage
 -----
@@ -191,15 +190,14 @@ def group_by_series(records, norm):
 
 
 def plot(records, attrs, material, norms, out_path):
-    fig, axes = plt.subplots(len(norms), 2, figsize=(13, 4.8 * len(norms)),
+    fig, axes = plt.subplots(len(norms), 1, figsize=(7.5, 4.8 * len(norms)),
                              squeeze=False)
     have_energy = energies_of(attrs, [0]) is not None
     solvers_present, dtypes_present = set(), set()
 
     for row_index, norm in enumerate(norms):
-        ax_ratio, ax_resid = axes[row_index]
+        ax_ratio = axes[row_index][0]
         series = group_by_series(records, norm)
-        psi_all = []
 
         for (solver, dtype), rows in series.items():
             solvers_present.add(solver)
@@ -211,46 +209,25 @@ def plot(records, attrs, material, norms, out_path):
             _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
             _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
             psi = np.asarray([r["loose"] for r in rows], dtype=float)
-            resid = np.asarray([r["resid_rel"] for r in rows], dtype=float)
-            psi_all.append(psi)
             prim = sweep_line(len(rows), "primary")
 
-            xg, tg, rg = split_gaps(indices, x, psi, resid)
+            xg, tg = split_gaps(indices, x, psi)
             ax_ratio.semilogy(xg, tg, ls, color=colour, **prim)
-            ax_resid.semilogy(xg, rg, ls, color=colour, **prim)
-
-        # A near-singular pivot block at a band edge sends the ratio over 1e6
-        # at a handful of indices and, drawn to scale, flattens the plateau
-        # where the solvers actually differ. Cap the axis just above the bulk
-        # of Psi; the excursions clip and the Schur figure carries them.
-        bulk = np.concatenate(psi_all) if psi_all else np.array([1.0])
-        bulk = bulk[np.isfinite(bulk) & (bulk > 0)]
-        if bulk.size:
-            top = 10.0 ** (np.ceil(np.log10(np.percentile(bulk, 95))) + 1)
-            if np.nanmax(bulk) > top:
-                ax_ratio.set_ylim(top=top)
 
         ax_ratio.set_title(f"factor growth  "
                            f"$\\Psi = \\|L\\|\\,\\|U\\| / "
                            f"\\|A_{{\\mathrm{{eff}}}}\\|$  [{norm}]")
         ax_ratio.set_ylabel(r"$\Psi = \|L\|\,\|U\| / \|A_{\mathrm{eff}}\|$")
-        ax_resid.set_title(f"assembly residual "
-                           f"$\\|A_{{\\mathrm{{eff}}}} - LU\\| / "
-                           f"\\|A_{{\\mathrm{{eff}}}}\\|$  [{norm}]")
-        ax_resid.set_ylabel("relative residual")
-
-        for ax in axes[row_index]:
-            ax.set_xlabel(axis_label(have_energy))
-            ax.grid(True, which="both", ls=":", alpha=0.4)
-            if have_energy:
-                mark_band_edges(ax, attrs, label=False)
+        ax_ratio.set_xlabel(axis_label(have_energy))
+        ax_ratio.grid(True, which="both", ls=":", alpha=0.4)
+        if have_energy:
+            mark_band_edges(ax_ratio, attrs, label=False)
 
     solvers = _ordered(solvers_present, SOLVER_STYLE)
     dtypes = _ordered(dtypes_present, DTYPE_STYLE)
     handles, labels = legend_handles(solvers, dtypes)
 
-    fig.suptitle(f"LU backward stability and factor growth — {material}",
-                 fontsize=14, y=1.005)
+    fig.suptitle(f"Factor growth — {material}", fontsize=14, y=1.005)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 5),
                fontsize=8, frameon=False,
@@ -666,11 +643,6 @@ def main():
                       outdir / f"{material}_schur_growth.png"):
         print("no Block Thomas rows in this file; the factor-split figure "
               "needs at least one")
-
-    if not plot_profile(records, attrs, material,
-                        outdir / f"{material}_multiplier_profile.png"):
-        print("no l_profile column in this file; rerun growth_factor.py for "
-              "the per-block multiplier figure")
 
     if not plot_backward_vs_growth(records, attrs, material, h5path,
                                    outdir / f"{material}_backward_vs_growth.png"):
