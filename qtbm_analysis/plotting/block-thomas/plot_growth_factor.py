@@ -51,6 +51,22 @@ says which half is responsible. The second is the term scalar partial
 pivoting does not have, since it bounds |L_ij| <= 1 by construction and block
 Thomas cannot. See plot_schur.
 
+A third figure draws ||L_k|| for every block k against energy as a heat map,
+so that the block in the recursion where the multipliers grow is located, not
+only the fact that one of them does. See plot_profile.
+
+A fourth figure puts the growth factor against the backward error it bounds.
+Theorem 2.1 of Demmel, Higham and Schreiber gives, for a block LU solve,
+
+    omega  <=  c(n) u ( 1 + ||L|| ||U|| / ||A|| )
+
+with c(n) a low-degree polynomial. The figure draws the measured omega, the
+bound u (1 + tight) beside it, and the ratio of the two. For these matrices the
+ratio is far below 1 at every energy, so the growth factor is a correct upper
+bound on the backward error but overestimates it by several orders of
+magnitude. omega is read from the forward_error group of the same file, matched
+on (index, solver, precision). See plot_backward_vs_growth.
+
 UMFPACK and block-thomas-inv are excluded by default. UMFPACK factorizes A
 with its rows rescaled, so its ratios are measured against a different A_eff
 and do not sit on the same scale as the others. block-thomas-inv shares the
@@ -67,10 +83,16 @@ per solver, one line style per precision.
 
 Output
 ------
-<outdir>/<material>_growth_factor.png, one row of two panels per norm drawn,
-and <outdir>/<material>_schur_growth.png, two panels, Block Thomas only. The
-default output directory is the analysis file's own directory, so the figures
-are written beside the data they were drawn from.
+Four figures, written to the analysis file's own directory by default so that
+each sits beside the data it was drawn from:
+
+    <material>_growth_factor.png       one row of two panels per norm drawn
+    <material>_schur_growth.png        the L and U factors, one norm
+    <material>_multiplier_profile.png  ||L_k|| per block, heat map
+    <material>_backward_vs_growth.png  omega against the bound it satisfies
+
+The last needs the forward_error group in the same file; it is skipped with a
+message when that group has not been written.
 
 Usage
 -----
@@ -94,11 +116,23 @@ from matplotlib.colors import LogNorm
 
 import cli
 from factor_io import load_table, table_rows
-from style import (SOLVER_STYLE, DTYPE_STYLE, axis_label, energies_of,
-                   legend_handles, mark_band_edges, save_figure, split_gaps,
-                   sweep_line)
+from style import (SOLVER_STYLE, DTYPE_STYLE, FP16_UNIT_ROUNDOFF, axis_label,
+                   energies_of, legend_handles, mark_band_edges, save_figure,
+                   split_gaps, sweep_line)
 
 GROUP = "growth_factor"
+
+# The forward_error group of the same analysis file, read only for its omega
+# column by the backward-error-against-growth figure.
+FORWARD_GROUP = "forward_error"
+
+# Unit roundoff u of each working precision. The same values as
+# plot_backward_error.py, so the two figures place omega against one reference.
+UNIT_ROUNDOFF = {
+    "complex128": 2.0 ** -52,
+    "complex64":  2.0 ** -23,
+    "complex32":  FP16_UNIT_ROUNDOFF,
+}
 
 # Default solver set for the figures. UMFPACK is left out because its row
 # scaling makes A_eff -- and hence every ratio -- incomparable to the others.
@@ -425,6 +459,154 @@ def plot_profile(records, attrs, material, out_path):
     return True
 
 
+# ---------------------------------------------------------------------------
+# The growth factor against the backward error it bounds
+# ---------------------------------------------------------------------------
+def _omega_by_key(h5path):
+    """
+    {(index, solver, dtype): omega} from the forward_error group of the same
+    analysis file, dropping non-finite values. Returns {} when that group has
+    not been written, so the caller can skip its figure rather than fail.
+    """
+    try:
+        columns, _ = load_table(h5path, FORWARD_GROUP)
+    except SystemExit:
+        return {}
+    out = {}
+    for row in table_rows(columns):
+        omega = float(row["omega"])
+        if np.isfinite(omega):
+            out[(int(row["idx"]), str(row["solver"]), str(row["dtype"]))] = omega
+    return out
+
+
+def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
+    """
+    The measured backward error against the bound the growth factor puts on it.
+
+    Theorem 2.1 of Demmel, Higham and Schreiber bounds the backward error of a
+    block LU solve by
+
+        omega  <=  c(n) u ( 1 + ||L|| ||U|| / ||A|| ),
+
+    with c(n) a low-degree polynomial in the matrix and block dimensions. The
+    right-hand side is drawn without the unknown c(n) and with the sharper
+    entrywise ratio tight = || |L| |U| || / ||A_eff|| in place of
+    ||L|| ||U|| / ||A_eff||; the growth figure plots tight on its own.
+
+    Row 1, one panel per precision: omega as recorded, solid, and the bound
+    u (1 + tight), dashed, in the same colour per solver. The dotted black line
+    is the unit roundoff u of that precision. Where the growth factor is small
+    the bound sits at u and coincides with omega; at a band edge the bound
+    rises with the growth factor while omega stays near u.
+
+    Row 2, one panel per precision: the ratio omega / [u (1 + tight)], with a
+    line at 1. This is the fraction of the predicted backward error that is
+    realised. It is well below 1 at every energy, including where tight reaches
+    1e5 to 1e6, which means the growth factor bounds the backward error but
+    overestimates it. A ratio above 1 would require c(n) > 1 to be consistent
+    with the theorem and would otherwise signal a wrong recorded quantity.
+
+    omega comes from the forward_error group of the same file, matched to the
+    growth rows on (index, solver, precision) at the infinity norm. Returns
+    False when that group is absent or shares no rows with this one.
+    """
+    omega_by_key = _omega_by_key(h5path)
+    if not omega_by_key:
+        return False
+
+    present_norms = {r["norm"] for r in records}
+    norm = "inf-norm" if "inf-norm" in present_norms else sorted(present_norms)[0]
+
+    series = defaultdict(list)
+    for record in records:
+        if record["norm"] != norm:
+            continue
+        key = (int(record["idx"]), str(record["solver"]), str(record["dtype"]))
+        omega = omega_by_key.get(key)
+        if omega is None:
+            continue
+        series[(record["dtype"], record["solver"])].append(
+            (int(record["idx"]), float(record["tight"]), omega))
+    if not series:
+        return False
+
+    present_dtypes = {dt for dt, _ in series}
+    dtypes = [d for d in reversed(DTYPE_ORDER_FINEST) if d in present_dtypes]
+    dtypes += sorted(present_dtypes - set(dtypes))
+
+    fig, axes = plt.subplots(2, len(dtypes), squeeze=False,
+                             figsize=(5.8 * len(dtypes), 8.6))
+    have_energy = energies_of(attrs, [0]) is not None
+    solvers_present = set()
+
+    for column, dtype in enumerate(dtypes):
+        ax_cmp, ax_ratio = axes[0][column], axes[1][column]
+        u = UNIT_ROUNDOFF.get(dtype)
+        dtype_label = DTYPE_STYLE.get(dtype, (dtype, "-"))[0]
+
+        for (dt, solver), triples in sorted(series.items()):
+            if dt != dtype:
+                continue
+            solvers_present.add(solver)
+            triples.sort()
+            indices = np.asarray([t[0] for t in triples])
+            tight = np.asarray([t[1] for t in triples], dtype=float)
+            omega = np.asarray([t[2] for t in triples], dtype=float)
+            if u is None:
+                bound = np.full_like(tight, np.nan)
+            else:
+                bound = u * (1.0 + tight)
+            ratio = np.where(np.isfinite(bound) & (bound > 0),
+                             omega / bound, np.nan)
+
+            x = energies_of(attrs, indices)
+            if x is None:
+                x = indices
+            _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
+            prim = sweep_line(len(triples), "primary")
+
+            xg, og, bg, rg = split_gaps(indices, x, omega, bound, ratio)
+            ax_cmp.semilogy(xg, og, "-", color=colour, **prim)
+            ax_cmp.semilogy(xg, bg, "--", color=colour, **prim)
+            ax_ratio.semilogy(xg, rg, "-", color=colour, **prim)
+
+        if u is not None:
+            ax_cmp.axhline(u, color="k", lw=1.0, ls=":")
+        ax_ratio.axhline(1.0, color="k", lw=1.0, ls="--")
+
+        ax_cmp.set_title(f"$\\omega$ and its predicted bound  "
+                         f"[{dtype_label}, {norm}]")
+        ax_ratio.set_title(f"realised fraction  "
+                           f"$\\omega / [\\,u\\,(1+\\mathrm{{tight}})\\,]$  "
+                           f"[{dtype_label}]")
+        for ax in (ax_cmp, ax_ratio):
+            ax.set_xlabel(axis_label(have_energy))
+            ax.grid(True, which="both", ls=":", alpha=0.4)
+            if have_energy:
+                mark_band_edges(ax, attrs, label=False)
+
+    axes[0][0].set_ylabel(r"$\omega$,   $u\,(1+\mathrm{tight})$")
+    axes[1][0].set_ylabel(r"$\omega \,/\, [\,u\,(1+\mathrm{tight})\,]$")
+
+    solvers = _ordered(solvers_present, SOLVER_STYLE)
+    extra = [
+        (plt.Line2D([], [], color="0.3", ls="-"), r"measured $\omega$"),
+        (plt.Line2D([], [], color="0.3", ls="--"),
+         r"predicted bound $u\,(1+\mathrm{tight})$"),
+        (plt.Line2D([], [], color="k", ls=":", lw=1.0), r"unit roundoff $u$"),
+    ]
+    handles, labels = legend_handles(solvers, [], extra=extra)
+
+    fig.suptitle(f"Backward error against the growth-factor bound — {material}",
+                 fontsize=14, y=1.01)
+    fig.tight_layout()
+    fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 5),
+               fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.06))
+    save_figure(fig, out_path, dpi=140)
+    return True
+
+
 def main():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap, help=f"analysis file written by "
@@ -474,6 +656,12 @@ def main():
                         outdir / f"{material}_multiplier_profile.png"):
         print("no l_profile column in this file; rerun growth_factor.py for "
               "the per-block multiplier figure")
+
+    if not plot_backward_vs_growth(records, attrs, material, h5path,
+                                   outdir / f"{material}_backward_vs_growth.png"):
+        print("no forward_error group in this file, or it shares no rows with "
+              "growth_factor; run block-thomas/forward_error.py over the same "
+              "indices for the backward-error-against-growth figure")
 
 
 if __name__ == "__main__":
