@@ -60,12 +60,12 @@ Theorem 2.1 of Demmel, Higham and Schreiber gives, for a block LU solve,
 
     omega  <=  c(n) u ( 1 + ||L|| ||U|| / ||A|| )
 
-with c(n) a low-degree polynomial. The figure draws the measured omega, the
-bound u (1 + tight) beside it, and the ratio of the two. For these matrices the
-ratio is far below 1 at every energy, so the growth factor is a correct upper
-bound on the backward error but overestimates it by several orders of
-magnitude. omega is read from the forward_error group of the same file, matched
-on (index, solver, precision). See plot_backward_vs_growth.
+with c(n) a low-degree polynomial. The figure draws the single ratio
+omega / [u (1 + tight)] against energy, one panel per precision, with a line at
+1. Where it is far below 1 the growth factor bounds the backward error but
+overestimates it; where it approaches 1 the bound is attained up to c(n). omega
+is read from the forward_error group of the same file, matched on (index,
+solver, precision). See plot_backward_vs_growth.
 
 UMFPACK and block-thomas-inv are excluded by default. UMFPACK factorizes A
 with its rows rescaled, so its ratios are measured against a different A_eff
@@ -89,7 +89,7 @@ each sits beside the data it was drawn from:
     <material>_growth_factor.png       one row of two panels per norm drawn
     <material>_schur_growth.png        the L and U factors, one norm
     <material>_multiplier_profile.png  ||L_k|| per block, heat map
-    <material>_backward_vs_growth.png  omega against the bound it satisfies
+    <material>_backward_vs_growth.png  omega as a fraction of the bound
 
 The last needs the forward_error group in the same file; it is skipped with a
 message when that group has not been written.
@@ -482,30 +482,27 @@ def _omega_by_key(h5path):
 
 def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
     """
-    The measured backward error against the bound the growth factor puts on it.
+    The measured backward error as a fraction of the bound the growth factor
+    puts on it.
 
     Theorem 2.1 of Demmel, Higham and Schreiber bounds the backward error of a
     block LU solve by
 
         omega  <=  c(n) u ( 1 + ||L|| ||U|| / ||A|| ),
 
-    with c(n) a low-degree polynomial in the matrix and block dimensions. The
-    right-hand side is drawn without the unknown c(n) and with the sharper
-    entrywise ratio tight = || |L| |U| || / ||A_eff|| in place of
-    ||L|| ||U|| / ||A_eff||; the growth figure plots tight on its own.
+    with c(n) a low-degree polynomial in the matrix and block dimensions. This
+    figure draws the ratio
 
-    Row 1, one panel per precision: omega as recorded, solid, and the bound
-    u (1 + tight), dashed, in the same colour per solver. The dotted black line
-    is the unit roundoff u of that precision. Where the growth factor is small
-    the bound sits at u and coincides with omega; at a band edge the bound
-    rises with the growth factor while omega stays near u.
+        omega / [ u ( 1 + tight ) ],    tight = || |L| |U| || / ||A_eff||,
 
-    Row 2, one panel per precision: the ratio omega / [u (1 + tight)], with a
-    line at 1. This is the fraction of the predicted backward error that is
-    realised. It is well below 1 at every energy, including where tight reaches
-    1e5 to 1e6, which means the growth factor bounds the backward error but
-    overestimates it. A ratio above 1 would require c(n) > 1 to be consistent
-    with the theorem and would otherwise signal a wrong recorded quantity.
+    one panel per precision, with a line at 1. tight is the sharper entrywise
+    form of the growth ratio, the one the growth figure plots.
+
+    The ratio is the fraction of the predicted backward error that is realised.
+    Well below 1 means the growth factor bounds the backward error but
+    overestimates it; near or above 1 means the bound is attained, up to the
+    constant c(n). Read against energy it shows whether the margin between omega
+    and its bound is constant over the sweep or closes at the band edges.
 
     omega comes from the forward_error group of the same file, matched to the
     growth rows on (index, solver, precision) at the infinity norm. Returns
@@ -535,14 +532,16 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
     dtypes = [d for d in reversed(DTYPE_ORDER_FINEST) if d in present_dtypes]
     dtypes += sorted(present_dtypes - set(dtypes))
 
-    fig, axes = plt.subplots(2, len(dtypes), squeeze=False,
-                             figsize=(5.8 * len(dtypes), 8.6))
+    fig, axes = plt.subplots(1, len(dtypes), squeeze=False,
+                             figsize=(5.8 * len(dtypes), 4.4))
     have_energy = energies_of(attrs, [0]) is not None
     solvers_present = set()
 
     for column, dtype in enumerate(dtypes):
-        ax_cmp, ax_ratio = axes[0][column], axes[1][column]
+        ax = axes[0][column]
         u = UNIT_ROUNDOFF.get(dtype)
+        if u is None:
+            continue
         dtype_label = DTYPE_STYLE.get(dtype, (dtype, "-"))[0]
 
         for (dt, solver), triples in sorted(series.items()):
@@ -553,10 +552,7 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
             indices = np.asarray([t[0] for t in triples])
             tight = np.asarray([t[1] for t in triples], dtype=float)
             omega = np.asarray([t[2] for t in triples], dtype=float)
-            if u is None:
-                bound = np.full_like(tight, np.nan)
-            else:
-                bound = u * (1.0 + tight)
+            bound = u * (1.0 + tight)
             ratio = np.where(np.isfinite(bound) & (bound > 0),
                              omega / bound, np.nan)
 
@@ -566,43 +562,28 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
             _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
             prim = sweep_line(len(triples), "primary")
 
-            xg, og, bg, rg = split_gaps(indices, x, omega, bound, ratio)
-            ax_cmp.semilogy(xg, og, "-", color=colour, **prim)
-            ax_cmp.semilogy(xg, bg, "--", color=colour, **prim)
-            ax_ratio.semilogy(xg, rg, "-", color=colour, **prim)
+            xg, rg = split_gaps(indices, x, ratio)
+            ax.semilogy(xg, rg, "-", color=colour, **prim)
 
-        if u is not None:
-            ax_cmp.axhline(u, color="k", lw=1.0, ls=":")
-        ax_ratio.axhline(1.0, color="k", lw=1.0, ls="--")
+        ax.axhline(1.0, color="k", lw=1.0, ls="--")
+        ax.set_title(f"[{dtype_label}, {norm}]")
+        ax.set_xlabel(axis_label(have_energy))
+        ax.grid(True, which="both", ls=":", alpha=0.4)
+        if have_energy:
+            mark_band_edges(ax, attrs, label=False)
 
-        ax_cmp.set_title(f"$\\omega$ and its predicted bound  "
-                         f"[{dtype_label}, {norm}]")
-        ax_ratio.set_title(f"realised fraction  "
-                           f"$\\omega / [\\,u\\,(1+\\mathrm{{tight}})\\,]$  "
-                           f"[{dtype_label}]")
-        for ax in (ax_cmp, ax_ratio):
-            ax.set_xlabel(axis_label(have_energy))
-            ax.grid(True, which="both", ls=":", alpha=0.4)
-            if have_energy:
-                mark_band_edges(ax, attrs, label=False)
-
-    axes[0][0].set_ylabel(r"$\omega$,   $u\,(1+\mathrm{tight})$")
-    axes[1][0].set_ylabel(r"$\omega \,/\, [\,u\,(1+\mathrm{tight})\,]$")
+    axes[0][0].set_ylabel(r"$\omega \,/\, [\,u\,(1+\mathrm{tight})\,]$")
 
     solvers = _ordered(solvers_present, SOLVER_STYLE)
-    extra = [
-        (plt.Line2D([], [], color="0.3", ls="-"), r"measured $\omega$"),
-        (plt.Line2D([], [], color="0.3", ls="--"),
-         r"predicted bound $u\,(1+\mathrm{tight})$"),
-        (plt.Line2D([], [], color="k", ls=":", lw=1.0), r"unit roundoff $u$"),
-    ]
+    extra = [(plt.Line2D([], [], color="k", ls="--", lw=1.0),
+              r"bound attained, $\omega = u\,(1+\mathrm{tight})$")]
     handles, labels = legend_handles(solvers, [], extra=extra)
 
-    fig.suptitle(f"Backward error against the growth-factor bound — {material}",
-                 fontsize=14, y=1.01)
+    fig.suptitle(f"Backward error as a fraction of the growth-factor bound "
+                 f"— {material}", fontsize=14, y=1.02)
     fig.tight_layout()
-    fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 5),
-               fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.06))
+    fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 4),
+               fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.08))
     save_figure(fig, out_path, dpi=140)
     return True
 
