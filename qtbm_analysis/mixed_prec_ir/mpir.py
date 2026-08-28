@@ -375,7 +375,7 @@ RUN_COLUMNS = [
     "lu_ir_bound",
     "relres", "ferr_ref", "eta1", "eta2", "etainf", "omega",
     "outer_iters", "converged", "rho_max", "psi_final", "stop_reason",
-    "n_contract", "rho_bar",
+    "n_contract", "rho_bar", "rho_censored",
     "gmres_total", "wall_s", "factor_s", "factor_symbolic_s",
     "factor_numeric_s", "inner_s", "solve_s", "residual_s", "other_s",
     "n_solves", "factor_mb", "factor_mb_reported", "working_mb",
@@ -900,10 +900,14 @@ def load_system(h5path, idx):
 # gain actually is; it is not u^2.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# 80-bit on x86-64, eps = 1.1e-19, so u_ext = 5.4e-20 against complex128's
-# 1.1e-16. numpy falls back to float64 where the platform has no wider type,
-# in which case the reference is no better than a plain complex128 solve;
-# reference_floor below makes that visible rather than silent.
+# Whatever np.longdouble is on this machine, which is not the same everywhere
+# and changes the reference by orders of magnitude: 80-bit x87 on x86-64
+# (eps = 1.1e-19), IEEE binary128 on aarch64 (eps = 1.9e-34), and plain float64
+# where the platform has no wider type, in which case the reference is no
+# better than a complex128 solve. The width is therefore never assumed: eps_ext
+# is printed with every run and reference_floor = kappa_inf * eps_ext is
+# recorded per index, so which of the three a result was produced on is visible
+# in the output rather than inferred from the machine name.
 EXT_DTYPE = np.clongdouble
 EPS_EXT = float(np.finfo(np.longdouble).eps)
 
@@ -928,14 +932,17 @@ class _ExtendedReference:
     ----------------------------------------
     Refinement in a residual precision u_r converges to a relative error of
     order kappa_inf(A) u_r, so this reference improves on a plain complex128
-    solve by eps_double / eps_ext, about 2e3 -- not by the u^2 a true
-    double-double residual would give. That is enough for the purpose here:
-    the limiting accuracy being measured is of order cond(A, x) u, and the
-    reference sits about three orders of magnitude below it. It is not enough
-    to be treated as exact, and reference_floor = kappa_inf(A) eps_ext is
-    recorded per index so that a measured forward error within an order of
-    magnitude of it can be recognised as a measurement of the reference rather
-    than of the method.
+    solve by roughly eps_double / eps_ext. What that factor is depends on the
+    machine, and by a lot: about 2e3 where np.longdouble is 80-bit x87, and
+    about 1e18 where it is IEEE binary128. Measured against an exact rational
+    solution on the former, the improvement is 1.6e3 to 3.2e3.
+
+    Either way it is enough for the purpose here, since the limiting accuracy
+    being measured is of order cond(A, x) u. It is not a reason to treat the
+    reference as exact: reference_floor = kappa_inf(A) eps_ext is recorded per
+    index so that a measured forward error within an order of magnitude of it
+    can be recognised as a measurement of the reference rather than of the
+    method.
 
     The solution is returned at complex128. Storing it wider would not help:
     what limits the measurement is the reference's error, about 1e-14 here, not
@@ -1495,8 +1502,31 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
 # as a label it only says which steps the mean rate should be taken over.
 DEFAULT_CONTRACTION_THRESH = 0.5
 
+# How far above the achieved accuracy floor a step must land for its
+# contraction to count, used by contraction_summary alongside the threshold
+# above. Corollary 3.3 claims a contraction by phi_i only until the limiting
+# accuracy of (3.10) is reached, so a step whose endpoint is already at that
+# level is measuring the floor, not the rate.
+#
+# The threshold above does not catch these on its own. Measured on
+# carbon-nanotube E_1603 at complex64, the per-step rho was
+#
+#     9.02e-05   4.86e-05   2.51e-02   2.24
+#
+# where the third step is 500 times worse than the first two because its
+# endpoint is already at the floor -- yet 2.51e-02 < 0.5, so it counted, and it
+# moved rho_bar from 6.6e-05 to 4.8e-04. A tighter threshold is not the answer:
+# at large kappa_inf a genuine step really can contract by only 0.1.
+#
+# The floor is taken as the smallest forward error the run reached, not as
+# 4p u_r cond(A, x) from (3.10): on the same data that bound predicts 1.4e-11
+# at E_400 where 1.7e-15 was achieved, four orders of magnitude loose, and a
+# margin measured against it would exclude nothing.
+DEFAULT_FLOOR_MARGIN = 10.0
 
-def contraction_summary(metrics, threshold=DEFAULT_CONTRACTION_THRESH):
+
+def contraction_summary(metrics, threshold=DEFAULT_CONTRACTION_THRESH,
+                        floor_margin=DEFAULT_FLOOR_MARGIN):
     """
     The mean contraction of the forward error, over the steps that were
     actually contracting.
@@ -1508,11 +1538,23 @@ def contraction_summary(metrics, threshold=DEFAULT_CONTRACTION_THRESH):
     closer to 1 than anything the method did; the shorter the run, the worse
     the distortion, and a GMRES-IR run is typically two or three steps.
 
-    So the leading steps with rho < threshold are taken as the contraction
-    phase and the mean is taken over those alone:
+    So the contraction phase is the leading steps that pass both of
+
+        rho < threshold                 the step actually contracted
+        ferr[i+1] > floor_margin * floor  it was not already at the floor,
+                                        floor being the smallest forward error
+                                        the run reached
+
+    and the mean is taken over those alone:
 
         n_contract  how many steps that was
         rho_bar     the geometric mean of rho over them
+
+    Both conditions are needed. The first alone admits the knee -- the step
+    that lands on the floor still contracts, just far more slowly than the
+    steps before it, and including it inflates rho_bar by an order of
+    magnitude; see DEFAULT_FLOOR_MARGIN for the measurement. The second alone
+    would admit a step that diverged while still far above the floor.
 
     rho_bar is computed as (ferr[n_contract] / ferr[0]) ** (1 / n_contract),
     which is that geometric mean exactly -- the product of successive ratios
@@ -1527,23 +1569,43 @@ def contraction_summary(metrics, threshold=DEFAULT_CONTRACTION_THRESH):
     observe is smallest in the early iterations, so the contraction genuinely
     slows before the plateau is reached and no single rate describes the run.
 
-    Returns a dict with n_contract, rho_bar, ferr_first and ferr_last, the last
-    two being the endpoints the mean was taken between. n_contract is 0 and the
-    rest NaN when no step contracted, or when there is no forward error to
-    measure (no --reference-solver).
+    Returns a dict with n_contract, rho_bar, rho_censored, ferr_first and
+    ferr_last, the last two being the endpoints the mean was taken between.
+    rho_censored marks a run whose only contracting step ended on the floor, so
+    that rho_bar bounds the rate from above rather than measuring it.
+    n_contract is 0 and the rest NaN when no step contracted, or when there is
+    no forward error to measure (no --reference-solver).
     """
-    empty = {"n_contract": 0, "rho_bar": float("nan"),
+    empty = {"n_contract": 0, "rho_bar": float("nan"), "rho_censored": 0,
              "ferr_first": float("nan"), "ferr_last": float("nan")}
     ferr = [m.get("ferr_ref") for m in metrics]
     if len(ferr) < 2 or ferr[0] is None or not ferr[0]:
         return empty
 
+    finite = [f for f in ferr if f is not None and f > 0]
+    if not finite:
+        return empty
+    floor = min(finite) * float(floor_margin)
+
     n = 0
+    censored = False
     for i in range(len(ferr) - 1):
         this, nxt = ferr[i], ferr[i + 1]
         if this is None or nxt is None or not this:
             break
-        if nxt / this >= threshold:
+        if nxt / this >= threshold:          # did not contract
+            break
+        if nxt <= floor:                     # contracted onto the floor
+            # Normally the step is dropped: it stopped early because it ran out
+            # of accuracy to gain, so its ratio understates the rate. When it is
+            # the only contracting step there would otherwise be nothing left to
+            # report, and that is not a rare case -- GMRES-IR routinely reaches
+            # the floor in one outer step. It is kept and flagged instead: the
+            # method contracted by at least this much, so rho_bar is then an
+            # upper bound on the true rate, a right-censored observation rather
+            # than a measurement. A figure must draw it as a bound.
+            if n == 0:
+                n, censored = 1, True
             break
         n += 1
     if n == 0:
@@ -1553,6 +1615,7 @@ def contraction_summary(metrics, threshold=DEFAULT_CONTRACTION_THRESH):
     return {
         "n_contract": n,
         "rho_bar": (last / first) ** (1.0 / n),
+        "rho_censored": int(censored),
         "ferr_first": first,
         "ferr_last": last,
     }
@@ -2583,6 +2646,9 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
         # it was still falling. See contraction_summary for why the mean is
         # taken over the contracting steps alone.
         note = " (a single ratio, not a mean)" if contraction["n_contract"] == 1 else ""
+        if contraction["rho_censored"]:
+            note = (" (its only contracting step ended on the accuracy floor, "
+                    "so this bounds the rate from above rather than measuring it)")
         print(f"\n  Contraction: rho_bar = {contraction['rho_bar']:.3e} over "
               f"{contraction['n_contract']} contracting step"
               f"{'' if contraction['n_contract'] == 1 else 's'}{note}   "
@@ -2743,6 +2809,7 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
             # contraction_summary.
             n_contract=int(contraction["n_contract"]) if mon is not None else -1,
             rho_bar=float(contraction["rho_bar"]) if mon is not None else float("nan"),
+            rho_censored=int(contraction["rho_censored"]) if mon is not None else -1,
             reference_solver=reference_solver or "",
             reference_nbe=float(ref_eta) if ref_eta is not None else float("nan"),
             reference_floor=ref_floor,

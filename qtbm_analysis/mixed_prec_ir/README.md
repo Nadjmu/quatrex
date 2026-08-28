@@ -330,13 +330,36 @@ reference, not the method.
 A run has two regimes — roughly geometric decay, then a plateau at the limiting
 accuracy. Averaging the observed `rho` over the whole run mixes them and
 reports a rate far closer to 1 than anything the method did. So the leading
-steps with `rho < 0.5` are taken as the contraction phase and the mean is taken
-over those alone:
+steps passing **both** of
+
+- `rho < 0.5` — the step actually contracted;
+- `ferr[i+1] > 10 x floor` — it was not already at the floor, `floor` being the
+  smallest `ferr` the run reached
+
+are taken as the contraction phase, and the mean is taken over those alone:
 
 ```
-n_contract  how many steps that was
-rho_bar     (ferr[n_contract] / ferr[0]) ** (1/n_contract)
+n_contract    how many steps that was
+rho_bar       (ferr[n_contract] / ferr[0]) ** (1/n_contract)
+rho_censored  1 if the only contracting step ended on the floor
 ```
+
+The second condition is not redundant. Measured on carbon-nanotube E_1603 at
+complex64, the per-step `rho` was `9.02e-5, 4.86e-5, 2.51e-2, 2.24`: the third
+step is 500x worse than the first two because its endpoint is already at the
+floor, yet `2.51e-2 < 0.5`, so `rho < 0.5` alone counted it and moved `rho_bar`
+from `6.6e-5` to `4.8e-4`. A tighter threshold is not the answer — at large
+`kappa_inf` a genuine step really can contract by only 0.1.
+
+The floor is taken empirically, as the smallest `ferr` reached, not as
+`4p u_r cond(A,x)` from (3.10): on the same data that bound predicts `1.4e-11`
+at E_400 where `1.7e-15` was achieved, four orders loose.
+
+`rho_censored` marks the case where the only contracting step ended on the
+floor — common for GMRES-IR, which often reaches the floor in one outer step.
+The step is kept rather than dropped, because dropping it would leave no rate
+at all, but the method contracted by *at least* that much, so `rho_bar` is then
+an upper bound. A figure must draw those as bounds, not points.
 
 which *is* the geometric mean of `rho` over those steps — successive ratios
 telescope — so it needs no fit.
@@ -526,7 +549,7 @@ performs outer steps, so only it appears in `iterations`.
 `inner`, `variant`, `is_refined`, `u_f`, `u`, `u_s`, `kappa_2`, `kappa_inf`,
 `cond_skeel`, `cond_skeel_x`, `lu_ir_bound`, `relres`, `ferr_ref`, `eta1`, `eta2`, `etainf`, `omega`,
 `outer_iters`, `converged`, `rho_max`, `psi_final`, `stop_reason`,
-`n_contract`, `rho_bar`,
+`n_contract`, `rho_bar`, `rho_censored`,
 `gmres_total`, `wall_s`, `factor_s`, `factor_symbolic_s`, `factor_numeric_s`,
 `inner_s`, `solve_s`, `residual_s`, `other_s`, `n_solves`, `factor_mb`,
 `factor_mb_reported`, `working_mb`, `reference_solver`, `reference_nbe`,

@@ -220,8 +220,14 @@ Two numbers per index, both in the `runs` table:
 | Column | Meaning |
 |---|---|
 | `outer_iters` | how many outer steps the run took |
-| `n_contract` | how many of those steps were still contracting (`rho < 0.5`) |
-| `rho_bar` | `(ferr[n_contract]/ferr[0]) ** (1/n_contract)`, the geometric mean of `rho` over the contracting steps |
+| `n_contract` | how many of those steps were still contracting: `rho < 0.5` **and** endpoint above `10 x` the achieved floor |
+| `rho_bar` | `(ferr[n_contract]/ferr[0]) ** (1/n_contract)`, the geometric mean of `rho` over them |
+| `rho_censored` | 1 where the only contracting step ended on the floor, so `rho_bar` bounds the rate rather than measuring it |
+
+The floor condition is what keeps the knee out. On carbon-nanotube E_1603 the
+per-step `rho` was `9.02e-5, 4.86e-5, 2.51e-2, 2.24` — the third step is 500x
+worse than the first two only because it lands on the floor, and counting it
+moved `rho_bar` from `6.6e-5` to `4.8e-4`.
 
 Plotted against `kappa_inf` these are the convergence-speed result. Restricting
 the mean to the contracting steps is not optional: the forward error decays
@@ -358,7 +364,7 @@ is_refined, u_f, u, u_s, kappa_2, kappa_inf, cond_skeel, cond_skeel_x,
 lu_ir_bound,
 relres, ferr_ref, eta1, eta2, etainf, omega,
 outer_iters, converged, rho_max, psi_final, stop_reason,
-n_contract, rho_bar,
+n_contract, rho_bar, rho_censored,
 gmres_total, wall_s, factor_s, factor_symbolic_s, factor_numeric_s, inner_s,
 solve_s, residual_s, other_s, n_solves,
 factor_mb, factor_mb_reported, working_mb, reference_solver, reference_nbe,
