@@ -90,6 +90,7 @@ sys.path.append(str((_HERE / ".." / ".." / "solvers").resolve()))
 
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
 
 import cli
 from factor_io import load_table, table_rows
@@ -105,6 +106,11 @@ GROUP = "growth_factor"
 # block-thomas exactly and only clutters the growth panels; --solvers adds
 # either back.
 DEFAULT_SOLVERS = ("block-thomas", "superlu")
+
+# Finest precision first: the multiplier profile is a property of the
+# factorization rather than of the arithmetic, so one precision suffices and
+# the most accurate one is the one to show.
+DTYPE_ORDER_FINEST = ("complex128", "complex64", "complex32")
 
 
 def read_records(h5path):
@@ -208,12 +214,12 @@ SCHUR_COLUMNS = ("nA", "nL", "nU")
 
 def plot_schur(records, attrs, material, out_path):
     """
-    The two factors that make up the growth ratio, for the Block Thomas
-    variants.
+    The two factors that make up the growth ratio, per solver.
 
-    The backward error of a block LU is governed by ||L|| ||U|| / ||A||, and
-    the point of this figure is to say which of the two halves is responsible.
-    Block Thomas produces
+    The backward error of any LU is governed by ||L|| ||U|| / ||A||, and the
+    point of this figure is to say which of the two halves is responsible and
+    how that differs from a globally pivoted factorization. Block Thomas
+    produces
 
         U = block-bidiagonal(S_k ;   A_{k,k+1})
         L = block-bidiagonal(I   ;   L_k = A_{k+1,k} S_k^-1)
@@ -227,14 +233,18 @@ def plot_schur(records, attrs, material, out_path):
     (column) sum of |L| is one identity entry plus the corresponding row
     (column) sum of one L_k.
 
-    Panel 1, max_k ||L_k||. The L side, and usually the dominant one, so it is
-    drawn first. Scalar LU with partial pivoting has |L_ij| <= 1 by
-    construction and therefore no such term; block Thomas pivots only inside a
-    diagonal block, cannot bound its block multipliers, and picks this up as a
-    second and independent source of instability.
+    Panel 1, max_k ||L_k||. The L side, and the reason the split is drawn at
+    all. Scalar LU with partial pivoting has |L_ij| <= 1 by construction, so
+    ||L|| <= n holds a priori and the classical stability story reduces to
+    growth in U alone -- one number, the growth factor. Block Thomas pivots
+    only inside a diagonal block and has no such bound, so this term is free to
+    grow and is the one source of instability with no scalar counterpart.
+    SuperLU is drawn beside it as the baseline that makes the difference
+    legible: its curve is pinned by pivoting, the Block Thomas one is not.
 
-    Panel 2, ||U|| / ||A_eff||. The U side. It carries the Schur complements
-    S_k, so this is where growth in the recursion shows up.
+    Panel 2, ||U|| / ||A_eff||. The U side -- the classical growth term. It
+    carries the Schur complements S_k, so growth in the recursion shows up
+    here.
 
     max_k ||S_k|| ||S_k^-1|| is deliberately not drawn. It is a surrogate for
     max_k ||L_k||, exact only when ||A_{k+1,k}|| = ||S_k||, and it is scale
@@ -249,7 +259,7 @@ def plot_schur(records, attrs, material, out_path):
     norm = "inf-norm" if "inf-norm" in present_norms else sorted(present_norms)[0]
     rows_by_series = defaultdict(list)
     for record in records:
-        if record["norm"] == norm and record["solver"] in cli.BLOCK_SOLVERS:
+        if record["norm"] == norm:
             rows_by_series[(record["solver"], record["dtype"])].append(record)
     if not rows_by_series:
         return False
@@ -279,9 +289,11 @@ def plot_schur(records, attrs, material, out_path):
         nU = np.asarray([r["nU"] for r in rows], dtype=float)
         with np.errstate(divide="ignore", invalid="ignore"):
             u_ratio = np.where(nA > 0, nU / nA, np.nan)
-        # ||L|| = 1 + max_k ||L_k|| exactly for a block-bidiagonal L with the
-        # identity on its diagonal, in the 1-norm and the infinity norm alike.
-        multiplier = np.where(nL > 1.0, nL - 1.0, np.nan)
+        # ||L|| itself, not ||L|| - 1: it is the exact L-side factor of the
+        # ratio for every solver. For Block Thomas it happens to equal
+        # 1 + max_k ||L_k||, exactly, in the 1-norm and the infinity norm
+        # alike; SuperLU's L is not block bidiagonal and has no such reading.
+        multiplier = np.where(nL > 0.0, nL, np.nan)
 
         xg, ug, mg = split_gaps(indices, x, u_ratio, multiplier)
         ax_u.semilogy(xg, ug, ls, color=colour, **prim)
@@ -290,9 +302,9 @@ def plot_schur(records, attrs, material, out_path):
     ax_u.set_title(f"$U$ factor  $\\|U\\| / \\|A_{{\\mathrm{{eff}}}}\\|$  "
                    f"[{norm}]")
     ax_u.set_ylabel(r"$\|U\| / \|A_{\mathrm{eff}}\|$")
-    ax_l.set_title(f"$L$ factor  $\\max_k \\|L_k\\|$,  "
-                   f"$L_k = A_{{k+1,k}} S_k^{{-1}}$  [{norm}]")
-    ax_l.set_ylabel(r"$\max_k \|L_k\|$")
+    ax_l.set_title(f"$L$ factor  $\\|L\\|$   "
+                   f"($= 1 + \\max_k \\|L_k\\|$ for block LU)  [{norm}]")
+    ax_l.set_ylabel(r"$\|L\|$")
 
     for ax in (ax_l, ax_u):
         ax.set_xlabel(axis_label(have_energy))
@@ -304,12 +316,111 @@ def plot_schur(records, attrs, material, out_path):
     dtypes = _ordered(dtypes_present, DTYPE_STYLE)
     handles, labels = legend_handles(solvers, dtypes)
 
-    fig.suptitle(f"Block Thomas: the two factors of "
-                 f"$\\|L\\|\\,\\|U\\| / \\|A\\|$ — {material}",
+    fig.suptitle(f"The two factors of $\\|L\\|\\,\\|U\\| / \\|A\\|$, "
+                 f"block LU against global pivoting — {material}",
                  fontsize=14, y=1.01)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
                fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.12))
+    save_figure(fig, out_path, dpi=140)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Where in the block chain the multipliers grow
+# ---------------------------------------------------------------------------
+def _runs(indices, factor=3.0):
+    """Slices of `indices` that are contiguous in the sweep, gaps excluded."""
+    indices = np.asarray(indices, dtype=float)
+    if indices.size < 3:
+        return [slice(0, indices.size)]
+    step = np.diff(indices)
+    cuts = (np.flatnonzero(step > factor * max(float(np.median(step)), 1.0))
+            + 1).tolist()
+    bounds = [0] + cuts + [indices.size]
+    return [slice(a, b) for a, b in zip(bounds, bounds[1:]) if b > a]
+
+
+def plot_profile(records, attrs, material, out_path):
+    """
+    ||L_k|| for every block k against energy, as a heat map.
+
+    max_k ||L_k|| says how badly the multipliers grew; it cannot say where. The
+    recursion S_k = A_kk - A_{k,k-1} S_{k-1}^-1 A_{k-1,k} runs down the device
+    one layer at a time, so the block index is a position along the device and
+    this figure locates the layer that the factorization struggles with. A
+    diffuse band means the whole chain is mildly loaded; a bright row means one
+    layer carries all of it, which is what a mode count changing at a band edge
+    looks like.
+
+    Drawn for the Block Thomas variants at the finest precision present -- the
+    profile is a property of the factorization, not of the arithmetic, and the
+    precisions coincide. Contiguous stretches of the sweep are drawn as
+    separate meshes so that an energy gap stays blank instead of being smeared
+    across by the neighbouring cells. Returns False when the file predates the
+    l_profile column.
+    """
+    present_norms = {r["norm"] for r in records}
+    norm = "inf-norm" if "inf-norm" in present_norms else sorted(present_norms)[0]
+    dtypes = [d for d in DTYPE_ORDER_FINEST
+              if d in {r["dtype"] for r in records}]
+    if not dtypes:
+        return False
+    dtype = dtypes[0]
+
+    by_solver = defaultdict(list)
+    for record in records:
+        if (record["norm"] == norm and record["dtype"] == dtype
+                and record["solver"] in cli.BLOCK_SOLVERS
+                and np.ndim(record.get("l_profile")) == 1
+                and np.isfinite(np.asarray(record["l_profile"],
+                                           dtype=float)).any()):
+            by_solver[record["solver"]].append(record)
+    if not by_solver:
+        return False
+
+    solvers = _ordered(set(by_solver), SOLVER_STYLE)
+    fig, axes = plt.subplots(1, len(solvers), squeeze=False,
+                             figsize=(7.0 * len(solvers), 4.4))
+    have_energy = energies_of(attrs, [0]) is not None
+
+    for column, solver in enumerate(solvers):
+        ax = axes[0][column]
+        rows = sorted(by_solver[solver], key=lambda r: r["idx"])
+        indices = np.asarray([r["idx"] for r in rows])
+        x = energies_of(attrs, indices)
+        if x is None:
+            x = indices
+        x = np.asarray(x, dtype=float)
+        profile = np.asarray([r["l_profile"] for r in rows], dtype=float).T
+        blocks = np.arange(1, profile.shape[0] + 1)
+
+        finite = profile[np.isfinite(profile) & (profile > 0)]
+        if finite.size == 0:
+            continue
+        colours = LogNorm(vmin=max(finite.min(), finite.max() * 1e-6),
+                          vmax=finite.max())
+        mesh = None
+        for run in _runs(indices):
+            if run.stop - run.start < 2:
+                continue
+            mesh = ax.pcolormesh(x[run], blocks, profile[:, run],
+                                 norm=colours, cmap="magma_r",
+                                 shading="nearest", rasterized=True)
+
+        ax.set_xlim(float(x.min()), float(x.max()))
+        ax.set_title(f"{SOLVER_STYLE.get(solver, (solver,))[0]}  "
+                     f"[{dtype}, {norm}]")
+        ax.set_xlabel(axis_label(have_energy))
+        ax.set_ylabel("block index $k$")
+        if have_energy:
+            mark_band_edges(ax, attrs, label=False)
+        if mesh is not None:
+            fig.colorbar(mesh, ax=ax, label=r"$\|L_k\|$", pad=0.02)
+
+    fig.suptitle(f"Block Thomas: where the multipliers grow — {material}",
+                 fontsize=14, y=1.02)
+    fig.tight_layout()
     save_figure(fig, out_path, dpi=140)
     return True
 
@@ -358,6 +469,11 @@ def main():
                       outdir / f"{material}_schur_growth.png"):
         print("no Block Thomas rows in this file; the factor-split figure "
               "needs at least one")
+
+    if not plot_profile(records, attrs, material,
+                        outdir / f"{material}_multiplier_profile.png"):
+        print("no l_profile column in this file; rerun growth_factor.py for "
+              "the per-block multiplier figure")
 
 
 if __name__ == "__main__":

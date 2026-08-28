@@ -67,6 +67,13 @@ maximum over all intermediate A^(k).
        schur_norm_max  max_k ||S_k||_2
        schur_cond_max  max_k kappa_2(S_k)                   pivot conditioning
        inv_resid_max   max_k ||S_k G_k - I||_2              impl. 2 only
+       l_profile       (||L_1||, ..., ||L_{N-1}||)          per-block, this norm
+
+The last is a vector column, one entry per subdiagonal block of the assembled
+L, with L_k = A_{k+1,k} S_k^-1. Its maximum is the term that bounds the L side
+of the backward error and that scalar partial pivoting bounds by construction
+and block LU cannot; the profile additionally locates which block in the
+recursion is responsible, which the maximum alone cannot.
 
 Block LU pivots only within a diagonal block, so rho and the two ratios do not
 tell the whole story: the recursion itself amplifies, and its backward error
@@ -150,13 +157,19 @@ DEFAULT_OUTDIR = cli.BLOCK_THOMAS_DIR
 GROUP = "growth_factor"
 COLUMNS = ["idx", "solver", "dtype", "norm", "nA", "nL", "nU", "prod",
            "LU_abs", "rho", "loose", "tight", "resid_rel",
-           "schur_growth", "schur_norm_max", "schur_cond_max", "inv_resid_max"]
+           "schur_growth", "schur_norm_max", "schur_cond_max", "inv_resid_max",
+           "l_profile"]
 
 # Solvers for which the Schur-complement columns are defined. The other two
 # factor globally and have no block recursion.
 BLOCK_VARIANTS = ("block-thomas", "block-thomas-inv")
 NAN_SCHUR = dict(schur_growth=np.nan, schur_norm_max=np.nan,
                  schur_cond_max=np.nan, inv_resid_max=np.nan)
+
+# Key under which schur_analyse returns the per-block multiplier profiles. It
+# is popped before the record is written, since it holds one profile per norm
+# and each norm row keeps only its own.
+PROFILE_KEY = "_l_profiles"
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +483,25 @@ def _diag_blocks(A_eff, sizes):
             for k in range(len(sizes))]
 
 
-def schur_analyse(A_eff, group, solver):
+def multiplier_profile(L, sizes, p):
+    """
+    ||L_k|| for every subdiagonal block of an assembled block-bidiagonal L,
+    in norm p.
+
+    max_k of this is the quantity that bounds the L side of the backward error,
+    and unlike that maximum the profile says *where* in the recursion the
+    multipliers grow -- which layer of the device the factorization struggles
+    with, not merely that one of them does.
+    """
+    offsets = np.concatenate(([0], np.cumsum(sizes)))
+    out = []
+    for k in range(len(sizes) - 1):
+        block = L[offsets[k + 1]:offsets[k + 2], offsets[k]:offsets[k + 1]]
+        out.append(float(spnorm(block.tocsc(), p)) if block.nnz else 0.0)
+    return out
+
+
+def schur_analyse(A_eff, L, group, solver):
     """
     Growth and conditioning of the Schur-complement recursion.
 
@@ -525,10 +556,14 @@ def schur_analyse(A_eff, group, solver):
             for Sk, Gk in zip(S, S_inv)
         )
 
-    return dict(schur_growth=(max(s_max) / a_max) if a_max else np.inf,
-                schur_norm_max=max(s_max),
-                schur_cond_max=max(s_cond),
-                inv_resid_max=inv_resid)
+    profiles = {label: multiplier_profile(L, sizes, p)
+                for p, label in ((1, "1-norm"), (np.inf, "inf-norm"))}
+
+    return {"schur_growth": (max(s_max) / a_max) if a_max else np.inf,
+            "schur_norm_max": max(s_max),
+            "schur_cond_max": max(s_cond),
+            "inv_resid_max": inv_resid,
+            PROFILE_KEY: profiles}
 
 
 def _fmt_block(solver, dtype_name, res, schur=None):
@@ -603,13 +638,14 @@ def process_index(f, idx, solvers, dtypes, records, with_schur=True):
                 A_dt = A if dt == "complex32" else A.astype(np.dtype(dt))
                 A_eff, L, U = ASSEMBLERS[solver](g, A_dt)
                 res = analyse(A_eff, L, U)
-                schur = (schur_analyse(A_eff, g, solver) if with_schur
+                schur = (schur_analyse(A_eff, L, g, solver) if with_schur
                          else dict(NAN_SCHUR))
             except Exception as exc:            # noqa: BLE001
                 print(f"    {solver} / {dt}: FAILED ({type(exc).__name__}: {exc})")
                 continue
 
             per_key[(solver, dt)] = res
+            profiles = schur.pop(PROFILE_KEY, {})
             print(_fmt_block(solver, dt, res, schur))
             for label in NORMS:
                 r = res[label]
@@ -618,7 +654,7 @@ def process_index(f, idx, solvers, dtypes, records, with_schur=True):
                                     prod=r["prod"], LU_abs=r["LU_abs"],
                                     rho=r["rho"], loose=r["loose"],
                                     tight=r["tight"], resid_rel=r["resid_rel"],
-                                    **schur))
+                                    l_profile=profiles.get(label), **schur))
 
     # Ratio of the tight growth ratio at single against double precision. The
     # ratio is precision-independent in exact arithmetic, so a value far from

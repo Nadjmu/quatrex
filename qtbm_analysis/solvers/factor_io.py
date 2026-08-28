@@ -493,7 +493,8 @@ def _column_array(values):
 
     Strings become variable-length UTF-8, integers int64, everything else
     float64 with None mapped to NaN. Booleans are stored as integers, since a
-    column of 0 and 1 is what the plotting scripts compare against.
+    column of 0 and 1 is what the plotting scripts compare against. A column
+    whose values are sequences becomes a 2-D float64 array, NaN padded.
     """
     present = [v for v in values if v is not None]
     if present and all(isinstance(v, str) for v in present):
@@ -505,6 +506,20 @@ def _column_array(values):
     if present and all(isinstance(v, (int, np.integer)) for v in present):
         return np.array([(-1 if v is None else int(v)) for v in values],
                         dtype=np.int64), None
+    if present and all(isinstance(v, (list, tuple, np.ndarray))
+                       for v in present):
+        # A per-row profile rather than a scalar: one 2-D dataset, rows padded
+        # with NaN to the longest profile so the column stays rectangular.
+        # load_table reads it back unchanged and table_rows hands each row its
+        # own 1-D slice, so nothing downstream needs to know the difference.
+        width = max(len(v) for v in present)
+        out = np.full((len(values), width), np.nan, dtype=np.float64)
+        for row, value in enumerate(values):
+            if value is None:
+                continue
+            flat = np.asarray(value, dtype=np.float64).ravel()
+            out[row, :flat.size] = flat
+        return out, None
     return np.array([(np.nan if v is None else float(v)) for v in values],
                     dtype=np.float64), None
 
