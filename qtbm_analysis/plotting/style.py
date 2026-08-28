@@ -42,6 +42,7 @@ legend_handles(solvers, dtypes, ...) Proxy artists for a combined legend.
 energies_of(attrs, indices)          Energies in eV, or None if unavailable.
 axis_label(have_energy)              Axis label matching what was plotted.
 mark_band_edges(ax, attrs, ...)      Vertical lines at the two band edges.
+split_gaps(indices, x, *series)      NaN-break series where the sweep skips indices.
 sweep_line(n_points, weight)         Line kwargs scaled to the sweep density.
 save_figure(fig, path, dpi)          Create the parent directory, write, close.
 """
@@ -189,6 +190,32 @@ def legend_handles(solvers, dtypes, extra=()):
         handles.append(artist)
         labels.append(label)
     return handles, labels
+
+
+def split_gaps(indices, x, *series, factor=3.0):
+    """
+    Insert NaN breaks where the swept index sequence skips a block of energies.
+
+    A QTBM sweep has no solution inside the band gap -- those indices carry no
+    right-hand side and are absent from the analysis file -- so the kept
+    indices arrive in contiguous runs with wide holes between them. Plotted
+    directly, matplotlib bridges each hole with a straight segment that reads
+    as data. This returns `x` and every array in `series` with a NaN inserted
+    at each hole, so the line breaks there.
+
+    A hole is a step in `indices` larger than `factor` times the median step.
+    """
+    indices = np.asarray(indices, dtype=float)
+    x = np.asarray(x, dtype=float)
+    series = [np.asarray(s, dtype=float) for s in series]
+    if indices.size < 3:
+        return (x, *series)
+    step = np.diff(indices)
+    at = np.flatnonzero(step > factor * max(float(np.median(step)), 1.0)) + 1
+    if at.size == 0:
+        return (x, *series)
+    return (np.insert(x, at, np.nan),
+            *[np.insert(s, at, np.nan) for s in series])
 
 
 def sweep_line(n_points, weight="primary", marker="."):

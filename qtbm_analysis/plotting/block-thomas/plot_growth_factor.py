@@ -92,7 +92,8 @@ import matplotlib.pyplot as plt
 import cli
 from factor_io import load_table, table_rows
 from style import (SOLVER_STYLE, DTYPE_STYLE, axis_label, energies_of,
-                   legend_handles, mark_band_edges, save_figure, sweep_line)
+                   legend_handles, mark_band_edges, save_figure, split_gaps,
+                   sweep_line)
 
 GROUP = "growth_factor"
 
@@ -143,20 +144,20 @@ def plot(records, attrs, material, norms, out_path):
         for (solver, dtype), rows in series.items():
             solvers_present.add(solver)
             dtypes_present.add(dtype)
-            indices = [r["idx"] for r in rows]
+            indices = np.asarray([r["idx"] for r in rows])
             x = energies_of(attrs, indices)
             if x is None:
                 x = indices
-            x = np.asarray(x, dtype=float)
             _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
             _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
             tight = np.asarray([r["tight"] for r in rows], dtype=float)
+            resid = np.asarray([r["resid_rel"] for r in rows], dtype=float)
             tight_all.append(tight)
             prim = sweep_line(len(rows), "primary")
 
-            ax_ratio.semilogy(x, tight, ls, color=colour, **prim)
-            ax_resid.semilogy(x, [r["resid_rel"] for r in rows], ls,
-                              color=colour, **prim)
+            xg, tg, rg = split_gaps(indices, x, tight, resid)
+            ax_ratio.semilogy(xg, tg, ls, color=colour, **prim)
+            ax_resid.semilogy(xg, rg, ls, color=colour, **prim)
 
         # A near-singular pivot block at a band edge sends the ratios over 1e6
         # at a handful of indices and, drawn to scale, flattens the plateau
@@ -250,7 +251,7 @@ def plot_schur(records, attrs, material, out_path):
         solvers_present.add(solver)
         dtypes_present.add(dtype)
         rows = sorted(rows, key=lambda r: r["idx"])
-        indices = [r["idx"] for r in rows]
+        indices = np.asarray([r["idx"] for r in rows])
         x = energies_of(attrs, indices)
         if x is None:
             x = indices
@@ -258,10 +259,11 @@ def plot_schur(records, attrs, material, out_path):
         _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
         prim = sweep_line(len(rows), "primary")
 
-        ax_growth.semilogy(x, [r["schur_growth"] for r in rows], ls,
-                           color=colour, **prim)
-        ax_cond.semilogy(x, [r["schur_cond_max"] for r in rows], ls,
-                         color=colour, **prim)
+        growth = np.asarray([r["schur_growth"] for r in rows], dtype=float)
+        cond = np.asarray([r["schur_cond_max"] for r in rows], dtype=float)
+        xg, gg, cg = split_gaps(indices, x, growth, cond)
+        ax_growth.semilogy(xg, gg, ls, color=colour, **prim)
+        ax_cond.semilogy(xg, cg, ls, color=colour, **prim)
 
     ax_growth.set_title(r"block growth  "
                         r"$\max_k \|S_k\|_2 / \max_k \|A_{kk}\|_2$")

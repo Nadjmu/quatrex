@@ -13,8 +13,14 @@ row per (index, solver, dtype). Only the backward-error columns are used here:
 
 This group, unlike ``growth_factor``, is populated for every solver that
 stores a solution -- MUMPS and cuDSS included, since backward error needs only
-x and b, never the factors. This is therefore the one figure in the chapter
-where all six solvers appear on identical footing.
+x and b, never the factors. Every solver except block-thomas-inv is drawn by
+default (see DEFAULT_EXCLUDE): its explicit-inversion instability at the band
+edges reaches omega ~ 1 at complex64 and hides the LU variant beneath it.
+--solvers restores it.
+
+Energies for which the sweep holds no solution -- the band gap, where the
+right-hand side has no columns -- leave a hole in the index sequence; the
+lines are broken there rather than drawn straight across (style.split_gaps).
 
 Algorithm
 ---------
@@ -71,9 +77,14 @@ import cli
 from factor_io import load_table, table_rows
 from style import (SOLVER_STYLE, DTYPE_STYLE, FP16_UNIT_ROUNDOFF, axis_label,
                    energies_of, legend_handles, mark_band_edges, save_figure,
-                   sweep_line)
+                   split_gaps, sweep_line)
 
 GROUP = "forward_error"
+
+# Block Thomas (inv) is left out by default: its explicit-inversion instability
+# at the band edges (omega -> O(1) at complex64) dwarfs every other curve and
+# hides the LU variant drawn beneath it. --solvers puts it back.
+DEFAULT_EXCLUDE = ("block-thomas-inv",)
 
 # Unit roundoff u = 2^-(p+1) for a precision with p bits of mantissa.
 UNIT_ROUNDOFF = {
@@ -126,7 +137,7 @@ def plot(records, attrs, material, out_path):
                           key=lambda r: r["idx"])
             if not rows:
                 continue
-            indices = [r["idx"] for r in rows]
+            indices = np.asarray([r["idx"] for r in rows])
             x = energies_of(attrs, indices)
             if x is None:
                 x = indices
@@ -134,10 +145,11 @@ def plot(records, attrs, material, out_path):
             prim = sweep_line(len(rows), "primary", marker)
             sec = sweep_line(len(rows), "secondary", marker)
 
-            ax_omega.semilogy(x, _finite([r["omega"] for r in rows]), "-",
-                              color=colour, **prim)
-            ax_eta.semilogy(x, _finite([r["eta_inf"] for r in rows]), "-",
-                            color=colour, **sec)
+            xg, og, eg = split_gaps(indices, x,
+                                    _finite([r["omega"] for r in rows]),
+                                    _finite([r["eta_inf"] for r in rows]))
+            ax_omega.semilogy(xg, og, "-", color=colour, **prim)
+            ax_eta.semilogy(xg, eg, "-", color=colour, **sec)
 
         u = UNIT_ROUNDOFF.get(dtype)
         if u is not None:
@@ -173,8 +185,9 @@ def main():
     cli.add_h5_input(ap, help=f"analysis file written by "
                               f"block-thomas/forward_error.py, group {GROUP}")
     cli.add_solver_selection(ap, choices=cli.ALL_SOLVERS, default=None,
-                             help="restrict to these solvers "
-                                  "(default: all present in the file)")
+                             help="restrict to these solvers (default: all "
+                                  "present except "
+                                  f"{', '.join(DEFAULT_EXCLUDE)})")
     cli.add_dtypes(ap, choices=cli.COMPLEX_DTYPES, default=None,
                    help="restrict to these precisions "
                         "(default: all present in the file)")
@@ -189,6 +202,8 @@ def main():
     records, attrs = read_records(h5path)
     if args.solvers:
         records = [r for r in records if r["solver"] in args.solvers]
+    else:
+        records = [r for r in records if r["solver"] not in DEFAULT_EXCLUDE]
     if args.dtypes:
         records = [r for r in records if r["dtype"] in args.dtypes]
     if not records:

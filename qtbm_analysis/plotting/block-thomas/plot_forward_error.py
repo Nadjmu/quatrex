@@ -21,9 +21,12 @@ Algorithm
 No computation beyond what is already stored.
 
 One column per working precision present, for the same reason as
-plot_backward_error.py: six solvers at two precisions on one axis spread over
-too many decades for the individual solvers to be told apart, and splitting by
-precision recovers that.
+plot_backward_error.py: the solvers at two precisions on one axis spread over
+too many decades to be told apart, and splitting by precision recovers that.
+
+block-thomas-inv is dropped by default (DEFAULT_EXCLUDE); --solvers restores
+it. Energies with no solution -- the band gap -- leave a hole in the index
+sequence and the lines are broken there, not drawn across (style.split_gaps).
 
 Row 1, the measured forward error against energy, with the reference floor
 kappa_inf * eps_ext drawn beneath it. Points at or below that floor measure the
@@ -69,11 +72,16 @@ from matplotlib.lines import Line2D
 import cli
 from factor_io import load_table, table_rows
 from style import (SOLVER_STYLE, DTYPE_STYLE, axis_label, energies_of,
-                   legend_handles, mark_band_edges, save_figure, sweep_line)
+                   legend_handles, mark_band_edges, save_figure, split_gaps,
+                   sweep_line)
 
 GROUP = "forward_error"
 
 DTYPE_ORDER = ("complex32", "complex64", "complex128")
+
+# Block Thomas (inv) is left out by default: its explicit-inversion instability
+# at the band edges dwarfs every other curve. --solvers puts it back.
+DEFAULT_EXCLUDE = ("block-thomas-inv",)
 
 
 def read_records(h5path):
@@ -116,21 +124,23 @@ def plot(records, attrs, material, out_path):
                           key=lambda r: r["idx"])
             if not rows:
                 continue
-            indices = [r["idx"] for r in rows]
+            indices = np.asarray([r["idx"] for r in rows])
             x = energies_of(attrs, indices)
             if x is None:
                 x = indices
             _, colour, marker = SOLVER_STYLE.get(solver, (solver, None, "o"))
             prim = sweep_line(len(rows), "primary", marker)
 
-            ax_fwd.semilogy(x, _finite([r["fwd_inf"] for r in rows]), "-",
-                            color=colour, **prim)
-            ax_ratio.semilogy(x, _finite([r["ratio_cw"] for r in rows]), "-",
-                              color=colour, **prim)
+            xg, fg, rg, flg = split_gaps(
+                indices, x,
+                _finite([r["fwd_inf"] for r in rows]),
+                _finite([r["ratio_cw"] for r in rows]),
+                _finite([r["ref_floor"] for r in rows]))
+            ax_fwd.semilogy(xg, fg, "-", color=colour, **prim)
+            ax_ratio.semilogy(xg, rg, "-", color=colour, **prim)
 
             if not floor_drawn:
-                ax_fwd.semilogy(x, _finite([r["ref_floor"] for r in rows]),
-                                "k--", lw=1.0)
+                ax_fwd.semilogy(xg, flg, "k--", lw=1.0)
                 floor_drawn = True
 
         ax_ratio.axhline(1.0, color="k", lw=1.0, ls="--")
@@ -164,8 +174,9 @@ def main():
     cli.add_h5_input(ap, help=f"analysis file written by "
                               f"block-thomas/forward_error.py, group {GROUP}")
     cli.add_solver_selection(ap, choices=cli.ALL_SOLVERS, default=None,
-                             help="restrict to these solvers "
-                                  "(default: all present in the file)")
+                             help="restrict to these solvers (default: all "
+                                  "present except "
+                                  f"{', '.join(DEFAULT_EXCLUDE)})")
     cli.add_dtypes(ap, choices=cli.COMPLEX_DTYPES, default=None,
                    help="restrict to these precisions "
                         "(default: all present in the file)")
@@ -180,6 +191,8 @@ def main():
     records, attrs = read_records(h5path)
     if args.solvers:
         records = [r for r in records if r["solver"] in args.solvers]
+    else:
+        records = [r for r in records if r["solver"] not in DEFAULT_EXCLUDE]
     if args.dtypes:
         records = [r for r in records if r["dtype"] in args.dtypes]
     if not records:
