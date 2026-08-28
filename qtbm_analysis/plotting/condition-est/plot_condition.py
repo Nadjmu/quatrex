@@ -238,6 +238,38 @@ def scaling_headroom(curves):
     return float(np.median(top[usable] / bottom[usable]))
 
 
+# Above this count of exact points, they are drawn as a line instead of as
+# individual markers. A handful of hand-picked indices (exact_condition.py run
+# with --idx) are easy to find as large hollow markers; once --all has put a
+# reference at every index, markers at that density paint a band far thicker
+# than the estimated curve, which is the effect being corrected here.
+EXACT_MARKER_LIMIT = 60
+
+
+def exact_style(n_exact, marker, colour):
+    """
+    Draw kwargs for one curve's exact reference points, scaled to how many
+    there are so the reference never reads as thicker than the estimate it
+    is checking.
+
+    Sparse (a chosen handful of indices): large hollow markers in the curve's
+    own colour, easy to pick out against the line.
+
+    Dense (--all, a reference at every index): drawn as a line instead, dotted
+    so it stays visually distinct from the solid estimated curve underneath
+    it, and at the same weight sweep_line() gives the estimated curve at that
+    point count -- so a gap between the two is the only thing that reads as
+    thickness.
+    """
+    if n_exact <= EXACT_MARKER_LIMIT:
+        return dict(ls="none", marker=marker, ms=6, mfc="none", mec=colour,
+                   mew=1.4)
+    style = dict(ls=":", color=colour)
+    style.update(sweep_line(n_exact, weight="secondary"))
+    style["marker"] = ""
+    return style
+
+
 def draw_panel(ax, x, curves, styles, attrs, have_energy, title, ylabel,
                x_exact=None, points=None):
     """
@@ -269,11 +301,11 @@ def draw_panel(ax, x, curves, styles, attrs, have_energy, title, ylabel,
             continue
         y_exact = points[exact_name]
         ok = np.isfinite(y_exact) & (y_exact > 0)
-        if not np.any(ok):
+        n_exact = int(np.count_nonzero(ok))
+        if n_exact == 0:
             continue
-        ax.plot(x_exact[ok], y_exact[ok], ls="none", marker=marker, ms=6,
-                mfc="none", mec=colour, mew=1.4, zorder=5,
-                label=f"{label}, exact")
+        ax.plot(x_exact[ok], y_exact[ok], zorder=5, label=f"{label}, exact",
+                **exact_style(n_exact, marker, colour))
 
     ax.set_yscale("log")
     ax.set_xlabel(axis_label(have_energy))
