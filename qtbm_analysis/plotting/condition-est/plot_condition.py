@@ -348,7 +348,16 @@ def draw_ratio_panel(ax, curves, indices_curve, x_curve, points,
 
     ax.axhline(1.0, color="k", lw=1.0, ls="--")
     if linear:
-        ax.yaxis.set_major_formatter(ScalarFormatter(useOffset=False))
+        # useOffset=True (the default) lets matplotlib write the shared
+        # "x1 + 1" part once, above the axis, and the tick labels the small
+        # remaining digits in that scale -- scientific notation as requested,
+        # without the duplicate labels a per-tick "1x10^0" style produces at
+        # this spread. set_powerlimits((0, 0)) forces it on unconditionally;
+        # left to its own defaults ScalarFormatter only engages it outside a
+        # magnitude range this narrow spread would not otherwise leave.
+        formatter = ScalarFormatter(useOffset=True, useMathText=True)
+        formatter.set_powerlimits((0, 0))
+        ax.yaxis.set_major_formatter(formatter)
     ax.set_xlabel(axis_label(have_energy))
     ax.set_ylabel("estimate / exact")
     ax.grid(True, which="both", ls=":", alpha=0.4)
