@@ -1917,6 +1917,7 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
               f"skipped for every variant at this index")
 
     low_name = dtype_label(low_dtype)
+    u_work_pre = unit_roundoff(HIGH_DTYPE)
     indices, energies, valence, conduction = load_energy_metadata(h5path)
     energy = energy_of_idx(indices, energies, idx)
     energy_str = f"{energy:.4f} eV" if energy is not None else "unknown"
@@ -1960,6 +1961,16 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
     if kappa[2] is not None:
         print(f"Condition number at E_{idx}: kappa_2={kappa[2]:.3e}  "
               f"kappa_inf={kappa['inf']:.3e}")
+        # The two Skeel numbers, where the condition-est file carries them.
+        # cond(A) is the left half of Corollary 3.3's min and so changes
+        # phi_cond; cond(A, x) does not enter the rate at all and is printed
+        # because cond(A, x) * u is the accuracy refinement can end at.
+        if kappa["skeel"] is not None:
+            skeel_bits = [f"cond(A)={kappa['skeel']:.3e}"]
+            if kappa["skeel_x"] is not None:
+                skeel_bits.append(f"cond(A,x)={kappa['skeel_x']:.3e}  "
+                                  f"[limiting ferr ~ {kappa['skeel_x'] * u_work_pre:.2e}]")
+            print(f"  Skeel: {'  '.join(skeel_bits)}")
         # The classical LU-IR requirement is stated in the infinity norm (see
         # the module docstring): kappa_inf(A) u_f < 1. GMRES-IR is not bound
         # by it, so the check is informative there, not a prediction of
@@ -2323,18 +2334,30 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
         print(f"\n  Convergence factor (u_s = {u_s:.2e}, "
               f"{'u (GMRES-IR)' if inner == 'gmres' else 'u_f (LU-IR)'}):")
         head = (f"    {'iter':<6}{'rho (obs)':>12}{'mu_hat':>12}"
-                f"{'phi_cond':>12}{'phi_solve':>12}{'phi_hat':>12}")
+                f"{'phi_cond':>12}{'binds':>10}{'phi_solve':>12}{'phi_hat':>12}")
         print(head)
         print("    " + "─" * (len(head) - 4))
         for i, m in enumerate(metrics):
             def cell(key):
                 v = m.get(key)
                 return f"{v:>12.3e}" if v is not None else f"{'n/a':>12}"
+            # Which half of min(cond(A), kappa_inf*mu_hat) the Corollary's
+            # min selected this step. 'cond' means mu_hat was large enough that
+            # the direction of the error bought nothing; 'kappa_mu' means it
+            # did. See refinement_metrics.
+            binding = m.get("phi_cond_binding") or "n/a"
             print(f"    {i:<6}" + cell("rho") + cell("mu_hat")
-                  + cell("phi_cond_hat") + cell("phi_solve_hat") + cell("phi_hat"))
-        if kappa["inf"] is None:
-            print("    phi_cond is n/a: kappa_inf was not available for this "
-                  "index; run condition-est/condition_est.py first")
+                  + cell("phi_cond_hat") + f"{binding:>10}"
+                  + cell("phi_solve_hat") + cell("phi_hat"))
+        if kappa["inf"] is None and kappa["skeel"] is None:
+            print("    phi_cond is n/a: neither kappa_inf nor cond(A) was "
+                  "available for this index; run "
+                  "condition-est/condition_est.py first")
+        elif kappa["skeel"] is None:
+            print("    phi_cond is the kappa_inf*mu_hat half of the "
+                  "Corollary's min alone: this condition-est file has no "
+                  "cond_skeel column; add it with condition_est.py "
+                  "--only-skeel")
         if ref is None:
             print("    phi_solve is n/a: no --reference-solver, so no reference "
                   "correction to compare against")
