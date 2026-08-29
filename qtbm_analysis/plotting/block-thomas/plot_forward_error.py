@@ -28,11 +28,11 @@ block-thomas-inv is dropped by default (DEFAULT_EXCLUDE); --solvers restores
 it. Energies with no solution -- the band gap -- leave a hole in the index
 sequence and the lines are broken there, not drawn across (style.split_gaps).
 
-Figure 1, the measured forward error against energy, with the reference floor
-kappa_inf * eps_ext drawn beneath it. Points at or below that floor measure the
-reference rather than the solver and carry no information about the solver.
-This is one measured quantity per solve and has no componentwise counterpart;
-it is the bounds on it, not the error itself, that come in two forms.
+Figure 1, the measured forward error against energy, every precision on one
+axis: solver by colour, precision by line style. This is one measured quantity
+per solve and has no componentwise counterpart; it is the bounds on it, not the
+error itself, that come in two forms. The reference floor
+kappa_inf * eps_ext is recorded per row as ref_floor but is not drawn.
 
 Figure 2, the same forward error as a fraction of each of those two bounds:
 
@@ -124,12 +124,10 @@ def _series(records):
 
 def plot(records, attrs, material, out_path):
     """
-    The measured forward error against energy, one panel per precision.
+    The measured forward error against energy, all precisions on one axis.
 
     A single measured quantity, ||xhat - x||_inf / ||x||_inf, judged against an
-    extended-precision reference. The reference floor kappa_inf * eps_ext is
-    drawn beneath it; points at or below that floor measure the reference
-    rather than the solver.
+    extended-precision reference. Solver by colour, precision by line style.
 
     There is no componentwise counterpart to plot here. The forward error is
     one number per solve; it is the two *bounds* on it that come in a normwise
@@ -140,14 +138,10 @@ def plot(records, attrs, material, out_path):
     have_energy = energies_of(attrs, [0]) is not None
     by_dtype_solver = _series(records)
 
-    fig, axes = plt.subplots(1, len(dtypes),
-                             figsize=(5.6 * len(dtypes), 4.6), squeeze=False)
+    fig, ax = plt.subplots(figsize=(9.0, 4.8))
 
-    for col, dtype in enumerate(dtypes):
-        ax_fwd = axes[0][col]
-        dtype_label, _ = DTYPE_STYLE.get(dtype, (dtype, "-"))
-        floor_drawn = False
-
+    for dtype in dtypes:
+        _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
         for solver in solvers:
             rows = sorted(by_dtype_solver.get((dtype, solver), []),
                           key=lambda r: r["idx"])
@@ -157,36 +151,26 @@ def plot(records, attrs, material, out_path):
             x = energies_of(attrs, indices)
             if x is None:
                 x = indices
-            _, colour, marker = SOLVER_STYLE.get(solver, (solver, None, "o"))
-            prim = sweep_line(len(rows), "primary", marker)
+            _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, "o"))
+            prim = sweep_line(len(rows), "primary")
 
-            xg, fg, flg = split_gaps(
-                indices, x,
-                _finite([r["fwd_inf"] for r in rows]),
-                _finite([r["ref_floor"] for r in rows]))
-            ax_fwd.semilogy(xg, fg, "-", color=colour, **prim)
+            xg, fg = split_gaps(indices, x,
+                                _finite([r["fwd_inf"] for r in rows]))
+            ax.semilogy(xg, fg, ls, color=colour, **prim)
 
-            if not floor_drawn:
-                ax_fwd.semilogy(xg, flg, "k--", lw=1.0)
-                floor_drawn = True
+    ax.set_ylabel(r"$\|\hat{x}-x\|_\infty / \|x\|_\infty$")
+    ax.set_xlabel(axis_label(have_energy))
+    ax.grid(True, which="both", ls=":", alpha=0.4)
+    if have_energy:
+        mark_band_edges(ax, attrs)
 
-        ax_fwd.set_title(dtype_label)
-        ax_fwd.set_xlabel(axis_label(have_energy))
-        ax_fwd.grid(True, which="both", ls=":", alpha=0.4)
-        if have_energy:
-            mark_band_edges(ax_fwd, attrs)
-
-    axes[0][0].set_ylabel(r"$\|\hat{x}-x\|_\infty / \|x\|_\infty$")
-
-    extra = [(Line2D([], [], color="k", ls="--", lw=1.0),
-              r"reference floor $\kappa_\infty(A)\,\varepsilon_{\mathrm{ext}}$")]
-    handles, labels = legend_handles(solvers, [], extra=extra)
+    handles, labels = legend_handles(solvers, dtypes)
 
     fig.suptitle(f"$\\|\\hat{{x}}-x\\|_\\infty / \\|x\\|_\\infty$  —  "
-                 f"{material}", fontsize=13, y=1.02)
+                 f"{material}", fontsize=13, y=1.0)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
-               fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.09))
+               fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.08))
     save_figure(fig, out_path, dpi=140)
 
 
@@ -256,7 +240,11 @@ def plot_ratios(records, attrs, material, out_path):
     extra = [(Line2D([], [], color="k", ls="--", lw=1.0), "bound attained")]
     handles, labels = legend_handles(solvers, [], extra=extra)
 
-    fig.suptitle(material, fontsize=13, y=1.01)
+    fig.suptitle(
+        r"top  $\|\hat{x}-x\|_\infty/\|x\|_\infty \,/\, "
+        r"[\kappa_\infty(A)\,\eta_\infty]$" + "\n"
+        r"bottom  $\|\hat{x}-x\|_\infty/\|x\|_\infty \,/\, "
+        r"[\mathrm{cond}(A,x)\,\omega]$" + f"\n{material}", fontsize=11, y=1.04)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
                fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.05))

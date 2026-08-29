@@ -365,7 +365,7 @@ RUN_COLUMNS = [
     "lu_ir_bound",
     "relres", "ferr_ref", "eta1", "eta2", "etainf", "omega",
     "outer_iters", "converged", "ferr_best", "ferr_tol", "stop_reason",
-    "gmres_total", "wall_s", "factor_s", "factor_symbolic_s",
+    "gmres_total", "gmres_avg", "wall_s", "factor_s", "factor_symbolic_s",
     "factor_numeric_s", "inner_s", "solve_s", "residual_s", "other_s",
     "n_solves", "factor_mb", "factor_mb_reported", "working_mb",
     "reference_solver", "reference_nbe", "reference_floor",
@@ -1696,19 +1696,47 @@ def refinement_metrics(A_high, x_true, extra, u_s, kappa_inf, ref_solve=None,
     return rows
 
 
-def _gmres_solve(A_op, rhs, M_op, tol, restart, maxiter, callback):
+def _gmres_solve(A_op, rhs, M_op, tol, restart, max_inner_iters, callback):
     """
-    Call scipy.sparse.linalg.gmres compatibly across SciPy versions.
+    Call scipy.sparse.linalg.gmres, correcting for a documented but easy to
+    miss unit mismatch, and compatibly across SciPy versions.
+
+    scipy.sparse.linalg.gmres's `maxiter` parameter counts INNER iterations
+    only under callback_type='legacy' (its default when callback_type is not
+    given). This module always requests callback_type='pr_norm', to get a
+    per-iteration residual for --gmres-tol and for the diagnostic iteration
+    counts this module reports -- and the documented effect of asking for
+    'pr_norm' (or 'x') explicitly is that `maxiter` switches to counting
+    RESTART CYCLES instead. This is stated in SciPy's own docstring for
+    callback_type and is identical in every SciPy version checked (1.11
+    through 1.13): it is not a version-compatibility issue, unlike the
+    tol/rtol rename below, which is.
+
+    Silently passing max_inner_iters=50 straight through as `maxiter` under
+    'pr_norm' therefore does not cap the run at 50 iterations -- it caps it at
+    50 restart cycles, i.e. up to 50 * restart individual iterations (1500 at
+    the default restart=30). Measured on carbon-nanotube E_1605 at complex32:
+    a single inner solve ran 1427 real iterations under a nominal
+    --gmres-max-iter 50, and the resulting outer step took 4.5 minutes. The
+    fix is to convert the caller's intended total into the restart-cycle count
+    scipy actually wants: ceil(max_inner_iters / restart). The realised cap is
+    then a multiple of `restart`, rounded up from what was asked for, never
+    down, so an outer step still costs at most what --gmres-max-iter promises,
+    to within one restart cycle.
 
     The tol keyword was renamed to rtol in SciPy 1.12; the fallback covers
-    older installations.
+    older installations. That rename is unrelated to the maxiter fix above,
+    which applies identically in both branches.
     """
+    restart_cycles = max(1, math.ceil(max_inner_iters / restart))
     try:
         return spla.gmres(A_op, rhs, M=M_op, rtol=tol, atol=0.0, restart=restart,
-                          maxiter=maxiter, callback=callback, callback_type="pr_norm")
+                          maxiter=restart_cycles, callback=callback,
+                          callback_type="pr_norm")
     except TypeError:
         return spla.gmres(A_op, rhs, M=M_op, tol=tol, atol=0.0, restart=restart,
-                          maxiter=maxiter, callback=callback, callback_type="pr_norm")
+                          maxiter=restart_cycles, callback=callback,
+                          callback_type="pr_norm")
 
 
 def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
@@ -2655,6 +2683,18 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
             ferr_tol=float(summary.get("ferr_tol", float("nan"))),
             stop_reason=summary.get("stop_reason", "no refinement"),
             gmres_total=int(sum(sum(g) for g in gm)) if gm else -1,
+            # The mean inner-GMRES iteration count of a single correction,
+            # over every (outer step, rhs column) pair -- not gmres_total
+            # divided by outer_iters * n_rhs, which would be wrong whenever
+            # the run's last correction was discarded (see solve_gmres_ir):
+            # gm holds one entry per correction actually computed, including
+            # that discarded one, so this is the exact mean of what was
+            # computed rather than an approximation from stored aggregates.
+            # This is what the summary figure labels each GMRES-IR point
+            # with, since the y position already shows outer_iters and
+            # repeating it would say nothing new.
+            gmres_avg=(float(np.mean([it for step in gm for it in step]))
+                      if gm else float("nan")),
             wall_s=med(nm, "wall_s"),
             factor_s=med_extra(nm, "factor_s") or float("nan"),
             factor_symbolic_s=float(breakdown[0]) if breakdown else float("nan"),

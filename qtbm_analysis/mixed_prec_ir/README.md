@@ -524,7 +524,7 @@ performs outer steps, so only it appears in `iterations`.
 `inner`, `variant`, `is_refined`, `u_f`, `u`, `u_s`, `kappa_2`, `kappa_inf`,
 `cond_skeel`, `cond_skeel_x`, `lu_ir_bound`, `relres`, `ferr_ref`, `eta1`, `eta2`, `etainf`, `omega`,
 `outer_iters`, `converged`, `ferr_best`, `ferr_tol`, `stop_reason`,
-`gmres_total`, `wall_s`, `factor_s`, `factor_symbolic_s`, `factor_numeric_s`,
+`gmres_total`, `gmres_avg`, `wall_s`, `factor_s`, `factor_symbolic_s`, `factor_numeric_s`,
 `inner_s`, `solve_s`, `residual_s`, `other_s`, `n_solves`, `factor_mb`,
 `factor_mb_reported`, `working_mb`, `reference_solver`, `reference_nbe`,
 `reference_floor`.

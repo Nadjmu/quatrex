@@ -101,13 +101,14 @@ colour per solver, one line style per precision.
 
 Output
 ------
-Four figures, written to the analysis file's own directory by default so that
-each sits beside the data it was drawn from:
+Written to the analysis file's own directory by default so that each figure
+sits beside the data it was drawn from:
 
-    <material>_growth_factor.png       Psi, one panel per norm drawn
-    <material>_assembly_residual.png   ||A_eff - LU|| / ||A_eff||, same layout
-    <material>_schur_growth.png        the two factors of Psi, one norm
-    <material>_backward_vs_growth.png  eta_inf as a fraction of the bound
+    <material>_growth_factor_<dtype>.png   Psi, one file per precision present
+    <material>_assembly_residual.png       ||A_eff - LU|| / ||A_eff||, all
+                                           precisions overlaid
+    <material>_schur_growth_<dtype>.png    the two factors of Psi, per precision
+    <material>_backward_vs_growth.png      eta_inf as a fraction of the bound
 
 The last needs the forward_error group in the same file; it is skipped with a
 message when that group has not been written.
@@ -237,7 +238,9 @@ def _sweep_figure(records, attrs, material, norms, out_path, column,
 
     solvers = _ordered(solvers_present, SOLVER_STYLE)
     dtypes = _ordered(dtypes_present, DTYPE_STYLE)
-    handles, labels = legend_handles(solvers, dtypes)
+    # Drop the precision entries from the legend when only one is drawn; the
+    # per-precision Psi figures then carry a solver-only legend.
+    handles, labels = legend_handles(solvers, dtypes if len(dtypes) > 1 else [])
 
     fig.suptitle(material, fontsize=13, y=1.005)
     fig.tight_layout()
@@ -247,10 +250,20 @@ def _sweep_figure(records, attrs, material, norms, out_path, column,
     save_figure(fig, out_path, dpi=140)
 
 
-def plot(records, attrs, material, norms, out_path):
-    """Psi = ||L|| ||U|| / ||A_eff||, the ratio Theorem 2.1 is stated with."""
-    _sweep_figure(records, attrs, material, norms, out_path, "loose",
-                  r"$\Psi = \|L\|\,\|U\| / \|A_{\mathrm{eff}}\|$", r"$\Psi$")
+def plot(records, attrs, material, norms, outdir, stem):
+    """
+    Psi = ||L|| ||U|| / ||A_eff||, one figure per precision present.
+
+    Kept per precision rather than overlaid: the half-precision variant is a
+    different factorization measured against a different matrix (s * embed(A),
+    twice the dimension, |a|+|b| per entry), so its Psi is not on the same
+    scale as the complex ones and does not belong on a shared axis.
+    """
+    for dtype in _ordered({r["dtype"] for r in records}, DTYPE_STYLE):
+        sub = [r for r in records if r["dtype"] == dtype]
+        _sweep_figure(sub, attrs, f"{material} — {dtype}", norms,
+                      outdir / f"{stem}_{dtype}.png", "loose",
+                      r"$\Psi = \|L\|\,\|U\| / \|A_{\mathrm{eff}}\|$", r"$\Psi$")
 
 
 def plot_residual(records, attrs, material, norms, out_path):
@@ -274,7 +287,7 @@ def plot_residual(records, attrs, material, norms, out_path):
 SCHUR_COLUMNS = ("nA", "nL", "nU")
 
 
-def plot_schur(records, attrs, material, out_path):
+def plot_schur(records, attrs, material, out_dir, stem):
     """
     The two factors that make up Psi, per solver.
 
@@ -315,29 +328,39 @@ def plot_schur(records, attrs, material, out_path):
     mode near a band edge -- leaves kappa unchanged while ||L_k|| explodes. The
     growth_factor group still records it as schur_cond_max.
 
-    One norm is selected so that each series is drawn once. Returns False when
-    the file lacks the columns.
+    One norm is selected so that each series is drawn once, and one figure is
+    written per precision. Returns False when the file lacks the columns.
     """
     present_norms = {r["norm"] for r in records}
     norm = "inf-norm" if "inf-norm" in present_norms else sorted(present_norms)[0]
-    rows_by_series = defaultdict(list)
-    for record in records:
-        if record["norm"] == norm:
-            rows_by_series[(record["solver"], record["dtype"])].append(record)
-    if not rows_by_series:
-        return False
-    sample = next(iter(rows_by_series.values()))[0]
-    if not all(column in sample for column in SCHUR_COLUMNS):
-        return False
+    drawn = False
+    for dtype in _ordered({r["dtype"] for r in records}, DTYPE_STYLE):
+        rows_by_series = defaultdict(list)
+        for record in records:
+            if record["norm"] == norm and record["dtype"] == dtype:
+                rows_by_series[(record["solver"], dtype)].append(record)
+        if not rows_by_series:
+            continue
+        sample = next(iter(rows_by_series.values()))[0]
+        if not all(column in sample for column in SCHUR_COLUMNS):
+            continue
+        _plot_schur_one(rows_by_series, attrs, norm,
+                        f"$\\Psi = \\|L\\| \\cdot \\|U\\| / \\|A\\|$  —  "
+                        f"{material}, {dtype}",
+                        out_dir / f"{stem}_schur_growth_{dtype}.png")
+        drawn = True
+    return drawn
 
+
+def _plot_schur_one(rows_by_series, attrs, norm, title, out_path):
+    """One schur-split figure, for the (solver, dtype) series already grouped."""
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.8), squeeze=False)
     ax_l, ax_u = axes[0]
     have_energy = energies_of(attrs, [0]) is not None
-    solvers_present, dtypes_present = set(), set()
+    solvers_present = set()
 
     for (solver, dtype), rows in sorted(rows_by_series.items()):
         solvers_present.add(solver)
-        dtypes_present.add(dtype)
         rows = sorted(rows, key=lambda r: r["idx"])
         indices = np.asarray([r["idx"] for r in rows])
         x = energies_of(attrs, indices)
@@ -374,11 +397,9 @@ def plot_schur(records, attrs, material, out_path):
             mark_band_edges(ax, attrs, label=False)
 
     solvers = _ordered(solvers_present, SOLVER_STYLE)
-    dtypes = _ordered(dtypes_present, DTYPE_STYLE)
-    handles, labels = legend_handles(solvers, dtypes)
+    handles, labels = legend_handles(solvers, [])
 
-    fig.suptitle(f"$\\Psi = \\|L\\| \\cdot \\|U\\| / \\|A\\|$  —  {material}",
-                 fontsize=13, y=1.01)
+    fig.suptitle(title, fontsize=13, y=1.01)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
                fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.12))
@@ -669,13 +690,11 @@ def main():
     present_norms = {r["norm"] for r in records}
     norms = [n for n in (args.norms or ["inf-norm"]) if n in present_norms]
     norms = norms or sorted(present_norms)
-    plot(records, attrs, material, norms,
-         outdir / f"{material}_growth_factor.png")
+    plot(records, attrs, material, norms, outdir, f"{material}_growth_factor")
     plot_residual(records, attrs, material, norms,
                   outdir / f"{material}_assembly_residual.png")
 
-    if not plot_schur(records, attrs, material,
-                      outdir / f"{material}_schur_growth.png"):
+    if not plot_schur(records, attrs, material, outdir, material):
         print("no Block Thomas rows in this file; the factor-split figure "
               "needs at least one")
 

@@ -344,7 +344,7 @@ is_refined, u_f, u, u_s, kappa_2, kappa_inf, cond_skeel, cond_skeel_x,
 lu_ir_bound,
 relres, ferr_ref, eta1, eta2, etainf, omega,
 outer_iters, converged, ferr_best, ferr_tol, stop_reason,
-gmres_total, wall_s, factor_s, factor_symbolic_s, factor_numeric_s, inner_s,
+gmres_total, gmres_avg, wall_s, factor_s, factor_symbolic_s, factor_numeric_s, inner_s,
 solve_s, residual_s, other_s, n_solves,
 factor_mb, factor_mb_reported, working_mb, reference_solver, reference_nbe,
 reference_floor
@@ -470,10 +470,17 @@ x on a log scale, y an integer count.
   requirement `kappa_inf(A) u_f < 1`. Points to the right of it are outside
   what the theory guarantees — exactly where GMRES-IR should keep working and
   LU-IR should not.
-- for **GMRES-IR only**, each point is labelled with its own iteration count.
-  There the interesting counts are small and close together (two or three
-  steps), so reading them off a shared axis is imprecise in the regime that
-  matters.
+- for **GMRES-IR only**, each point is labelled with `gmres_avg`: the mean
+  inner-GMRES iteration count of one correction, averaged over every outer
+  step and every right-hand side at that index. The y position already shows
+  `outer_iters`, so labelling with that again would say nothing new — the
+  inner count is the number a cost comparison actually needs, and it has to be
+  one average rather than the full per-step table, since a point stands for
+  several outer steps times several right-hand sides. `gmres_avg` is exact
+  even when the run's last correction was later discarded (§3): it is computed
+  from every correction actually attempted, not from `gmres_total` divided by
+  `outer_iters * n_rhs`, which would undercount by leaving that correction's
+  cost out of the denominator while it is still in the numerator.
 
 Points are sorted by `kappa_inf`; indices with no `kappa_inf` in the
 condition-est file are dropped, and the count of dropped indices is printed.

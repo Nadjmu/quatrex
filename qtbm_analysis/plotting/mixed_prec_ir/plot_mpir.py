@@ -31,7 +31,8 @@ Figure 2 is the sweep, and is the figure the study exists to produce: outer
 iterations against kappa_inf(A), one point per index, blue where the run
 converged and red where it did not, with a vertical line at kappa_inf = 1/u_f
 marking the classical LU-IR requirement kappa_inf(A) u_f < 1. For GMRES-IR each
-point is labelled with its own count.
+point is additionally labelled with its mean inner-GMRES iteration count per
+correction, averaged over every outer step and right-hand side.
 
 The iteration count is the only quantity here that decides anything: it
 multiplies the cost of the cheap low-precision factorization, so a method
@@ -188,10 +189,14 @@ def plot_summary(run_rows, attrs, out_path):
     theory guarantees, which is exactly where GMRES-IR is supposed to keep
     working and LU-IR is not.
 
-    For GMRES-IR each point is labelled with its own iteration count. There
-    the interesting counts are small and close together -- two or three steps
-    -- so reading them off a shared axis is imprecise in the regime that
-    matters, and the label removes the ambiguity.
+    For GMRES-IR each point is additionally labelled with the mean inner-GMRES
+    iteration count of one correction, averaged over every (outer step, rhs
+    column) pair -- mpir.py's gmres_avg column. The y position already shows
+    outer_iters, so labelling points with that again would say nothing new;
+    the inner count is the number a cost comparison actually needs; and it
+    must be a single average rather than the full per-step, per-column table,
+    since a real sweep has several outer steps times several right-hand sides
+    per point and nowhere on this plot to put a table.
     """
     refined = sorted(
         (r for r in run_rows if _role(r["variant"], attrs) == "refined"),
@@ -203,6 +208,7 @@ def plot_summary(run_rows, attrs, out_path):
     kappa = np.asarray([r.get("kappa_inf", np.nan) for r in refined], dtype=float)
     iters = np.asarray([r.get("outer_iters", np.nan) for r in refined], dtype=float)
     conv = np.asarray([bool(r.get("converged", 0)) for r in refined])
+    gmres_avg = np.asarray([r.get("gmres_avg", np.nan) for r in refined], dtype=float)
 
     keep = np.isfinite(kappa) & np.isfinite(iters) & (kappa > 0)
     if not keep.any():
@@ -214,12 +220,14 @@ def plot_summary(run_rows, attrs, out_path):
         print(f"  [note] summary: {dropped} of {len(refined)} indices have no "
               f"kappa_inf and are not drawn")
     kappa, iters, conv = kappa[keep], iters[keep], conv[keep]
+    gmres_avg = gmres_avg[keep]
 
     # Sorted by kappa_inf, which is the x axis: the indices were selected by
     # energy and arrive in that order, so without this the points would be
     # joined in the wrong sequence if a line were ever drawn through them.
     order = np.argsort(kappa)
     kappa, iters, conv = kappa[order], iters[order], conv[order]
+    gmres_avg = gmres_avg[order]
 
     fig, ax = plt.subplots(1, 1, figsize=(8.0, 5.0))
 
@@ -237,12 +245,15 @@ def plot_summary(run_rows, attrs, out_path):
         ax.axvline(1.0 / u_f, color="black", ls="--", lw=1.1, zorder=2,
                    label=rf"$\kappa_\infty = 1/u_f$ = {1.0 / u_f:.1e}")
 
-    # The per-point iteration count, for GMRES-IR only; see the docstring.
+    # Mean inner-GMRES iterations per correction, for GMRES-IR only; see the
+    # docstring. Points from an analysis file written before gmres_avg existed
+    # carry NaN there and are simply left unlabelled.
     if str(attrs.get("inner", "")) == "gmres":
-        for xi, yi in zip(kappa, iters):
-            ax.annotate(f"{int(yi)}", (xi, yi), textcoords="offset points",
-                        xytext=(0, 7), ha="center", fontsize=7,
-                        color="#333333", zorder=4)
+        for xi, yi, gi in zip(kappa, iters, gmres_avg):
+            if np.isfinite(gi):
+                ax.annotate(f"{gi:.0f}", (xi, yi), textcoords="offset points",
+                            xytext=(0, 7), ha="center", fontsize=7,
+                            color="#333333", zorder=4)
 
     ax.set_xscale("log")
     ax.set_xlabel(r"$\kappa_\infty(A)$")

@@ -171,7 +171,8 @@ def plot(records, attrs, material, out_path):
         extra=[(plt.Line2D([], [], color="k", lw=1.0, ls="--"),
                "unit roundoff u")])
 
-    fig.suptitle(material, fontsize=13, y=1.01)
+    fig.suptitle(f"componentwise and normwise backward error — {material}",
+                 fontsize=13, y=1.01)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 7),
               fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.05))
