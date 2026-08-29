@@ -92,7 +92,8 @@ import matplotlib.pyplot as plt
 
 import cli
 from factor_io import table_rows
-from mpir import experiment_names, load_experiment, unit_roundoff
+from mpir import (experiment_names, load_experiment, unit_roundoff,
+                  EPS_EXT, EXTENDED_REFERENCE)
 from style import save_figure
 
 # Convergence history, left panel. The three colours are those of Carson and
@@ -291,22 +292,47 @@ def plot_summary(run_rows, attrs, out_path, y_max=None):
     # axis range so it stays visually consistent regardless of top.
     ax.set_ylim(bottom=-max(0.4, 0.04 * top))
 
+    # tight_layout doesn't know about the suptitle, so give it room with an
+    # explicit subplots_adjust afterwards rather than a rect guess -- four
+    # lines now (was two) need more headroom than rect ever gave cleanly.
     fig.suptitle(_summary_title(attrs, refined), fontsize=9)
-    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    fig.tight_layout()
+    fig.subplots_adjust(top=0.80)
     save_figure(fig, out_path)
 
 
 def _summary_title(attrs, refined):
-    """One line naming the experiment and how much of it converged."""
+    """Four lines: what ran, the stopping rule, the convergence threshold
+    actually used, and the outcome."""
+    u_f = float(refined[0].get("u_f", np.nan))
+    u = float(attrs.get("working_u", unit_roundoff(np.complex128)))
+    u_r = u  # the residual is always accumulated at the working precision
+
+    reference_solver = attrs.get("reference_solver", "?")
+    ref_eps = EPS_EXT if reference_solver == EXTENDED_REFERENCE else u
+
+    tols = np.asarray([r.get("ferr_tol", np.nan) for r in refined], dtype=float)
+    tols = tols[np.isfinite(tols)]
+    if tols.size == 0:
+        tol_str = "n/a"
+    elif np.ptp(tols) <= 1e-12 * np.max(np.abs(tols)):
+        tol_str = f"{tols[0]:.1e}"
+    else:
+        # cond(A,x) differs by index, so the threshold does too -- the range
+        # actually applied across the sweep, not a single misleading number.
+        tol_str = f"{tols.min():.1e} - {tols.max():.1e}"
+
     converged = sum(1 for r in refined if r["converged"])
-    return (f"{attrs.get('material', '?')}   experiment "
-            f"{attrs.get('_name', '?')}   "
-            f"{attrs.get('solver', '?')} {attrs.get('factor_dtype', '?')} + "
-            f"{attrs.get('inner_label', '?')}   "
-            f"reference {attrs.get('reference_solver', '?')}\n"
-            f"converged on {converged}/{len(refined)} indices   "
-            f"[stop: ferr increased   max_iter={attrs.get('max_iter', '?')}]   "
-            f"{attrs.get('timestamp', '')}")
+    return (
+        f"{attrs.get('material', '?')}   {attrs.get('solver', '?')} "
+        f"{attrs.get('factor_dtype', '?')}   "
+        f"($u_f$={u_f:.1e}, $u$={u:.1e}, $u_r$={u_r:.1e})   "
+        f"{attrs.get('inner_label', '?')}   "
+        f"reference {reference_solver} ($x$ = {ref_eps:.1e})\n"
+        f"stop: ferr increased, max_iter={attrs.get('max_iter', '?')}\n"
+        f"converged if ferr < {tol_str}  (cond(A,x) u)\n"
+        f"converged on {converged}/{len(refined)} indices"
+    )
 
 
 def list_experiments(h5path):
