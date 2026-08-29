@@ -842,6 +842,28 @@ SOLVER_BUILDERS = {
 # must be excluded from the measurement. See _warm_up_gpu.
 _GPU_SOLVERS = ("cudss",)
 
+# Exceptions that mean "this factorization cannot be formed in this precision",
+# as opposed to a bug. Raised by the complex32 Block Thomas families in
+# solvers/solver_classes.py:
+#
+#   FloatingPointError  a block reached inf or nan and no power-of-two scale
+#                       brings it back into fp16 range (_pow2_scale), or the
+#                       explicit block inverse overflowed fp16
+#   ZeroDivisionError   a pivot underflowed to exactly zero in fp16
+#
+# Both are ordinary outcomes of half precision on an ill-conditioned block, not
+# programming errors, and main() skips the index when one is raised, counting
+# it separately from other skips because it is a real measurement: this
+# precision cannot factorize this matrix.
+#
+# ValueError is deliberately absent, so a shape mistake still crashes rather
+# than being recorded as a numerical failure. TypeError is absent here too, but
+# note that it does not reach main() either way: run_benchmarks catches
+# (ImportError, TypeError, RuntimeError) per variant so that an uninstalled
+# MUMPS or a GPU-less cuDSS skips gracefully, and if that leaves no variant at
+# all it raises SystemExit, which main() reports as an ordinary skipped index.
+FACTORIZATION_FAILURES = (FloatingPointError, ZeroDivisionError)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Data loading
@@ -1246,6 +1268,17 @@ class RefinementMonitor:
             w = ferr / self._ferr_prev
         self.ferr_history.append(ferr)
         self.ferr_ratio_history.append(w)
+
+        # A non-finite forward error means the iterate itself is inf or nan --
+        # a low-precision factorization that overflowed without raising, so
+        # everything downstream is garbage. Stop here rather than let it run to
+        # max_iter: nan fails every comparison, so the increase test below
+        # would never fire and the run would report a full-length iteration
+        # count for a solution that never existed.
+        if ferr is not None and not math.isfinite(ferr):
+            self.reasons = [f"forward error is not finite ({ferr}); the "
+                            f"low-precision solve produced inf or nan"]
+            return True
 
         if ferr is not None and ferr > self._ferr_prev:
             self.reasons = [f"forward error increased "
@@ -2778,7 +2811,14 @@ def main():
                     else np.dtype(args.factor_dtype))
     inv_dtype = np.dtype(args.inv_dtype)
 
-    all_runs, all_iters, skipped = [], [], []
+    # skipped holds every index that produced no rows, for the experiment
+    # attributes; hard_skipped is the subset whose low-precision factorization
+    # could not be formed. The two are reported differently because they mean
+    # opposite things: a factorization failure is a property of the matrix at
+    # this u_f and belongs in any conclusion about the sweep, whereas an index
+    # skipped because a solver library is missing says nothing about the
+    # matrix at all.
+    all_runs, all_iters, skipped, hard_skipped = [], [], [], []
     for idx in indices:
         if len(indices) > 1:
             print("=" * 78)
@@ -2796,6 +2836,47 @@ def main():
         except SystemExit as e:              # a bad index, from load_system
             skipped.append((idx, str(e)))
             print(f"\nE_{idx}: skipped ({e})")
+        except FACTORIZATION_FAILURES as e:
+            # The low-precision factorization could not be formed at all. At
+            # complex32 this is expected rather than exceptional: half
+            # precision overflows at 65504, and the Schur recursion of Block
+            # Thomas squares the block norms, so a large enough kappa_inf
+            # drives a block to inf and then to nan. Both variants that use
+            # that factorization are then impossible, leaving only the
+            # complex128 baseline, which answers nothing on its own -- so the
+            # whole index is skipped rather than half-recorded.
+            #
+            # Note that these are the HARDEST indices, so a sweep that drops
+            # them silently is biased at exactly the end it is about. They are
+            # recorded in the experiment's skipped_idx / skipped_reason
+            # attributes and counted in the summary below; a figure that plots
+            # iterations against kappa_inf should say how many there were.
+            reason = f"{type(e).__name__}: {e}"
+            skipped.append((idx, reason))
+            hard_skipped.append(idx)
+            print(f"\nE_{idx}: skipped -- the {dtype_label(factor_dtype)} "
+                  f"factorization could not be formed ({reason})")
+
+    # Said once at the end, because in a long sweep the per-index lines have
+    # scrolled away and a silently shorter result set is the thing most likely
+    # to be misread.
+    if skipped:
+        def _names(values):
+            head = ", ".join(str(i) for i in values[:12])
+            return head + ("" if len(values) <= 12
+                           else f", ... (+{len(values) - 12} more)")
+
+        print(f"\n{len(skipped)} of {len(indices)} indices skipped: "
+              f"{_names([i for i, _ in skipped])}")
+        if hard_skipped:
+            print(f"  {len(hard_skipped)} of them because the "
+                  f"{dtype_label(factor_dtype)} factorization overflowed: "
+                  f"{_names(hard_skipped)}")
+            print(f"  Those are the hardest indices in the sweep -- the "
+                  f"precision failing outright, not converging slowly -- so a "
+                  f"figure drawn from the rest understates the difficulty at "
+                  f"large kappa_inf. The full list is in the experiment's "
+                  f"skipped_idx attribute.")
 
     if args.no_save or not all_runs:
         return
