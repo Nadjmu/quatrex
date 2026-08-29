@@ -23,48 +23,31 @@ Algorithm
 ---------
 No computation is performed; the recorded quantities are plotted as they stand.
 
-Figure 1, factor growth relative to A_eff, one panel per norm drawn:
+Figure 1, factor growth relative to A_eff, the precisions side by side:
 
     Psi = ||L|| ||U|| / ||A_eff||        the `loose` column.
 
 This is the ratio Theorem 2.1 of Demmel, Higham and Schreiber is stated with,
-and every other figure here is built on the same quantity, so one Psi runs
-through the whole set.
+and every other figure here is built on the same quantity. The `tight` column
+|| |L| |U| || / ||A_eff|| and the pivot growth factor rho are recorded by
+growth_factor.py and not plotted: the theorem is stated with ||L|| ||U||, so
+Psi is the quantity that matters.
 
-The sharper `tight` = || |L| |U| || / ||A_eff|| is recorded by
-growth_factor.py but not plotted. It descends from the entrywise bound
-|A - LU| <= gamma_n |L| |U|, which is a point-LU result: it is proved by
-tracking each scalar multiply-and-subtract of Gaussian elimination. Block LU
-forms its Schur complements with block solves against S_k, whose error analysis
-is normwise and admits no entrywise counterpart, so for the Block Thomas
-factorization tight is a measurement of the assembled factors and not a
-quantity any theorem bounds the backward error by. It is smaller than Psi by a
-median factor of 2.2 on carbon-chain, so nothing is lost by drawing Psi.
+complex128 and complex64 coincide almost exactly, since factor growth is
+precision-independent up to rounding. complex32 is a different factorization,
+measured against s * embed(A) rather than A, so it is a separate panel column.
 
-The pivot growth factor rho = max|U| / max|A_eff| is likewise recorded and not
-plotted: it watches the largest entry of U alone, is blind to L, and for block
-LU -- whose multipliers are not bounded by pivoting -- understates the growth
-Psi captures.
+Figure 2, the assembly residual ||A_eff - LU|| / ||A_eff||, precisions
+overlaid. This is a correctness guard on the reconstruction rather than a
+stability metric. Values near the unit roundoff of the stored precision mean
+the assembled factors reproduce A_eff and Psi may be trusted; values far above
+it mean the assumed factor convention does not hold for the build that
+produced the file, and every figure drawn from those factors must be
+discarded. See plot_residual.
 
-complex64 and complex128 are both drawn (dashed and solid). They coincide
-almost exactly, since factor growth is precision-independent up to rounding, so
-the dashed line is hidden under the solid one.
-
-Figure 2, the assembly residual ||A_eff - LU|| / ||A_eff||, same layout. This
-is a correctness guard on the reconstruction rather than a stability metric.
-Values near the unit roundoff of the stored precision mean the assembled
-factors do reproduce A_eff and Psi may be trusted; values far above it mean
-the assumed factor convention does not hold for the build that produced the
-file, and every figure drawn from those factors must be discarded. It is
-separate from figure 1 because it answers a different question. See
-plot_residual.
-
-Figure 3 splits Psi into the two factors it is made of, ||L|| and
-||U|| / ||A_eff||, whose product is Psi exactly. It says which of the two
-halves is responsible. For block LU ||L|| = 1 + max_k ||L_k|| with
-L_k = A_{k+1,k} S_k^-1, and it is the term scalar partial pivoting does not
-have, since that bounds |L_ij| <= 1 by construction and block Thomas cannot.
-See plot_schur.
+Figure 3 splits Psi into its two factors, ||L|| and ||U|| / ||A_eff||, whose
+product is Psi exactly, so the reader can see which of the two carries the
+size at a given energy. See plot_schur.
 
 Figure 4 puts the growth factor against the backward error it bounds.
 Theorem 2.1 of Demmel, Higham and Schreiber gives, for a block LU solve,
@@ -309,44 +292,37 @@ SCHUR_COLUMNS = ("nA", "nL", "nU")
 
 def plot_schur(records, attrs, material, out_path):
     """
-    The two factors that make up Psi, per solver.
+    The two factors that make up Psi.
 
-    The backward error of any LU is governed by Psi = ||L|| ||U|| / ||A||, the
-    ratio the first figure plots, and the point of this one is to say which of
-    the two halves is responsible and how that differs from a globally pivoted
-    factorization. Block Thomas produces
+    Psi = ||L|| ||U|| / ||A|| is what Theorem 2.1 bounds the backward error by,
+    and this figure splits it into its two factors so the reader can see which
+    of them carries the size at a given energy and how that compares with a
+    globally pivoted factorization. Block Thomas produces
 
         U = block-bidiagonal(S_k ;   A_{k,k+1})
         L = block-bidiagonal(I   ;   L_k = A_{k+1,k} S_k^-1)
 
-    so the ratio splits as
+    so
 
-        Psi  =  ||L|| * (||U|| / ||A||)  =  (1 + max_k ||L_k||) * (||U|| / ||A||)
+        Psi  =  ||L|| * (||U|| / ||A||)  =  (1 + max_k ||L_k||) * (||U|| / ||A||),
 
-    the first identity holding by definition and the second exactly for both
-    the 1-norm and the infinity norm,
-    since L is block bidiagonal with the identity on its diagonal: every row
-    (column) sum of |L| is one identity entry plus the corresponding row
-    (column) sum of one L_k.
+    the second identity holding exactly for the 1-norm and the infinity norm
+    because L is block bidiagonal with the identity on its diagonal.
 
-    Panel 1, max_k ||L_k||. The L side, and the reason the split is drawn at
-    all. Scalar LU with partial pivoting has |L_ij| <= 1 by construction, so
-    ||L|| <= n holds a priori and the classical stability story reduces to
-    growth in U alone -- one number, the growth factor. Block Thomas pivots
-    only inside a diagonal block and has no such bound, so this term is free to
-    grow and is the one source of instability with no scalar counterpart.
-    SuperLU is drawn beside it as the baseline that makes the difference
-    legible: its curve is pinned by pivoting, the Block Thomas one is not.
+    Top row, ||L||. Scalar LU with partial pivoting has |L_ij| <= 1 by
+    construction, so ||L||_inf <= n holds a priori; the SuperLU curve is drawn
+    beside it as that a-priori-bounded baseline. Block Thomas pivots only inside
+    a diagonal block and has no such bound, so its ||L|| is free to grow.
 
-    Panel 2, ||U|| / ||A_eff||. The U side -- the classical growth term. It
-    carries the Schur complements S_k, so growth in the recursion shows up
-    here.
+    Bottom row, ||U|| / ||A_eff||. This carries the Schur complements S_k, so
+    growth in the recursion shows up here.
 
-    max_k ||S_k|| ||S_k^-1|| is deliberately not drawn. It is a surrogate for
-    max_k ||L_k||, exact only when ||A_{k+1,k}|| = ||S_k||, and it is scale
-    invariant: a Schur complement that collapses in norm -- the actual failure
-    mode near a band edge -- leaves kappa unchanged while ||L_k|| explodes. The
-    growth_factor group still records it as schur_cond_max.
+    Which of the two factors dominates, and where, is read from the figure; it
+    is not asserted here. max_k ||S_k|| ||S_k^-1|| is deliberately not drawn: it
+    is a scale-invariant surrogate for max_k ||L_k||, exact only when
+    ||A_{k+1,k}|| = ||S_k||, and a Schur complement that collapses in norm
+    leaves it unchanged while ||L_k|| grows. growth_factor.py still records it
+    as schur_cond_max.
 
     One norm is selected so that each series is drawn once. The precisions go
     side by side: one panel column each, ||L|| on the top row, ||U|| / ||A_eff||

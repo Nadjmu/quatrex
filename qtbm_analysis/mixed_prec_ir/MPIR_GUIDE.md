@@ -138,7 +138,7 @@ python mpir.py carbon-nanotube.h5 --list-experiments
 | `--inv-dtype` | `float32` | `block-thomas-inv` + `complex32` only: precision the explicit inverse is formed in before rounding to `float16` |
 | `--inner` | `direct` | `direct` = LU-IR, `gmres` = GMRES-IR |
 | `--max-iter` | `30` | safety net on the outer steps; the stopping rule itself takes no option (§3) |
-| `--ferr-tol` | `sqrt(n) u` | accuracy the returned solution must reach to count as converged (§3) |
+| `--ferr-tol` | `cond(A,x) u` | accuracy the returned solution must reach to count as converged; falls back to `sqrt(n) u` where `cond(A,x)` is unavailable (§3) |
 | `--repeats` | `1` | repeats per variant; the median is reported |
 | `--reference-solver` | `mumps` | supplies `x_true` and the reference corrections `phi_solve` is measured against |
 | `--gmres-tol`, `--gmres-restart`, `--gmres-max-iter` | `1e-8`, `30`, `50` | inner GMRES parameters (`--inner gmres` only) |
@@ -186,19 +186,31 @@ A separate question from stopping. Stopping says the method got as far as it
 was going to; `converged` says whether that was far enough:
 
 ```
-converged  <=>  best ferr <= ferr_tol,   ferr_tol defaulting to sqrt(n) * u
+converged  <=>  best ferr <= ferr_tol,   ferr_tol defaulting to cond(A,x) * u
 ```
+
+`cond(A,x)` comes from the condition-est file's `cond_skeel_x` column —
+Corollary 3.3's own limiting accuracy, not `sqrt(n) u`, the level the working
+precision can represent in the abstract. On an ill-conditioned index the two
+differ by orders of magnitude; judging convergence against `sqrt(n) u` there
+mistakes the theorem's own limit for a failure. `sqrt(n) u` is still the
+fallback where `cond_skeel_x` is unavailable (an older condition-est file, or
+none at all), and `--ferr-tol` overrides either.
 
 `u` is always the **working precision** (complex128), never `u_f` — the
 question is whether refinement reached the accuracy the working precision can
 hold, and asking it at `u_f` would accept a solution only as good as the
-factorization itself.
+factorization itself. `ferr_best` / `ferr_tol` are both recorded per run so
+the verdict can be re-derived.
 
-An ill-conditioned index can legitimately stop above this level: Corollary
-3.3's limiting accuracy is of order `cond(A,x) u`, which is larger. A "did not
-converge" verdict there means working precision was not reached, **not** that
-refinement misbehaved. `--ferr-tol` overrides the level, and `ferr_best` /
-`ferr_tol` are both recorded per run so the verdict can be re-derived.
+**When the factorization itself fails.** At `complex32` a Block Thomas block
+can overflow to `inf`/`nan` before refinement ever starts, or a pivot can
+underflow to exactly zero. This is caught, not left to crash the sweep: the
+refined variant gets a row with `converged = 0`, `outer_iters = 0`,
+`ferr_best = nan`, `stop_reason` naming the exception, and `kappa_inf` filled
+in as usual — a red point on the summary figure rather than a gap. These tend
+to be the hardest indices in a sweep, so a silent drop would bias exactly the
+end of the `kappa_inf` axis that matters. The complex128 baseline still runs.
 
 ---
 
@@ -465,7 +477,11 @@ plots them.
 **One panel: outer iterations against `kappa_inf(A)`.** One point per index,
 x on a log scale, y an integer count.
 
-- **blue** where the run converged, **red** where it did not (§3).
+- **blue** where the run converged, **red** where it did not (§3) — including a
+  point pinned at `outer_iters = 0` where the low-precision factorization
+  itself failed to form (§3, "When the factorization itself fails"), which is
+  otherwise indistinguishable at a glance from a run that simply made no
+  progress; `stop_reason` in the `runs` table tells the two apart.
 - a dashed vertical line at `kappa_inf = 1/u_f`, the classical LU-IR
   requirement `kappa_inf(A) u_f < 1`. Points to the right of it are outside
   what the theory guarantees — exactly where GMRES-IR should keep working and

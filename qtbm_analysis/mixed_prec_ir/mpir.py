@@ -16,7 +16,8 @@ Input
     --inner            the inner correction solve, direct or gmres
     --max-iter         safety net on the outer steps; the stopping rule itself
                        takes no option, see Stopping below
-    --ferr-tol         the accuracy that counts as converged, default sqrt(n) u
+    --ferr-tol         the accuracy that counts as converged, default cond(A,x) u
+                       (falls back to sqrt(n) u where cond(A,x) is unavailable)
     --outdir           where the analysis file is written
 
 The solver family and the factorization precision are chosen independently:
@@ -111,12 +112,16 @@ no constant.
 Convergence is a separate question from stopping. Stopping says the method got
 as far as it was going to; converged says whether that was far enough, and is
 
-    best ferr <= --ferr-tol,   defaulting to sqrt(n) u
+    best ferr <= --ferr-tol,   defaulting to cond(A, x) u
 
-the accuracy the working precision can hold. An ill-conditioned index can
-legitimately stop above this level, since Corollary 3.3's limiting accuracy is
-of order cond(A, x) u, which is larger; a "did not converge" verdict there
-means working precision was not reached, not that refinement misbehaved. See
+Corollary 3.3's own limiting accuracy, read from the condition-est file's
+cond_skeel_x column, rather than sqrt(n) u, the level the working precision
+can represent in the abstract. The two can differ by many orders of magnitude
+on an ill-conditioned system: judging convergence against sqrt(n) u mistakes
+the theorem's own limit for a failure, calling a run that reached exactly the
+accuracy it was ever going to reach "not converged". sqrt(n) u remains the
+fallback where cond_skeel_x is unavailable -- an older condition-est file, or
+none at all -- and an explicit --ferr-tol always wins over either. See
 RefinementMonitor.
 
 A residual tolerance is the wrong criterion here: on these systems the
@@ -852,16 +857,22 @@ _GPU_SOLVERS = ("cudss",)
 #   ZeroDivisionError   a pivot underflowed to exactly zero in fp16
 #
 # Both are ordinary outcomes of half precision on an ill-conditioned block, not
-# programming errors, and main() skips the index when one is raised, counting
-# it separately from other skips because it is a real measurement: this
-# precision cannot factorize this matrix.
+# programming errors. run_benchmarks catches them per variant (alongside
+# ImportError/TypeError/RuntimeError, for the same reason an uninstalled MUMPS
+# or a GPU-less cuDSS is skipped gracefully there): when it is the REFINED
+# variant that fails, a synthetic run row records it as converged=False,
+# outer_iters=0 rather than dropping the index, since these are typically the
+# hardest indices in a sweep and a kappa_inf-vs-iterations figure that simply
+# ends where they start is silently biased at the point it matters most.
+#
+# main()'s own except FACTORIZATION_FAILURES, one level up, is now a fallback
+# for a failure occurring somewhere run_benchmarks does not wrap (there is
+# none known at present) rather than the primary path -- it still drops the
+# whole index, which is the right behaviour only if every variant failed the
+# same way, including the complex128 baseline.
 #
 # ValueError is deliberately absent, so a shape mistake still crashes rather
-# than being recorded as a numerical failure. TypeError is absent here too, but
-# note that it does not reach main() either way: run_benchmarks catches
-# (ImportError, TypeError, RuntimeError) per variant so that an uninstalled
-# MUMPS or a GPU-less cuDSS skips gracefully, and if that leaves no variant at
-# all it raises SystemExit, which main() reports as an ordinary skipped index.
+# than being recorded as a numerical failure.
 FACTORIZATION_FAILURES = (FloatingPointError, ZeroDivisionError)
 
 
@@ -1217,13 +1228,17 @@ class RefinementMonitor:
     as it was going to; `converged` says whether that was far enough, and is
     simply
 
-        best_ferr <= ferr_tol,   ferr_tol defaulting to sqrt(n) u
+        best_ferr <= ferr_tol
 
-    the accuracy the working precision can hold. An ill-conditioned index can
-    legitimately stop above this level -- Corollary 3.3's limiting accuracy is
-    of order cond(A, x) u, which is larger -- so `converged` is a statement
-    about reaching working precision, not about whether refinement misbehaved.
-    Override the level with --ferr-tol.
+    This class's OWN default for ferr_tol, when constructed with ferr_tol=None
+    as here, is sqrt(n) u -- the accuracy the working precision can represent
+    in the abstract. run_benchmarks does not rely on that default: it resolves
+    a sharper level, Corollary 3.3's own limiting accuracy cond(A, x) u, from
+    the condition-est file before ever constructing this monitor, and always
+    passes a concrete number. That level is larger than sqrt(n) u on an
+    ill-conditioned system, sometimes by many orders of magnitude, so judging
+    convergence against sqrt(n) u there mistakes the theorem's own limit for a
+    failure. --ferr-tol overrides either.
 
     Without a reference solution there is no forward error to watch: check()
     then never fires, the loop runs to max_iter, and `converged` stays False
@@ -1781,7 +1796,9 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
     x_true : as in solve_mixed_ir: recorded for reporting, and what the
         stopping rule watches.
     ferr_tol : accuracy the returned solution must reach to count as
-        converged. None means sqrt(n) u; see RefinementMonitor.
+        converged. None means this monitor's own default, sqrt(n) u;
+        run_benchmarks does not rely on that default and always passes a
+        resolved value, cond(A,x) u where available. See RefinementMonitor.
 
     Returns
     -------
@@ -2256,18 +2273,32 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
         return ref.solve(np.asarray(r, dtype=HIGH_DTYPE)).astype(HIGH_DTYPE)
 
     u_work = unit_roundoff(HIGH_DTYPE)
-    # The convergence level, resolved here so the banner can name the number
-    # actually used rather than "sqrt(n) u"; see RefinementMonitor.
-    ferr_level = (math.sqrt(A.shape[0]) * u_work if ferr_tol is None
-                  else float(ferr_tol))
+    # The convergence level, resolved here -- not left to RefinementMonitor's
+    # own default -- so it can use cond(A,x) when this index's condition file
+    # has it. sqrt(n) u is the level the WORKING PRECISION can represent, but
+    # Corollary 3.3's actual limiting accuracy is of order cond(A,x) u, which
+    # for an ill-conditioned system is orders of magnitude larger: calling a
+    # run "not converged" for stopping at that floor, rather than at machine
+    # precision it was never going to reach, mistakes the theorem's own limit
+    # for a failure. An explicit --ferr-tol always wins; failing that, this
+    # falls back to sqrt(n) u only where cond_skeel_x is unavailable (an older
+    # condition-est file, or none at all).
+    if ferr_tol is not None:
+        ferr_level, ferr_level_note = float(ferr_tol), "(--ferr-tol)"
+    elif kappa["skeel_x"] is not None:
+        ferr_level = kappa["skeel_x"] * u_work
+        ferr_level_note = "= cond(A,x) u"
+    else:
+        ferr_level = math.sqrt(A.shape[0]) * u_work
+        ferr_level_note = ("= sqrt(n) u (cond(A,x) unavailable; run "
+                           "condition_est.py --only-skeel)")
     if x_true is not None:
         print(f"Stopping: forward error against the reference increases  |  "
               f"or iter >= max_iter={max_iter}")
     else:
         print(f"Stopping: iter >= max_iter={max_iter} "
               f"(no --reference-solver, so there is no forward error to watch)")
-    print(f"Converged: best ferr <= {ferr_level:.2e}"
-          f"{'  = sqrt(n) u' if ferr_tol is None else '  (--ferr-tol)'}")
+    print(f"Converged: best ferr <= {ferr_level:.2e}  {ferr_level_note}")
 
     if repeats == 1:
         print("Runs    : 1 per variant\n")
@@ -2289,12 +2320,12 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
                                        gmres_restart=gmres_restart,
                                        gmres_max_iter=gmres_max_iter,
                                        normA=normA, inv_dtype=inv_dtype,
-                                       ferr_tol=ferr_tol)
+                                       ferr_tol=ferr_level)
     else:
         u_s = unit_roundoff(low_dtype)
         ir_fn = lambda: solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter,
                                        x_true=x_true, normA=normA,
-                                       inv_dtype=inv_dtype, ferr_tol=ferr_tol)
+                                       inv_dtype=inv_dtype, ferr_tol=ferr_level)
 
     # The third entry of each variant records what that method must hold
     # besides its factorization, for the working-set row of the report:
@@ -2318,7 +2349,10 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
     ]
     variant_info = {name: info for name, _fn, info in variants}
 
-    all_records = {}
+    # failures records which variants did not run and why, keyed by the exact
+    # name in `variants`. The refined variant's entry, if any, is what turns
+    # into a synthetic run row below rather than a silently dropped index.
+    all_records, failures = {}, {}
     for name, fn, _info in variants:
         print(f"  Benchmarking '{name}' x{repeats} ...", flush=True)
         try:
@@ -2326,6 +2360,16 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
                                                  x_true=x_true, normA=normA)
         except (ImportError, TypeError, RuntimeError) as e:
             print(f"    skipped: {e}")
+            failures[name] = e
+        except FACTORIZATION_FAILURES as e:
+            # The low-precision factorization itself could not be formed; see
+            # FACTORIZATION_FAILURES. Caught per variant, not left to escape
+            # this function, specifically so that when it is the REFINED
+            # variant that fails, the other two (typically just the complex128
+            # baseline; "no refine" shares the same factorization and usually
+            # fails identically) can still be benchmarked and reported.
+            print(f"    skipped (factorization failed): {e}")
+            failures[name] = e
     print()
 
     if not all_records:
@@ -2539,14 +2583,28 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
     #
     # Everything below is reconstructed from the arrays the loop retained, in
     # the same pass that will write them out; see refinement_metrics.
-    ir_name = names[0]
-    ir_extra = all_records[ir_name][0]["extra"]
-    metrics = refinement_metrics(A_high, x_true, ir_extra, u_s, kappa["inf"],
-                                 ref_solve=ref_solve if ref is not None else None,
-                                 cond_skeel=kappa["skeel"])
-    monitor = ir_extra.get("monitor")
-    etainf_history = ir_extra.get("etainf_history", [])
-    omega_history = ir_extra.get("omega_history", [])
+    # names[0] would silently be wrong here whenever the refined variant is
+    # the one that failed: all_records then starts with whichever variant DID
+    # succeed (typically the complex128 baseline), and every convergence
+    # quantity below would be read off the wrong run instead of raising.
+    # ir_name_requested is always the refined variant's own name, by
+    # construction of `variants` above, regardless of what ran.
+    ir_name_requested = variants[0][0]
+    ir_name = ir_name_requested if ir_name_requested in all_records else None
+    if ir_name is not None:
+        ir_extra = all_records[ir_name][0]["extra"]
+        metrics = refinement_metrics(A_high, x_true, ir_extra, u_s, kappa["inf"],
+                                     ref_solve=ref_solve if ref is not None else None,
+                                     cond_skeel=kappa["skeel"])
+        monitor = ir_extra.get("monitor")
+        etainf_history = ir_extra.get("etainf_history", [])
+        omega_history = ir_extra.get("omega_history", [])
+    else:
+        ir_extra, metrics, monitor = None, [], None
+        etainf_history, omega_history = [], []
+        print(f"\n  Refinement variant failed to factorize -- recorded below "
+              f"as converged=False, outer_iters=0 rather than dropped "
+              f"({failures[ir_name_requested]})")
 
     if monitor is not None:
         summary = monitor.summary()
@@ -2722,6 +2780,47 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
             reference_floor=ref_floor,
         ))
 
+    if ir_name is None:
+        # The refined variant produced no iterate at all, so its accuracy,
+        # timing and memory fields are genuinely unmeasured rather than small
+        # -- nan/-1/0, matching this table's existing sentinel convention
+        # (see factor_mb_reported above) -- while everything knowable before
+        # any variant ran (dimensions, conditioning, precisions, the
+        # convergence level) is filled in. That is enough for a figure to
+        # place this index on its kappa_inf axis and colour it red: dropping
+        # the row entirely, as this module did previously, made a
+        # kappa_inf-vs-iterations sweep stop early exactly at the hardest
+        # indices, which is the one place its trend matters most.
+        run_rows.append(dict(
+            common, variant=ir_name_requested,
+            is_refined=1,
+            u_f=float(u_f), u=u_work, u_s=float(u_s),
+            kappa_2=kappa[2] if kappa[2] is not None else float("nan"),
+            kappa_inf=kappa["inf"] if kappa["inf"] is not None else float("nan"),
+            cond_skeel=kappa["skeel"] if kappa["skeel"] is not None else float("nan"),
+            cond_skeel_x=kappa["skeel_x"] if kappa["skeel_x"] is not None
+                         else float("nan"),
+            lu_ir_bound=(kappa["inf"] * u_f) if kappa["inf"] is not None
+                        else float("nan"),
+            relres=float("nan"), ferr_ref=float("nan"),
+            eta1=float("nan"), eta2=float("nan"), etainf=float("nan"),
+            omega=float("nan"),
+            outer_iters=0, converged=0,
+            ferr_best=float("nan"), ferr_tol=float(ferr_level),
+            stop_reason=(f"factorization failed: "
+                        f"{type(failures[ir_name_requested]).__name__}: "
+                        f"{failures[ir_name_requested]}"),
+            gmres_total=-1, gmres_avg=float("nan"),
+            wall_s=float("nan"), factor_s=float("nan"),
+            factor_symbolic_s=float("nan"), factor_numeric_s=float("nan"),
+            inner_s=float("nan"), solve_s=float("nan"), residual_s=float("nan"),
+            other_s=float("nan"), n_solves=0,
+            factor_mb=0.0, factor_mb_reported=0, working_mb=0.0,
+            reference_solver=reference_solver or "",
+            reference_nbe=float(ref_eta) if ref_eta is not None else float("nan"),
+            reference_floor=ref_floor,
+        ))
+
     iter_rows = []
     for m in metrics:
         row = dict(common, variant=ir_name)
@@ -2780,13 +2879,15 @@ def main():
                          f"(default: {DEFAULT_MAX_ITER})")
     ap.add_argument("--ferr-tol", type=float, default=None, metavar="TOL",
                     help="accuracy the returned solution must reach to count "
-                         "as converged. Default is sqrt(n) u, the level the "
-                         "working precision can hold. Note that an "
-                         "ill-conditioned index can legitimately stop above "
-                         "it: Corollary 3.3's limiting accuracy is of order "
-                         "cond(A,x) u, which is larger, so a 'did not "
-                         "converge' verdict there means it did not reach "
-                         "working precision, not that refinement misbehaved")
+                         "as converged. Default is cond(A,x) u, Corollary "
+                         "3.3's own limiting accuracy, read from the "
+                         "condition-est file's cond_skeel_x column; falls "
+                         "back to sqrt(n) u, the level the working precision "
+                         "can hold in the abstract, where cond(A,x) is "
+                         "unavailable. Judging convergence against sqrt(n) u "
+                         "on an ill-conditioned system mistakes the "
+                         "theorem's own limit -- often orders of magnitude "
+                         "larger -- for a failure")
     ap.add_argument("--repeats", type=int, default=1,
                     help="repeats per variant; the median is reported")
     ap.add_argument("--reference-solver",

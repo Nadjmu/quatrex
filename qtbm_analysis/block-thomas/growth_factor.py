@@ -47,19 +47,18 @@ Per (index, solver, dtype):
    A_eff, the matrix those factors reconstruct (see below).
 2. Report, for both the 1-norm and the infinity norm,
 
-       loose ratio  ||L|| ||U|| / ||A_eff||        classical, an upper bound
-       tight ratio  || |L| |U| || / ||A_eff||      the quantity in the bound
-       rho          max|U_ij| / max|A_eff_ij|      pivot growth factor
+       loose ratio  ||L|| ||U|| / ||A_eff||        the quantity in the bound
+       tight ratio  || |L| |U| || / ||A_eff||      recorded, not used
+       rho          max|U_ij| / max|A_eff_ij||     recorded, not used
        resid_rel    ||A_eff - L U|| / ||A_eff||    reconstruction guard
 
-The three growth columns are all normwise, and differ only in how much of the
-entrywise theorem they discard. From |A - LU| <= gamma_n |L| |U|, any monotone
-norm gives ||A - LU|| <= gamma_n || |L| |U| ||, so the tight ratio is the one
-that enters the backward-error bound. The loose ratio applies the further
-estimate || |L| |U| || <= ||L|| ||U|| and is therefore never smaller; it is
-reported only because it is the form usually quoted. rho is the norm-free
-scalar summary, and max|U| is the standard cheap surrogate for Wilkinson's
-maximum over all intermediate A^(k).
+Theorem 2.1 of Demmel, Higham and Nichols/Schreiber (1995) bounds the backward
+error of a block LU solve by c(n) u (||A|| + ||L|| ||U||), so the loose ratio
+||L|| ||U|| / ||A_eff|| is the quantity the analysis and every downstream
+figure use. The tight ratio || |L| |U| || / ||A_eff|| comes from the entrywise
+Wilkinson bound, which is a point-LU result with no block counterpart, and rho
+watches max|U| alone; both are kept in the file for reference and are not
+plotted.
 
 3. For the Block Thomas variants only, report the Schur-complement recursion:
 
@@ -70,17 +69,16 @@ maximum over all intermediate A^(k).
        l_profile       (||L_1||, ..., ||L_{N-1}||)          per-block, this norm
 
 The last is a vector column, one entry per subdiagonal block of the assembled
-L, with L_k = A_{k+1,k} S_k^-1. Its maximum is the term that bounds the L side
-of the backward error and that scalar partial pivoting bounds by construction
-and block LU cannot; the profile additionally locates which block in the
-recursion is responsible, which the maximum alone cannot.
+L, with L_k = A_{k+1,k} S_k^-1. max_k ||L_k|| relates to the ||L|| factor of
+the loose ratio: for a block-bidiagonal L with the identity on its diagonal,
+||L|| = 1 + max_k ||L_k|| exactly in the 1-norm and the infinity norm. The
+per-block profile locates which block in the recursion the norm comes from,
+which the maximum alone cannot. It is an extra diagnostic, not part of the
+error-analysis figure set.
 
-Block LU pivots only within a diagonal block, so rho and the two ratios do not
-tell the whole story: the recursion itself amplifies, and its backward error
-carries the conditioning of the pivot blocks S_k, not only their size. The
-explicit inverses G_k of implementation 2 add a further factor, since inversion
-is not backward stable; see schur_analyse. All four are 2-norm quantities and
-are repeated across the norm rows, as rho is.
+The explicit inverses G_k of implementation 2 add a further error factor, since
+inversion is not backward stable; see schur_analyse. The Schur columns are
+2-norm quantities and are repeated across the norm rows, as rho is.
 
 resid_rel is not a stability metric. It verifies that the assumed factor
 convention holds for the build that produced the file; if it is not near the
@@ -488,10 +486,11 @@ def multiplier_profile(L, sizes, p):
     ||L_k|| for every subdiagonal block of an assembled block-bidiagonal L,
     in norm p.
 
-    max_k of this is the quantity that bounds the L side of the backward error,
-    and unlike that maximum the profile says *where* in the recursion the
-    multipliers grow -- which layer of the device the factorization struggles
-    with, not merely that one of them does.
+    For a block-bidiagonal L with the identity on its diagonal,
+    ||L|| = 1 + max_k ||L_k||, so this vector resolves the ||L|| factor of the
+    loose ratio into its per-block contributions and says which block of the
+    recursion the norm comes from. An extra diagnostic, not part of the
+    error-analysis figure set.
     """
     offsets = np.concatenate(([0], np.cumsum(sizes)))
     out = []

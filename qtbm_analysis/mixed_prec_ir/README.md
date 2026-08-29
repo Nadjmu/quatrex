@@ -235,19 +235,38 @@ Stopping and converging are separate questions. Stopping says the method got as
 far as it was going to; `converged` says whether that was far enough:
 
 ```
-converged  <=>  best ferr <= ferr_tol,   ferr_tol defaulting to sqrt(n) u
+converged  <=>  best ferr <= ferr_tol,   ferr_tol defaulting to cond(A,x) u
 ```
+
+`cond(A,x)` is read from the condition-est file's `cond_skeel_x` column —
+Corollary 3.3's own limiting accuracy for this system, not `sqrt(n) u`, the
+level the working precision can represent in the abstract. The two differ by
+orders of magnitude on an ill-conditioned index: judging convergence against
+`sqrt(n) u` there mistakes the theorem's own limit for a failure, calling a run
+"not converged" for stopping exactly where it was always going to stop.
+`sqrt(n) u` remains the fallback where `cond_skeel_x` is unavailable — an older
+condition-est file, or none at all — and `--ferr-tol` overrides either.
 
 `u` here is the **working** precision for every variant, never `u_f`: the
 question is whether refinement reached the accuracy the working precision can
 hold, and asking it at `u_f` would accept a solution only as good as the
-factorization refinement exists to improve on.
+factorization refinement exists to improve on. `ferr_best` and `ferr_tol` are
+both recorded per run so the verdict can always be re-derived.
 
-An ill-conditioned index can legitimately stop above this level. Corollary
-3.3's limiting accuracy is of order `cond(A,x) u`, which is larger, so a "did
-not converge" verdict there means working precision was not reached — not that
-refinement misbehaved. `--ferr-tol` overrides the level; `ferr_best` and
-`ferr_tol` are both recorded per run so the verdict can always be re-derived.
+### When the low-precision factorization itself fails
+
+At `complex32` the factorization can overflow outright before refinement ever
+starts — a Block Thomas block reaching `inf`/`nan` in the Schur recursion with
+no power-of-two rescale left to bring it back into `float16` range, or a pivot
+underflowing to exactly zero. This is caught and recorded, not left to crash
+the sweep: the refined variant gets a run row with `converged = 0`,
+`outer_iters = 0`, `ferr_best = nan`, and `stop_reason` naming the exception,
+while `kappa_inf` and every other quantity known before any variant ran are
+filled in normally — enough for a `kappa_inf`-vs-`outer_iters` figure to place
+the index and colour it red. These are typically the hardest indices in a
+sweep, so dropping them (silently absent, as an earlier version of this module
+did) would make such a figure end early exactly where its trend matters most.
+The complex128 baseline is unaffected and still runs.
 
 ### Convergence metrics
 
