@@ -502,7 +502,8 @@ the write; `--list-experiments` prints what a file already holds.
 └── experiments/
     ├── 0001/          attrs: the whole run configuration
     │   ├── runs        one row per (index, variant)
-    │   └── iterations  one row per (index, outer step)
+    │   └── iterations  one row per (index, outer step), plus one
+    │                  terminal row for the returned solution
     ├── 0002/
     └── ...
 ```

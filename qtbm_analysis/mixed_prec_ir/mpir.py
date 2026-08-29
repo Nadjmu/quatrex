@@ -246,7 +246,7 @@ result tables, unless --no-save is given. Nothing is ever overwritten, so the
 file records every run made:
 
     experiments/0001/runs        one row per (index, variant)
-    experiments/0001/iterations  one row per (index, outer step)
+    experiments/0001/iterations  one row per (index, outer step), plus one terminal row per index for the actually-returned solution -- see solve_mixed_ir
 
 --list-experiments prints what a file already holds. See the Result file
 section below.
@@ -339,7 +339,7 @@ HIGH_DTYPE = np.complex128
 #   └── experiments/
 #       ├── 0001/          attrs: the whole run configuration; see main
 #       │   ├── runs        one row per (index, variant)
-#       │   └── iterations  one row per (index, outer step)
+#       │   └── iterations  one row per (index, outer step), plus one terminal row per index for the actually-returned solution -- see solve_mixed_ir
 #       ├── 0002/
 #       └── ...
 #
@@ -1472,6 +1472,33 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
             break
     inner_s = time.perf_counter() - t_inner
 
+    # x_history holds only the PRE-correction iterate of every pass, so the
+    # solution this function actually returns -- x after the LAST correction
+    # was applied -- is never in it: it is appended here, once, after the
+    # timed region, exactly as the other reconstructed quantities in this
+    # module are. Its cost is one sparse matvec, no larger than the residual
+    # already formed every pass, and it is what makes the plotted convergence
+    # history end where the returned solution's accuracy actually is, rather
+    # than one step short of it. No new correction is computed for it -- the
+    # loop already decided to stop -- so d_history is not extended to match;
+    # refinement_metrics already guards every read of d_history and r_history
+    # against x_history being longer, so this row's phi_solve_hat, z, v and
+    # gmres columns come back None rather than stale.
+    #
+    # This is not a cosmetic fix. Measured on carbon-nanotube E_1603 at
+    # complex64: the last PRE-correction iterate had ferr 1.49e-14, but the
+    # actually-returned solution -- one more (harmful) correction applied
+    # after the run had already started diverging -- has ferr 2.22e-14, worse
+    # than an even earlier iterate (6.65e-15) the loop passed through and
+    # discarded. Without this the plot and contraction_summary never see that
+    # the run's own last step made things worse.
+    r_final = b_high - A_high @ x
+    history.append(float(np.linalg.norm(r_final) / norm_b))
+    if x_true is not None:
+        true_err_history.append(float(np.linalg.norm(x - x_true) / norm_x_true))
+    x_history.append(x)
+    r_history.append(r_final)
+
     extra = {
         "history": history,
         "true_err_history": true_err_history,
@@ -2002,6 +2029,21 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
         if stop:
             break
     inner_s = time.perf_counter() - t_inner
+
+    # The actually-returned solution -- x2 after the LAST correction was
+    # applied -- is appended here for the same reason as in solve_mixed_ir:
+    # x_history otherwise holds only the PRE-correction iterate of every pass,
+    # one step behind what this function returns. See that function's comment
+    # for the measured effect this has. No new correction is computed for it,
+    # so d_history and gmres_iters_history are left as they are;
+    # refinement_metrics already guards every read of them against x_history
+    # being longer.
+    r2_final = b2 - A_high @ x2
+    history.append(float(np.linalg.norm(r2_final) / norm_b))
+    if x_true2 is not None:
+        true_err_history.append(float(np.linalg.norm(x2 - x_true2) / norm_x_true))
+    x_history.append(x2)
+    r_history.append(r2_final)
 
     x = x2 if orig_ndim == 2 else x2[:, 0]
 

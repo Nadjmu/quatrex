@@ -331,7 +331,8 @@ material, data and figures together, is then one thing to `scp -r`:
 └── experiments/
     ├── 0001/          attrs: the whole run configuration
     │   ├── runs        one row per (index, variant)
-    │   └── iterations  one row per (index, outer step)
+    │   └── iterations  one row per (index, outer step), plus one
+    │                  terminal row for the returned solution
     ├── 0002/
     └── 0003/
 ```
@@ -397,7 +398,7 @@ guessed and `working_mb` is then a lower bound.
 These columns are what the companion cost study reads; see `mpcost.py` and
 [README.md, section 7](README.md#7-mpcostpy).
 
-### `iterations` — one row per (index, outer step)
+### `iterations` — one row per (index, outer step), plus a terminal row
 
 ```
 idx, energy, n, nnz, solver, factor_dtype, inner, variant, outer_iteration,
@@ -407,6 +408,25 @@ z, v, rho_max, phi_demmel, ferr_ratio,
 correction_norm_inf, reference_correction_norm_inf,
 gmres_inner_iterations, gmres_inner_max, note
 ```
+
+**One row more than `outer_iters`.** The loop only ever records the iterate
+*before* each correction is applied; the actually-returned solution -- after
+the *last* correction -- would otherwise never appear anywhere, including in
+this table and the convergence-history plot. It is appended as one extra row,
+`outer_iteration == outer_iters`, after the timed region. That row has
+`ferr_ref`/`relres`/`etainf`/`omega` (its accuracy) but no
+`correction_norm_inf`, `phi_solve_hat`, `z`, `v` or `gmres_inner_iterations`
+(no new correction or monitor step exists for it); those come back `NaN`/`-1`
+rather than a stale value. The row before it (`outer_iters - 1`) gains a real
+`rho`, the contraction of that final correction, which was previously invisible
+to `rho_bar` entirely.
+
+This matters when the run stopped on divergence: measured on carbon-nanotube
+E_1603 at complex64, the last *pre*-correction iterate had `ferr_ref = 1.49e-14`,
+but the returned solution -- one more correction applied after the run had
+already started diverging -- has `ferr_ref = 2.22e-14`, worse than an even
+earlier iterate (`6.65e-15`) the loop passed through and discarded. Without
+this row that final, actually-reported number never appeared in the plot.
 
 Only the refinement variant performs outer steps, so only it appears here.
 `z`, `v`, `rho_max`, `phi_demmel` and `ferr_ratio` are the stopping-criteria
