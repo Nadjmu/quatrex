@@ -327,56 +327,51 @@ reference, not the method.
 
 ### Convergence rate: `n_contract` and `rho_bar`
 
-A run has two regimes — roughly geometric decay, then a plateau at the limiting
-accuracy. Averaging the observed `rho` over the whole run mixes them and
-reports a rate far closer to 1 than anything the method did. So the leading
-steps passing **both** of
+A run has two regimes — roughly geometric decay, then a flat or worsening tail
+once the limiting accuracy is reached or the stopping criteria overshoot it (see
+below). Averaging the observed `rho` over the whole run mixes them and reports
+a rate far closer to 1 than anything the method did.
 
-- `rho < 0.5` — the step actually contracted;
-- `ferr[i+1] > 10 x floor` — it was not already at the floor, `floor` being the
-  smallest `ferr` the run reached
-
-are taken as the contraction phase, and the mean is taken over those alone:
+The two regimes are separated at the run's own best point — the step where
+`ferr_ref` was smallest — rather than by a threshold on `rho`:
 
 ```
-n_contract    how many steps that was
+n_contract    argmin_i ferr_ref[i], the index of the best step
 rho_bar       (ferr[n_contract] / ferr[0]) ** (1/n_contract)
-rho_censored  1 if the only contracting step ended on the floor
+rho_censored  1 if n_contract == 1 (a single ratio, not a mean)
 ```
-
-The second condition is not redundant. Measured on carbon-nanotube E_1603 at
-complex64, the per-step `rho` was `9.02e-5, 4.86e-5, 2.51e-2, 2.24`: the third
-step is 500x worse than the first two because its endpoint is already at the
-floor, yet `2.51e-2 < 0.5`, so `rho < 0.5` alone counted it and moved `rho_bar`
-from `6.6e-5` to `4.8e-4`. A tighter threshold is not the answer — at large
-`kappa_inf` a genuine step really can contract by only 0.1.
-
-The floor is taken empirically, as the smallest `ferr` reached, not as
-`4p u_r cond(A,x)` from (3.10): on the same data that bound predicts `1.4e-11`
-at E_400 where `1.7e-15` was achieved, four orders loose.
-
-`rho_censored` marks the case where the only contracting step ended on the
-floor — common for GMRES-IR, which often reaches the floor in one outer step.
-The step is kept rather than dropped, because dropping it would leave no rate
-at all, but the method contracted by *at least* that much, so `rho_bar` is then
-an upper bound. A figure must draw those as bounds, not points.
 
 which *is* the geometric mean of `rho` over those steps — successive ratios
-telescope — so it needs no fit.
+telescope — so it needs no fit. This is possible because `ferr_ref` is already
+available whenever a reference solver was given, the same information
+stopping condition 5 already uses.
+
+An earlier version used a threshold instead (`rho < 0.5` and an endpoint above
+10× the achieved floor). It broke on the complex32 sweeps this statistic is
+mainly for: measured on carbon-nanotube E_1762 and E_1608 (`kappa_inf` = 3.0e3
+and 6.3e4), the threshold cut the contraction phase off after 8 and 13 steps,
+while the run kept genuinely improving to steps 10 and 29 — a per-step `rho` of
+0.3–0.5 is the normal rate at this precision, not a plateau, and no fixed
+threshold tells the two apart. The argmin has no such failure mode: it also
+avoids the opposite mistake a fixed offset like "`outer_iters - 2`" would make
+— on a run that converges cleanly with no wasted tail (the common case for
+LU-IR well inside the `kappa_inf u_f < 1` bound), the best point *is* the last
+one, `n_contract == outer_iters`, and subtracting a constant would cut off
+steps that were still perfectly good.
 
 Two things to keep in mind when plotting it. At `n_contract == 1` there is no
 averaging and `rho_bar` is a single measured ratio; short runs are the norm for
 GMRES-IR, so a figure must show `n_contract` beside it. And `rho_bar` is a
 summary, not a parameter: `phi_i` in (3.9) varies over a run through `mu_i`,
 which Carson and Higham observe is smallest early, so the contraction genuinely
-slows before the plateau and no single rate describes the run.
+slows before the best point and no single rate describes the run.
 
-The same 0.5 appears here and as `--rho-thresh`, deliberately in two different
-roles. As a *stopping rule* it truncates a run that is still converging slowly,
-which happens precisely at large `kappa_inf` and biases the iteration count
-downward there — so a convergence sweep should pass `--rho-thresh 1.0`, leaving
-condition 2 to catch divergence only. As an *offline label* it just says which
-steps the mean is taken over.
+`--rho-thresh` is unrelated to this and should still be set to `1.0` for a
+convergence sweep: at its default `0.5` it is a *stopping* rule that truncates
+a run still converging slowly, which happens precisely at large `kappa_inf` and
+biases `outer_iters` downward there. `1.0` leaves condition 2 to catch genuine
+divergence only, so the run reaches its true best point and `n_contract` can
+find it.
 
 **None of this is computed inside the refinement loop.** The loop retains its
 iterates, corrections and residual vectors and nothing else; every metric is

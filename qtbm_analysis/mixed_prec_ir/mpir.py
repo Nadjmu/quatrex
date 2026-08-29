@@ -1519,132 +1519,82 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
     return x, extra
 
 
-# Threshold separating a genuinely contracting step from one already on the
-# limiting-accuracy plateau, used by contraction_summary. It is the same 0.5 as
-# DEFAULT_RHO_THRESH -- Wilkinson's, and Oktay and Carson's 'cautious' setting
-# -- but applied offline as a label rather than online as a stopping rule. The
-# two uses are deliberately separated: as a stopping rule 0.5 truncates a run
-# that is still converging slowly, which is exactly what happens at the large
-# kappa_inf end of a sweep and would bias the iteration count downward there;
-# as a label it only says which steps the mean rate should be taken over.
-DEFAULT_CONTRACTION_THRESH = 0.5
-
-# How far above the achieved accuracy floor a step must land for its
-# contraction to count, used by contraction_summary alongside the threshold
-# above. Corollary 3.3 claims a contraction by phi_i only until the limiting
-# accuracy of (3.10) is reached, so a step whose endpoint is already at that
-# level is measuring the floor, not the rate.
-#
-# The threshold above does not catch these on its own. Measured on
-# carbon-nanotube E_1603 at complex64, the per-step rho was
-#
-#     9.02e-05   4.86e-05   2.51e-02   2.24
-#
-# where the third step is 500 times worse than the first two because its
-# endpoint is already at the floor -- yet 2.51e-02 < 0.5, so it counted, and it
-# moved rho_bar from 6.6e-05 to 4.8e-04. A tighter threshold is not the answer:
-# at large kappa_inf a genuine step really can contract by only 0.1.
-#
-# The floor is taken as the smallest forward error the run reached, not as
-# 4p u_r cond(A, x) from (3.10): on the same data that bound predicts 1.4e-11
-# at E_400 where 1.7e-15 was achieved, four orders of magnitude loose, and a
-# margin measured against it would exclude nothing.
-DEFAULT_FLOOR_MARGIN = 10.0
-
-
-def contraction_summary(metrics, threshold=DEFAULT_CONTRACTION_THRESH,
-                        floor_margin=DEFAULT_FLOOR_MARGIN):
+def contraction_summary(metrics):
     """
-    The mean contraction of the forward error, over the steps that were
-    actually contracting.
+    The mean contraction of the forward error, over the steps that actually
+    contracted, stopping at the run's own best point rather than at a
+    threshold.
 
     A refinement run has two regimes: the forward error falls roughly
-    geometrically, then flattens at the limiting accuracy of Corollary 3.3
-    (eq. 3.10, of order cond(A, x) u here since u_r = u). Averaging the
-    observed ratio rho over the whole run mixes the two and reports a rate
-    closer to 1 than anything the method did; the shorter the run, the worse
-    the distortion, and a GMRES-IR run is typically two or three steps.
+    geometrically, then flattens -- or worsens -- at the limiting accuracy of
+    Corollary 3.3 (eq. 3.10, of order cond(A, x) u here since u_r = u).
+    Averaging the observed ratio rho over the whole run mixes the two and
+    reports a rate closer to 1 than anything the method did.
 
-    So the contraction phase is the leading steps that pass both of
+    An earlier version of this function separated the two regimes with a
+    threshold on rho plus a margin above the achieved floor. Both constants
+    turned out to be the wrong tool: measured on carbon-nanotube E_1762 and
+    E_1608 (complex32, kappa_inf = 3.0e3 and 6.3e4), the threshold broke off
+    the contraction phase after 8 and 13 steps respectively, while the run
+    kept genuinely improving to steps 10 and 29 -- a per-step rho of 0.3-0.5 is
+    normal at this precision and is not a plateau, it is just a slow but real
+    geometric rate, and no fixed threshold separates the two cases.
 
-        rho < threshold                 the step actually contracted
-        ferr[i+1] > floor_margin * floor  it was not already at the floor,
-                                        floor being the smallest forward error
-                                        the run reached
+    The run's own best point needs no threshold: it is simply
+    argmin_i ferr_ref[i], the step where the forward error was smallest,
+    computed directly since ferr_ref is already available whenever a reference
+    solver was given -- the same information stopping condition 5 already
+    uses. Steps after it either plateaued or made things worse, in either case
+    contributing nothing to a contraction rate; steps up to and including it
+    were all genuine progress, whatever their individual rho happened to be.
 
-    and the mean is taken over those alone:
+        n_contract  the index of the best point, i.e. how many corrections
+                    were applied to reach it
+        rho_bar     (ferr[n_contract] / ferr[0]) ** (1 / n_contract), the
+                    geometric mean rho over exactly those steps -- the product
+                    of successive ratios telescopes, so this needs no fit
 
-        n_contract  how many steps that was
-        rho_bar     the geometric mean of rho over them
-
-    Both conditions are needed. The first alone admits the knee -- the step
-    that lands on the floor still contracts, just far more slowly than the
-    steps before it, and including it inflates rho_bar by an order of
-    magnitude; see DEFAULT_FLOOR_MARGIN for the measurement. The second alone
-    would admit a step that diverged while still far above the floor.
-
-    rho_bar is computed as (ferr[n_contract] / ferr[0]) ** (1 / n_contract),
-    which is that geometric mean exactly -- the product of successive ratios
-    telescopes -- and so needs no fit and no per-step averaging.
+    This also fixes the failure mode a fixed offset like "outer_iters - 2"
+    would have: on a run that converges cleanly with no wasted tail (the
+    common case for LU-IR well inside the kappa_inf u_f < 1 bound), the best
+    point IS the last one, n_contract == outer_iters, and subtracting a
+    constant would cut off steps that were still perfectly good.
 
     n_contract is reported beside rho_bar and is not decoration: at
-    n_contract = 1 there is no averaging at all and rho_bar is a single
-    measured ratio, which a figure should show as such rather than as a mean.
+    n_contract == 1 there is no averaging at all and rho_bar is a single
+    measured ratio, flagged in rho_censored, which a figure should show as
+    such rather than as a mean.
 
     Note that rho_bar is a summary, not a parameter. The predicted factor phi_i
     of eq. (3.9) varies over a run through mu_i, which Carson and Higham
     observe is smallest in the early iterations, so the contraction genuinely
-    slows before the plateau is reached and no single rate describes the run.
+    slows before the best point is reached and no single rate describes the
+    run.
 
     Returns a dict with n_contract, rho_bar, rho_censored, ferr_first and
     ferr_last, the last two being the endpoints the mean was taken between.
-    rho_censored marks a run whose only contracting step ended on the floor, so
-    that rho_bar bounds the rate from above rather than measuring it.
-    n_contract is 0 and the rest NaN when no step contracted, or when there is
-    no forward error to measure (no --reference-solver).
+    n_contract is 0 and the rest NaN when the first step already is the best
+    one (no improvement at all), or when there is no forward error to measure
+    (no --reference-solver).
     """
     empty = {"n_contract": 0, "rho_bar": float("nan"), "rho_censored": 0,
              "ferr_first": float("nan"), "ferr_last": float("nan")}
     ferr = [m.get("ferr_ref") for m in metrics]
-    if len(ferr) < 2 or ferr[0] is None or not ferr[0]:
+    finite = [(i, f) for i, f in enumerate(ferr) if f is not None and f > 0]
+    if len(finite) < 2:
         return empty
 
-    finite = [f for f in ferr if f is not None and f > 0]
-    if not finite:
-        return empty
-    floor = min(finite) * float(floor_margin)
-
-    n = 0
-    censored = False
-    for i in range(len(ferr) - 1):
-        this, nxt = ferr[i], ferr[i + 1]
-        if this is None or nxt is None or not this:
-            break
-        if nxt / this >= threshold:          # did not contract
-            break
-        if nxt <= floor:                     # contracted onto the floor
-            # Normally the step is dropped: it stopped early because it ran out
-            # of accuracy to gain, so its ratio understates the rate. When it is
-            # the only contracting step there would otherwise be nothing left to
-            # report, and that is not a rare case -- GMRES-IR routinely reaches
-            # the floor in one outer step. It is kept and flagged instead: the
-            # method contracted by at least this much, so rho_bar is then an
-            # upper bound on the true rate, a right-censored observation rather
-            # than a measurement. A figure must draw it as a bound.
-            if n == 0:
-                n, censored = 1, True
-            break
-        n += 1
-    if n == 0:
+    best_i, best_f = min(finite, key=lambda t: t[1])
+    if best_i == 0:
         return empty
 
-    first, last = float(ferr[0]), float(ferr[n])
+    first = float(ferr[0])
     return {
-        "n_contract": n,
-        "rho_bar": (last / first) ** (1.0 / n),
-        "rho_censored": int(censored),
+        "n_contract": best_i,
+        "rho_bar": (best_f / first) ** (1.0 / best_i),
+        "rho_censored": int(best_i == 1),
         "ferr_first": first,
-        "ferr_last": last,
+        "ferr_last": float(best_f),
     }
 
 
@@ -2697,8 +2647,8 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
               f"ferr {contraction['ferr_first']:.2e} -> "
               f"{contraction['ferr_last']:.2e}")
     elif metrics:
-        print(f"\n  Contraction: no step contracted by more than "
-              f"{DEFAULT_CONTRACTION_THRESH}; rho_bar is not defined")
+        print(f"\n  Contraction: the first step is already the best one; "
+              f"rho_bar is not defined")
 
     if metrics:
         print(f"\n  Convergence history (first run, {ir_name}):")
@@ -3077,7 +3027,6 @@ def main():
         indices=np.asarray(indices, dtype=np.int64),
         n_requested=len(indices),
         n_skipped=len(skipped),
-        contraction_thresh=float(DEFAULT_CONTRACTION_THRESH),
         criteria="Oktay and Carson 2021, section 2.1.1",
         convergence_factor="Carson and Higham 2018, Corollary 3.3",
         **material_metadata(h5path),

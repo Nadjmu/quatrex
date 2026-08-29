@@ -220,20 +220,26 @@ Two numbers per index, both in the `runs` table:
 | Column | Meaning |
 |---|---|
 | `outer_iters` | how many outer steps the run took |
-| `n_contract` | how many of those steps were still contracting: `rho < 0.5` **and** endpoint above `10 x` the achieved floor |
-| `rho_bar` | `(ferr[n_contract]/ferr[0]) ** (1/n_contract)`, the geometric mean of `rho` over them |
-| `rho_censored` | 1 where the only contracting step ended on the floor, so `rho_bar` bounds the rate rather than measuring it |
+| `n_contract` | `argmin_i ferr_ref[i]`, the index of the run's own best step |
+| `rho_bar` | `(ferr[n_contract]/ferr[0]) ** (1/n_contract)`, the geometric mean of `rho` up to it |
+| `rho_censored` | 1 where `n_contract == 1` (a single ratio, not a mean) |
 
-The floor condition is what keeps the knee out. On carbon-nanotube E_1603 the
-per-step `rho` was `9.02e-5, 4.86e-5, 2.51e-2, 2.24` — the third step is 500x
-worse than the first two only because it lands on the floor, and counting it
-moved `rho_bar` from `6.6e-5` to `4.8e-4`.
+The split is at the run's own best point rather than a threshold on `rho`, and
+that matters on exactly the sweeps this statistic is for. An earlier version
+required `rho < 0.5` and an endpoint above `10x` the achieved floor; measured on
+carbon-nanotube E_1762 and E_1608 (complex32, `kappa_inf` = 3.0e3 and 6.3e4),
+that threshold cut the contraction phase off after 8 and 13 steps while the run
+kept genuinely improving to steps 10 and 29 — a per-step `rho` of 0.3–0.5 is the
+normal rate at this precision, not a plateau, and no fixed threshold tells them
+apart. `argmin` has no such failure: it also avoids the opposite mistake a
+fixed offset like "`outer_iters - 2`" would make on a clean LU-IR run with no
+wasted tail, where the best point *is* the last one and subtracting a constant
+would cut off steps that were still good.
 
 Plotted against `kappa_inf` these are the convergence-speed result. Restricting
-the mean to the contracting steps is not optional: the forward error decays
-geometrically and then flattens at the limiting accuracy of `(3.10)`, and a
-mean over the whole run reports a rate far closer to 1 than anything the method
-did.
+the mean to the steps up to the best one is not optional: the forward error
+decays geometrically and then flattens or worsens past it, and a mean over the
+whole run reports a rate far closer to 1 than anything the method did.
 
 **For such a sweep, change two flags:**
 
@@ -245,9 +251,10 @@ did.
 
 `--rho-thresh 0.5` is the right *stopping* default but the wrong setting here:
 it cuts off a run that is still converging slowly, which is what happens at
-large `kappa_inf`, biasing the iteration count downward at exactly the end of
-the sweep the study is about. The same 0.5 is still applied, offline, as the
-label defining `n_contract`.
+large `kappa_inf`, biasing `outer_iters` downward at exactly the end of the
+sweep the study is about. `1.0` leaves condition 2 to catch genuine divergence
+only, so the run reaches its true best point and `n_contract` (unrelated to
+`--rho-thresh` — it is computed offline from `ferr_ref`) can find it.
 
 **Why the reference has to be `extended`.** `ferr_ref` cannot fall below
 `x_true`'s own error. A complex128 direct solve carries `cond(A,x)·u`, the same
@@ -262,7 +269,7 @@ rational solution). `reference_floor = kappa_inf·eps_ext` is recorded so a
 Two caveats for the figure: at `n_contract == 1` there is no averaging at all,
 and short runs are normal for GMRES-IR; and `rho_bar` is a summary rather than
 a parameter, since `phi_i` varies over a run through `mu_i`, so the contraction
-genuinely slows before the plateau.
+genuinely slows before the best point is reached.
 
 Runs that stopped on `max_iter` or `k_max` did not finish — filter on
 `stop_reason` and report their count separately rather than averaging them in.
