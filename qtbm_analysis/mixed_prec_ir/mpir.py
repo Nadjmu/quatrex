@@ -162,10 +162,10 @@ quantities stay in the iterations table for the per-index figure and for the
 thesis text, and nothing is derived from them automatically.
 
 outer_iters is only as good as the reference solution it is measured against,
-which is why --reference-solver extended exists: a complex128 reference has a
-forward error of the same order as refinement's own limiting accuracy, so the
-stopping rule would fire when the reference ran out rather than when the
-method did, earliest exactly where kappa_inf is largest. See
+which is why --reference-solver defaults to extended: a complex128 reference
+has a forward error of the same order as refinement's own limiting accuracy,
+so the stopping rule would fire when the reference ran out rather than when
+the method did, earliest exactly where kappa_inf is largest. See
 _ExtendedReference.
 
 The preconditioner in the GMRES variant requires only the action of the
@@ -2892,18 +2892,20 @@ def main():
                     help="repeats per variant; the median is reported")
     ap.add_argument("--reference-solver",
                     choices=["superlu", "mumps", "cudss", EXTENDED_REFERENCE],
-                    default="mumps", metavar="NAME",
+                    default=EXTENDED_REFERENCE, metavar="NAME",
                     help="compute x_true with this solver, and the reference "
-                         "corrections phi_solve is measured against. The three "
-                         "named solvers run at complex128 and so carry a "
-                         "forward error of order cond(A,x)*u, the same order "
-                         "as the limiting accuracy of refinement itself, which "
-                         "makes them unusable as a ruler for a convergence "
-                         f"study; '{EXTENDED_REFERENCE}' refines a complex128 "
-                         "solve with a clongdouble residual and is about 2e3 "
-                         "times more accurate. Use it for any run whose "
-                         "iteration count or contraction rate is being "
-                         "measured (default: mumps)")
+                         "corrections phi_solve is measured against. Defaults "
+                         f"to '{EXTENDED_REFERENCE}', which refines a "
+                         "complex128 solve with a clongdouble residual, about "
+                         "2e3 times more accurate than plain complex128 -- the "
+                         "'true' solution every run should be measured "
+                         "against. The other three named solvers run at plain "
+                         "complex128 and so carry a forward error of order "
+                         "cond(A,x)*u, the same order as the limiting accuracy "
+                         "of refinement itself, which makes them unusable as "
+                         "a ruler for a convergence study; pass one only to "
+                         "check a specific solver's own reported solution, "
+                         "not to judge convergence")
     ap.add_argument("--gmres-tol", type=float, default=1e-8,
                     help="relative tolerance of the inner GMRES solve "
                          "(--inner gmres only)")

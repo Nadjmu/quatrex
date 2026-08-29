@@ -164,9 +164,13 @@ python mpir.py .../si-bulk.h5 --idx 254 --solver cudss \
     --factor-dtype complex64 --repeats 5
 ```
 
-A different reference solver — `--reference-solver` defaults to `mumps` and
+A different reference solver — `--reference-solver` defaults to `extended`
+(complex128 refined with a clongdouble residual, the "true" solution) and
 supplies both `x_true` and the reference corrections `phi_solve` is measured
-against.
+against. The other three named solvers run at plain complex128, with a
+forward error of the same order as refinement's own limiting accuracy, so
+they check a specific solver's own solution rather than serving as a ruler
+for convergence.
 
 ```bash
 python mpir.py .../si-bulk.h5 --idx 254 --solver cudss \

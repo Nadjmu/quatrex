@@ -32,7 +32,10 @@ iterations against kappa_inf(A), one point per index, blue where the run
 converged and red where it did not, with a vertical line at kappa_inf = 1/u_f
 marking the classical LU-IR requirement kappa_inf(A) u_f < 1. For GMRES-IR each
 point is additionally labelled with its mean inner-GMRES iteration count per
-correction, averaged over every outer step and right-hand side.
+correction, averaged over every outer step and right-hand side. The y axis
+runs 0 to --max-iter (the experiment's own, or --y-max to force a common
+scale), not to the largest outer_iters actually seen, so summaries from
+different solvers, precisions or experiments are comparable at a glance.
 
 The iteration count is the only quantity here that decides anything: it
 multiplies the cost of the cheap low-precision factorization, so a method
@@ -71,6 +74,7 @@ Usage
     python plot_mpir.py .../carbon-nanotube.h5 --experiment 3
     python plot_mpir.py .../carbon-nanotube.h5 --experiment 3 --idx 84 254
     python plot_mpir.py .../carbon-nanotube.h5 --summary-only
+    python plot_mpir.py .../carbon-nanotube.h5 --summary-only --y-max 30
 """
 
 import sys
@@ -171,7 +175,7 @@ def _index_title(attrs, runs_for_idx, idx):
     return line
 
 
-def plot_summary(run_rows, attrs, out_path):
+def plot_summary(run_rows, attrs, out_path, y_max=None):
     """
     Outer iterations against kappa_inf(A), the whole sweep in one panel.
 
@@ -197,6 +201,13 @@ def plot_summary(run_rows, attrs, out_path):
     must be a single average rather than the full per-step, per-column table,
     since a real sweep has several outer steps times several right-hand sides
     per point and nowhere on this plot to put a table.
+
+    The y axis top is the experiment's own --max-iter (recorded in attrs), not
+    the largest outer_iters actually observed: a run that converged in 3 steps
+    and one that needed 25 would otherwise draw axes of very different height,
+    making two summary figures uncomparable at a glance even when both used
+    the same safety net. --y-max overrides this, e.g. to compare experiments
+    run with different --max-iter values on one common scale.
     """
     refined = sorted(
         (r for r in run_rows if _role(r["variant"], attrs) == "refined"),
@@ -262,7 +273,16 @@ def plot_summary(run_rows, attrs, out_path):
     ax.legend(fontsize=8, framealpha=0.9)
 
     # Integer ticks: the y axis counts steps, so a 2.5 would be meaningless.
+    # Fixed to --max-iter (explicit, or the experiment's own recorded value)
+    # rather than the observed max, so summary figures share one scale; see
+    # the docstring. max() with the observed max guards a legacy analysis
+    # file recorded before max_iter was an attribute, or one whose max_iter
+    # is somehow smaller than an outer_iters actually reached in it.
     top = int(np.nanmax(iters))
+    if y_max is not None:
+        top = max(int(y_max), top)
+    elif attrs.get("max_iter") is not None:
+        top = max(int(attrs["max_iter"]), top)
     ax.set_yticks(np.arange(0, top + 2) if top <= 20
                   else np.linspace(0, top + 1, 12, dtype=int))
     # Bottom pulled slightly below 0 rather than pinned to it: a point at
@@ -321,6 +341,12 @@ def main():
                          "figure per index in the experiment)")
     ap.add_argument("--summary-only", action="store_true",
                     help="draw only the sweep summary, no per-index figures")
+    ap.add_argument("--y-max", type=int, default=None, metavar="N",
+                    help="fix the summary figure's y axis to this many outer "
+                         "iterations, so summaries from different experiments "
+                         "share one scale (default: the experiment's own "
+                         "--max-iter, so figures are already comparable across "
+                         "solvers and precisions run with the same one)")
     cli.add_output(ap, outdir_help="output directory "
                                    "(default: exp<NNNN>/ beside the analysis "
                                    "file)")
@@ -346,7 +372,8 @@ def main():
     print(f"[input] {h5path}:/experiments/{name}   "
           f"{len(run_rows)} run rows, {len(iter_rows)} iteration rows")
 
-    plot_summary(run_rows, attrs, outdir / f"{material}_summary.png")
+    plot_summary(run_rows, attrs, outdir / f"{material}_summary.png",
+                 y_max=args.y_max)
     if args.summary_only:
         return
 

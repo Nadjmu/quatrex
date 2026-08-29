@@ -112,7 +112,7 @@ EXACT_GROUP = "condition_exact"
 # of BAND_EDGE_STYLE, since a curve sharing a colour with a band edge is not
 # separable at a glance.
 LADDER_STYLE = {
-    "cond_inf": (r"$\kappa_\infty$  (normwise)", "#8E24AA", "--"),
+    "cond_inf": (r"$\kappa_\infty$  (normwise)", "#8E24AA", "-"),
     "cond_skeel": (r"$\mathrm{cond}(M)$  (Skeel, worst rhs)", "#FF6D00", "-"),
     "cond_skeel_x": (r"$\mathrm{cond}(M,x)$  (Skeel, this rhs)", "#00897B", "-"),
 }

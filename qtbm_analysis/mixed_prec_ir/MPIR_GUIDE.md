@@ -140,7 +140,7 @@ python mpir.py carbon-nanotube.h5 --list-experiments
 | `--max-iter` | `30` | safety net on the outer steps; the stopping rule itself takes no option (§3) |
 | `--ferr-tol` | `cond(A,x) u` | accuracy the returned solution must reach to count as converged; falls back to `sqrt(n) u` where `cond(A,x)` is unavailable (§3) |
 | `--repeats` | `1` | repeats per variant; the median is reported |
-| `--reference-solver` | `mumps` | supplies `x_true` and the reference corrections `phi_solve` is measured against |
+| `--reference-solver` | `extended` | supplies `x_true` and the reference corrections `phi_solve` is measured against |
 | `--gmres-tol`, `--gmres-restart`, `--gmres-max-iter` | `1e-8`, `30`, `50` | inner GMRES parameters (`--inner gmres` only) |
 | `--outdir` | `cli.MIXED_PREC_DIR` | the analysis file is written to `<outdir>/<material>/<material>.h5` |
 | `--material` | derived from the input path | label used in the file name and figure titles |
@@ -235,10 +235,10 @@ mechanism, not a decision variable; `mu_hat` and the `phi_*` columns stay in
 the `iterations` table for the per-index figures and the thesis text, and
 nothing is derived from them automatically.
 
-**For a sweep, two flags matter:**
+**For a sweep, one flag matters, and it's already the default:**
 
 ```
---reference-solver extended     an accurate enough ruler; see below
+--reference-solver extended     an accurate enough ruler; see below (default)
 --max-iter 40                   a safety net that should not bind
 ```
 
@@ -500,6 +500,13 @@ x on a log scale, y an integer count.
 
 Points are sorted by `kappa_inf`; indices with no `kappa_inf` in the
 condition-est file are dropped, and the count of dropped indices is printed.
+
+The y axis runs `0` to the experiment's own `--max-iter`, not to the largest
+`outer_iters` actually seen in it — otherwise a run that converged in 3 steps
+and one that needed 25 draw axes of very different height, and two summary
+figures aren't comparable at a glance even when both used the same safety
+net. `plot_mpir.py --y-max N` overrides this to compare experiments that used
+different `--max-iter` values on one common scale.
 
 This is the figure the study exists to produce. Nothing else is plotted across
 the sweep: the iteration count multiplies the cost of the cheap factorization,
