@@ -64,8 +64,7 @@ so that the whole material -- the data and every figure ever drawn from it --
 is one directory, `scp -r`-able as a unit; the experiment number is not
 repeated in the filename since the directory already carries it. One figure is
 drawn per index in the experiment; --idx restricts that to the indices worth
-looking at individually, and --max-figures caps it if a sweep turns out longer
-than expected.
+looking at individually.
 
 Usage
 -----
@@ -73,8 +72,7 @@ Usage
     python plot_mpir.py .../carbon-nanotube.h5 --list
     python plot_mpir.py .../carbon-nanotube.h5 --experiment 3
     python plot_mpir.py .../carbon-nanotube.h5 --experiment 3 --idx 84 254
-    python plot_mpir.py .../carbon-nanotube.h5 --summary-only
-    python plot_mpir.py .../carbon-nanotube.h5 --summary-only --y-max 30
+    python plot_mpir.py .../carbon-nanotube.h5 --y-max 30
 """
 
 import sys
@@ -362,11 +360,6 @@ def main():
     ap.add_argument("--idx", type=int, nargs="+", default=None, metavar="I",
                     help="draw per-index figures only for these energy "
                          "indices (default: every index in the experiment)")
-    ap.add_argument("--max-figures", type=int, default=None, metavar="N",
-                    help="cap on per-index figures (default: no cap, one "
-                         "figure per index in the experiment)")
-    ap.add_argument("--summary-only", action="store_true",
-                    help="draw only the sweep summary, no per-index figures")
     ap.add_argument("--y-max", type=int, default=None, metavar="N",
                     help="fix the summary figure's y axis to this many outer "
                          "iterations, so summaries from different experiments "
@@ -400,8 +393,6 @@ def main():
 
     plot_summary(run_rows, attrs, outdir / f"{material}_summary.png",
                  y_max=args.y_max)
-    if args.summary_only:
-        return
 
     by_idx = {}
     for r in iter_rows:
@@ -412,12 +403,6 @@ def main():
     if missing:
         print(f"  [warning] no iteration rows for idx "
               f"{', '.join(str(i) for i in missing)} in experiment {name}")
-    if args.idx is None and args.max_figures is not None \
-            and len(wanted) > args.max_figures:
-        print(f"  [note] experiment {name} covers {len(wanted)} indices; "
-              f"drawing the first {args.max_figures}. Use --idx to choose "
-              f"others, or drop --max-figures to draw them all.")
-        wanted = wanted[:args.max_figures]
 
     for idx in wanted:
         runs_for_idx = [r for r in run_rows if int(r["idx"]) == idx]
