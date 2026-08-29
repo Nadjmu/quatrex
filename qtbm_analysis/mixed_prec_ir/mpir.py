@@ -1874,6 +1874,20 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
         gmres_iters_history.append(iters_this_round)
         d_history.append(d2)
 
+        # A progress line per outer step, not just per-column warnings.
+        # Without it a slow step -- inner GMRES stagnating near a large
+        # kappa_inf can cost gmres_max_iter iterations per column, per outer
+        # step -- produces nothing on the terminal beyond scipy's own
+        # convergence warnings, which look identical whether the run is
+        # working through max_iter steps or actually stuck. The whole run is
+        # still bounded (at most max_iter outer steps, each at most
+        # gmres_max_iter inner iterations per column), just possibly slow;
+        # this line is what tells the two apart while it happens rather than
+        # only in the "Convergence history" table printed after it returns.
+        ferr_str = f"{ferr_live:.3e}" if ferr_live is not None else "n/a"
+        print(f"    outer {len(gmres_iters_history):>3}: ferr={ferr_str}   "
+              f"inner gmres iters (per rhs) = {iters_this_round}", flush=True)
+
         x2 = x2 + d2
         monitor.count()
     inner_s = time.perf_counter() - t_inner
