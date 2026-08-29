@@ -104,11 +104,12 @@ Output
 Written to the analysis file's own directory by default so that each figure
 sits beside the data it was drawn from:
 
-    <material>_growth_factor_<dtype>.png   Psi, one file per precision present
-    <material>_assembly_residual.png       ||A_eff - LU|| / ||A_eff||, all
-                                           precisions overlaid
-    <material>_schur_growth_<dtype>.png    the two factors of Psi, per precision
-    <material>_backward_vs_growth.png      eta_inf as a fraction of the bound
+    <material>_growth_factor.png       Psi, precisions side by side
+    <material>_assembly_residual.png   ||A_eff - LU|| / ||A_eff||, precisions
+                                       overlaid on one axis
+    <material>_schur_growth.png        the two factors of Psi, ||L|| and
+                                       ||U||/||A_eff||, precisions side by side
+    <material>_backward_vs_growth.png  eta_inf as a fraction of the bound
 
 The last needs the forward_error group in the same file; it is skipped with a
 message when that group has not been written.
@@ -196,53 +197,64 @@ def group_by_series(records, norm):
 
 
 def _sweep_figure(records, attrs, material, norms, out_path, column,
-                  title, ylabel):
+                  title, ylabel, split_dtype=False):
     """
-    One column of the growth_factor group against energy, one panel per norm.
+    A column of the growth_factor group against energy.
 
     `column` names the column to draw, `title` and `ylabel` its labels; the
     norm is appended to `ylabel`, since the title carries the formula alone.
-    Shared by the factor-growth and assembly-residual figures, which differ in
-    nothing else.
+
+    With split_dtype the precisions present go side by side, one panel column
+    each, with the precision as the panel title; the y-axes are shared down
+    each norm row so the columns compare directly. Without it every precision
+    is overlaid on one panel, distinguished by line style. The factor-growth
+    figure uses the split; the assembly-residual figure does not.
     """
-    fig, axes = plt.subplots(len(norms), 1, figsize=(7.5, 4.8 * len(norms)),
-                             squeeze=False)
+    dtypes = (_ordered({r["dtype"] for r in records}, DTYPE_STYLE)
+              if split_dtype else [None])
+    fig, axes = plt.subplots(len(norms), len(dtypes),
+                             figsize=(max(7.5, 4.6 * len(dtypes)),
+                                      4.8 * len(norms)),
+                             squeeze=False, sharey="row")
     have_energy = energies_of(attrs, [0]) is not None
     solvers_present, dtypes_present = set(), set()
 
     for row_index, norm in enumerate(norms):
-        ax = axes[row_index][0]
         series = group_by_series(records, norm)
+        for col_index, only_dtype in enumerate(dtypes):
+            ax = axes[row_index][col_index]
+            for (solver, dtype), rows in series.items():
+                if only_dtype is not None and dtype != only_dtype:
+                    continue
+                solvers_present.add(solver)
+                dtypes_present.add(dtype)
+                indices = np.asarray([r["idx"] for r in rows])
+                x = energies_of(attrs, indices)
+                if x is None:
+                    x = indices
+                _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
+                _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
+                values = np.asarray([r[column] for r in rows], dtype=float)
+                prim = sweep_line(len(rows), "primary")
+                xg, vg = split_gaps(indices, x, values)
+                ax.semilogy(xg, vg, "-" if split_dtype else ls,
+                            color=colour, **prim)
 
-        for (solver, dtype), rows in series.items():
-            solvers_present.add(solver)
-            dtypes_present.add(dtype)
-            indices = np.asarray([r["idx"] for r in rows])
-            x = energies_of(attrs, indices)
-            if x is None:
-                x = indices
-            _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
-            _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
-            values = np.asarray([r[column] for r in rows], dtype=float)
-            prim = sweep_line(len(rows), "primary")
-
-            xg, vg = split_gaps(indices, x, values)
-            ax.semilogy(xg, vg, ls, color=colour, **prim)
-
-        ax.set_title(title)
-        ax.set_ylabel(f"{ylabel}  [{norm}]")
-        ax.set_xlabel(axis_label(have_energy))
-        ax.grid(True, which="both", ls=":", alpha=0.4)
-        if have_energy:
-            mark_band_edges(ax, attrs, label=False)
+            ax.set_title(only_dtype if only_dtype is not None else title)
+            if col_index == 0:
+                ax.set_ylabel(f"{ylabel}  [{norm}]")
+            ax.set_xlabel(axis_label(have_energy))
+            ax.grid(True, which="both", ls=":", alpha=0.4)
+            if have_energy:
+                mark_band_edges(ax, attrs, label=False)
 
     solvers = _ordered(solvers_present, SOLVER_STYLE)
-    dtypes = _ordered(dtypes_present, DTYPE_STYLE)
-    # Drop the precision entries from the legend when only one is drawn; the
-    # per-precision Psi figures then carry a solver-only legend.
-    handles, labels = legend_handles(solvers, dtypes if len(dtypes) > 1 else [])
+    dtypes_legend = _ordered(dtypes_present, DTYPE_STYLE)
+    handles, labels = legend_handles(
+        solvers, [] if split_dtype else dtypes_legend)
 
-    fig.suptitle(material, fontsize=13, y=1.005)
+    fig.suptitle(f"{title}  —  {material}" if split_dtype else material,
+                 fontsize=13, y=1.005)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 5),
                fontsize=8, frameon=False,
@@ -250,20 +262,18 @@ def _sweep_figure(records, attrs, material, norms, out_path, column,
     save_figure(fig, out_path, dpi=140)
 
 
-def plot(records, attrs, material, norms, outdir, stem):
+def plot(records, attrs, material, norms, out_path):
     """
-    Psi = ||L|| ||U|| / ||A_eff||, one figure per precision present.
+    Psi = ||L|| ||U|| / ||A_eff||, the precisions side by side.
 
-    Kept per precision rather than overlaid: the half-precision variant is a
-    different factorization measured against a different matrix (s * embed(A),
-    twice the dimension, |a|+|b| per entry), so its Psi is not on the same
-    scale as the complex ones and does not belong on a shared axis.
+    One panel column per precision rather than one overlaid axis: the
+    half-precision variant is a different factorization measured against a
+    different matrix (s * embed(A), twice the dimension, |a|+|b| per entry), so
+    its Psi is not on the same scale as the complex ones.
     """
-    for dtype in _ordered({r["dtype"] for r in records}, DTYPE_STYLE):
-        sub = [r for r in records if r["dtype"] == dtype]
-        _sweep_figure(sub, attrs, f"{material} — {dtype}", norms,
-                      outdir / f"{stem}_{dtype}.png", "loose",
-                      r"$\Psi = \|L\|\,\|U\| / \|A_{\mathrm{eff}}\|$", r"$\Psi$")
+    _sweep_figure(records, attrs, material, norms, out_path, "loose",
+                  r"$\Psi = \|L\|\,\|U\| / \|A_{\mathrm{eff}}\|$", r"$\Psi$",
+                  split_dtype=True)
 
 
 def plot_residual(records, attrs, material, norms, out_path):
@@ -287,7 +297,7 @@ def plot_residual(records, attrs, material, norms, out_path):
 SCHUR_COLUMNS = ("nA", "nL", "nU")
 
 
-def plot_schur(records, attrs, material, out_dir, stem):
+def plot_schur(records, attrs, material, out_path):
     """
     The two factors that make up Psi, per solver.
 
@@ -328,81 +338,76 @@ def plot_schur(records, attrs, material, out_dir, stem):
     mode near a band edge -- leaves kappa unchanged while ||L_k|| explodes. The
     growth_factor group still records it as schur_cond_max.
 
-    One norm is selected so that each series is drawn once, and one figure is
-    written per precision. Returns False when the file lacks the columns.
+    One norm is selected so that each series is drawn once. The precisions go
+    side by side: one panel column each, ||L|| on the top row, ||U|| / ||A_eff||
+    on the bottom row. Returns False when the file lacks the columns.
     """
     present_norms = {r["norm"] for r in records}
     norm = "inf-norm" if "inf-norm" in present_norms else sorted(present_norms)[0]
-    drawn = False
-    for dtype in _ordered({r["dtype"] for r in records}, DTYPE_STYLE):
-        rows_by_series = defaultdict(list)
-        for record in records:
-            if record["norm"] == norm and record["dtype"] == dtype:
-                rows_by_series[(record["solver"], dtype)].append(record)
-        if not rows_by_series:
-            continue
-        sample = next(iter(rows_by_series.values()))[0]
-        if not all(column in sample for column in SCHUR_COLUMNS):
-            continue
-        _plot_schur_one(rows_by_series, attrs, norm,
-                        f"$\\Psi = \\|L\\| \\cdot \\|U\\| / \\|A\\|$  —  "
-                        f"{material}, {dtype}",
-                        out_dir / f"{stem}_schur_growth_{dtype}.png")
-        drawn = True
-    return drawn
+    dtypes = _ordered({r["dtype"] for r in records if r["norm"] == norm},
+                      DTYPE_STYLE)
+    have = [r for r in records if r["norm"] == norm
+            and all(c in r for c in SCHUR_COLUMNS)]
+    if not have or not dtypes:
+        return False
 
-
-def _plot_schur_one(rows_by_series, attrs, norm, title, out_path):
-    """One schur-split figure, for the (solver, dtype) series already grouped."""
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8), squeeze=False)
-    ax_l, ax_u = axes[0]
+    fig, axes = plt.subplots(2, len(dtypes),
+                             figsize=(max(6.0, 4.6 * len(dtypes)), 9.0),
+                             squeeze=False, sharey="row")
     have_energy = energies_of(attrs, [0]) is not None
     solvers_present = set()
 
-    for (solver, dtype), rows in sorted(rows_by_series.items()):
-        solvers_present.add(solver)
-        rows = sorted(rows, key=lambda r: r["idx"])
-        indices = np.asarray([r["idx"] for r in rows])
-        x = energies_of(attrs, indices)
-        if x is None:
-            x = indices
-        _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
-        _, ls = DTYPE_STYLE.get(dtype, (dtype, "-"))
-        prim = sweep_line(len(rows), "primary")
+    for col_index, dtype in enumerate(dtypes):
+        ax_l, ax_u = axes[0][col_index], axes[1][col_index]
+        series = defaultdict(list)
+        for record in have:
+            if record["dtype"] == dtype:
+                series[record["solver"]].append(record)
 
-        nA = np.asarray([r["nA"] for r in rows], dtype=float)
-        nL = np.asarray([r["nL"] for r in rows], dtype=float)
-        nU = np.asarray([r["nU"] for r in rows], dtype=float)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            u_ratio = np.where(nA > 0, nU / nA, np.nan)
-        # ||L|| itself, not ||L|| - 1: it is the exact L-side factor of the
-        # ratio for every solver. For Block Thomas it happens to equal
-        # 1 + max_k ||L_k||, exactly, in the 1-norm and the infinity norm
-        # alike; SuperLU's L is not block bidiagonal and has no such reading.
-        multiplier = np.where(nL > 0.0, nL, np.nan)
+        for solver, rows in sorted(series.items()):
+            solvers_present.add(solver)
+            rows = sorted(rows, key=lambda r: r["idx"])
+            indices = np.asarray([r["idx"] for r in rows])
+            x = energies_of(attrs, indices)
+            if x is None:
+                x = indices
+            _, colour, _ = SOLVER_STYLE.get(solver, (solver, None, None))
+            prim = sweep_line(len(rows), "primary")
 
-        xg, ug, mg = split_gaps(indices, x, u_ratio, multiplier)
-        ax_u.semilogy(xg, ug, ls, color=colour, **prim)
-        ax_l.semilogy(xg, mg, ls, color=colour, **prim)
+            nA = np.asarray([r["nA"] for r in rows], dtype=float)
+            nL = np.asarray([r["nL"] for r in rows], dtype=float)
+            nU = np.asarray([r["nU"] for r in rows], dtype=float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                u_ratio = np.where(nA > 0, nU / nA, np.nan)
+            # ||L|| itself, not ||L|| - 1: it is the exact L-side factor of the
+            # ratio for every solver. For Block Thomas it equals
+            # 1 + max_k ||L_k|| exactly, in the 1-norm and the infinity norm
+            # alike; SuperLU's L is not block bidiagonal and has no such
+            # reading.
+            multiplier = np.where(nL > 0.0, nL, np.nan)
 
-    ax_l.set_title(r"$\|L\|$")
-    ax_l.set_ylabel(f"$\\|L\\|$  [{norm}]")
-    ax_u.set_title(r"$\|U\| / \|A_{\mathrm{eff}}\|$")
-    ax_u.set_ylabel(f"$\\|U\\| / \\|A_{{\\mathrm{{eff}}}}\\|$  [{norm}]")
+            xg, ug, mg = split_gaps(indices, x, u_ratio, multiplier)
+            ax_u.semilogy(xg, ug, "-", color=colour, **prim)
+            ax_l.semilogy(xg, mg, "-", color=colour, **prim)
 
-    for ax in (ax_l, ax_u):
-        ax.set_xlabel(axis_label(have_energy))
-        ax.grid(True, which="both", ls=":", alpha=0.4)
-        if have_energy:
-            mark_band_edges(ax, attrs, label=False)
+        ax_l.set_title(dtype)
+        for ax in (ax_l, ax_u):
+            ax.set_xlabel(axis_label(have_energy))
+            ax.grid(True, which="both", ls=":", alpha=0.4)
+            if have_energy:
+                mark_band_edges(ax, attrs, label=False)
+
+    axes[0][0].set_ylabel(f"$\\|L\\|$  [{norm}]")
+    axes[1][0].set_ylabel(f"$\\|U\\| / \\|A_{{\\mathrm{{eff}}}}\\|$  [{norm}]")
 
     solvers = _ordered(solvers_present, SOLVER_STYLE)
     handles, labels = legend_handles(solvers, [])
 
-    fig.suptitle(title, fontsize=13, y=1.01)
+    fig.suptitle(f"$\\Psi = \\|L\\| \\cdot \\|U\\| / \\|A\\|$  —  {material}",
+                 fontsize=13, y=1.005)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
-               fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.12))
+               fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.07))
     save_figure(fig, out_path, dpi=140)
     return True
 
@@ -690,11 +695,13 @@ def main():
     present_norms = {r["norm"] for r in records}
     norms = [n for n in (args.norms or ["inf-norm"]) if n in present_norms]
     norms = norms or sorted(present_norms)
-    plot(records, attrs, material, norms, outdir, f"{material}_growth_factor")
+    plot(records, attrs, material, norms,
+         outdir / f"{material}_growth_factor.png")
     plot_residual(records, attrs, material, norms,
                   outdir / f"{material}_assembly_residual.png")
 
-    if not plot_schur(records, attrs, material, outdir, material):
+    if not plot_schur(records, attrs, material,
+                      outdir / f"{material}_schur_growth.png"):
         print("no Block Thomas rows in this file; the factor-split figure "
               "needs at least one")
 
