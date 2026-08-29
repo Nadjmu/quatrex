@@ -76,10 +76,12 @@ SOLVER_STYLE = {
 }
 
 # Working precision: line style only, so precision and solver are separable.
+# complex32 is the storage label for the half-precision embedded-real
+# factorizations; it is shown verbatim, the same string every figure uses.
 DTYPE_STYLE = {
     "complex128": ("complex128", "-"),
     "complex64":  ("complex64",  "--"),
-    "complex32":  ("fp16 (embedded real)", ":"),
+    "complex32":  ("complex32",  ":"),
 }
 
 FP16_UNIT_ROUNDOFF = 2.0 ** -11           # 4.883e-4
