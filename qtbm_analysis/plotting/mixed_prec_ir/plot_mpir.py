@@ -320,12 +320,16 @@ def _summary_title(attrs, refined):
         # actually applied across the sweep, not a single misleading number.
         tol_str = f"{tols.min():.1e} - {tols.max():.1e}"
 
+    inner_label = attrs.get("inner_label", "?")
+    if str(attrs.get("inner", "")) == "gmres":
+        inner_label += f" (gmres_tol={attrs.get('gmres_tol', '?'):.0e})"
+
     converged = sum(1 for r in refined if r["converged"])
     return (
         f"{attrs.get('material', '?')}   {attrs.get('solver', '?')} "
         f"{attrs.get('factor_dtype', '?')}   "
         f"($u_f$={u_f:.1e}, $u$={u:.1e}, $u_r$={u_r:.1e})   "
-        f"{attrs.get('inner_label', '?')}   "
+        f"{inner_label}   "
         f"reference {reference_solver} ($x$ = {ref_eps:.1e})\n"
         f"stop: ferr increased, max_iter={attrs.get('max_iter', '?')}\n"
         f"converged if ferr < {tol_str}  (cond(A,x) u)\n"
