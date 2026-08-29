@@ -141,8 +141,8 @@ from matplotlib.colors import LogNorm
 import cli
 from factor_io import load_table, table_rows
 from style import (SOLVER_STYLE, DTYPE_STYLE, FP16_UNIT_ROUNDOFF, axis_label,
-                   energies_of, legend_handles, mark_band_edges, save_figure,
-                   split_gaps, sweep_line)
+                   energies_of, legend_handles, mark_band_edges,
+                   named_for_legend, save_figure, split_gaps, sweep_line)
 
 GROUP = "growth_factor"
 
@@ -186,6 +186,16 @@ def _ordered(present, style_map):
     return known + sorted(k for k in present if k not in style_map)
 
 
+# Precision column order for the side-by-side figures: coarsest first, so the
+# panels read left-to-right as "more accurate".
+DTYPE_COLUMN_ORDER = ("complex32", "complex64", "complex128")
+
+
+def _dtype_columns(present):
+    known = [d for d in DTYPE_COLUMN_ORDER if d in present]
+    return known + sorted(d for d in present if d not in DTYPE_COLUMN_ORDER)
+
+
 def group_by_series(records, norm):
     """Rows for one norm, grouped by (solver, dtype) and sorted by index."""
     grouped = defaultdict(list)
@@ -210,7 +220,7 @@ def _sweep_figure(records, attrs, material, norms, out_path, column,
     is overlaid on one panel, distinguished by line style. The factor-growth
     figure uses the split; the assembly-residual figure does not.
     """
-    dtypes = (_ordered({r["dtype"] for r in records}, DTYPE_STYLE)
+    dtypes = (_dtype_columns({r["dtype"] for r in records})
               if split_dtype else [None])
     fig, axes = plt.subplots(len(norms), len(dtypes),
                              figsize=(max(7.5, 4.6 * len(dtypes)),
@@ -248,7 +258,7 @@ def _sweep_figure(records, attrs, material, norms, out_path, column,
             if have_energy:
                 mark_band_edges(ax, attrs, label=False)
 
-    solvers = _ordered(solvers_present, SOLVER_STYLE)
+    solvers = named_for_legend(_ordered(solvers_present, SOLVER_STYLE))
     dtypes_legend = _ordered(dtypes_present, DTYPE_STYLE)
     handles, labels = legend_handles(
         solvers, [] if split_dtype else dtypes_legend)
@@ -344,8 +354,7 @@ def plot_schur(records, attrs, material, out_path):
     """
     present_norms = {r["norm"] for r in records}
     norm = "inf-norm" if "inf-norm" in present_norms else sorted(present_norms)[0]
-    dtypes = _ordered({r["dtype"] for r in records if r["norm"] == norm},
-                      DTYPE_STYLE)
+    dtypes = _dtype_columns({r["dtype"] for r in records if r["norm"] == norm})
     have = [r for r in records if r["norm"] == norm
             and all(c in r for c in SCHUR_COLUMNS)]
     if not have or not dtypes:
@@ -400,7 +409,7 @@ def plot_schur(records, attrs, material, out_path):
     axes[0][0].set_ylabel(f"$\\|L\\|$  [{norm}]")
     axes[1][0].set_ylabel(f"$\\|U\\| / \\|A_{{\\mathrm{{eff}}}}\\|$  [{norm}]")
 
-    solvers = _ordered(solvers_present, SOLVER_STYLE)
+    solvers = named_for_legend(_ordered(solvers_present, SOLVER_STYLE))
     handles, labels = legend_handles(solvers, [])
 
     fig.suptitle(f"$\\Psi = \\|L\\| \\cdot \\|U\\| / \\|A\\|$  —  {material}",
@@ -641,7 +650,7 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
     axes[0][0].set_ylabel(f"$\\eta_\\infty \\,/\\, [\\,u\\,(1+\\Psi)\\,]$  "
                           f"[{norm}]")
 
-    solvers = _ordered(solvers_present, SOLVER_STYLE)
+    solvers = named_for_legend(_ordered(solvers_present, SOLVER_STYLE))
     extra = [(plt.Line2D([], [], color="k", ls="--", lw=1.0),
               r"bound attained with $c(n)=1$")]
     handles, labels = legend_handles(solvers, [], extra=extra)

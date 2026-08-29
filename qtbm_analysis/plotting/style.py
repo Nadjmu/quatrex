@@ -38,6 +38,7 @@ to the index, which axis_label() reports.
 Functions
 ---------
 solver_label(key), dtype_label(key)  Legend text, falling back to the raw key.
+named_for_legend(solvers)            Solver list minus the -fp16 variants.
 legend_handles(solvers, dtypes, ...) Proxy artists for a combined legend.
 energies_of(attrs, indices)          Energies in eV, or None if unavailable.
 axis_label(have_energy)              Axis label matching what was plotted.
@@ -158,6 +159,21 @@ def solver_label(key):
 def dtype_label(key):
     """Legend text for a precision label."""
     return DTYPE_STYLE.get(key, (key, "-"))[0]
+
+
+def named_for_legend(solvers):
+    """
+    Solver names to list in a legend, with the half-precision variants removed.
+
+    ``block-thomas-fp16`` and ``block-thomas-inv-fp16`` are drawn in the same
+    colour as their full-precision counterparts, and every figure that shows
+    them names the precision on the panel title or the line style, so a
+    separate legend entry for them is redundant and, sharing a colour, actively
+    misleading. Falls back to the full list if that would leave the legend
+    empty.
+    """
+    kept = [s for s in solvers if not str(s).endswith("-fp16")]
+    return kept or list(solvers)
 
 
 def legend_handles(solvers, dtypes, extra=()):

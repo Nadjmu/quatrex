@@ -75,7 +75,7 @@ import matplotlib.pyplot as plt
 
 import cli
 from factor_io import load_table, table_rows
-from style import (SOLVER_STYLE, DTYPE_STYLE, FP16_UNIT_ROUNDOFF, axis_label,
+from style import (SOLVER_STYLE, DTYPE_STYLE, FP16_UNIT_ROUNDOFF, named_for_legend, axis_label,
                    energies_of, legend_handles, mark_band_edges, save_figure,
                    split_gaps, sweep_line)
 
@@ -167,7 +167,7 @@ def plot(records, attrs, material, out_path):
     axes[1][0].set_ylabel(r"$\eta_\infty$")
 
     handles, labels = legend_handles(
-        solvers, [],
+        named_for_legend(solvers), [],
         extra=[(plt.Line2D([], [], color="k", lw=1.0, ls="--"),
                "unit roundoff u")])
 

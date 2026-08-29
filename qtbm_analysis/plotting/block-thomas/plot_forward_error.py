@@ -84,8 +84,8 @@ from matplotlib.lines import Line2D
 import cli
 from factor_io import load_table, table_rows
 from style import (SOLVER_STYLE, DTYPE_STYLE, axis_label, energies_of,
-                   legend_handles, mark_band_edges, save_figure, split_gaps,
-                   sweep_line)
+                   legend_handles, mark_band_edges, named_for_legend,
+                   save_figure, split_gaps, sweep_line)
 
 GROUP = "forward_error"
 
@@ -164,7 +164,7 @@ def plot(records, attrs, material, out_path):
     if have_energy:
         mark_band_edges(ax, attrs)
 
-    handles, labels = legend_handles(solvers, dtypes)
+    handles, labels = legend_handles(named_for_legend(solvers), dtypes)
 
     fig.suptitle(f"$\\|\\hat{{x}}-x\\|_\\infty / \\|x\\|_\\infty$  —  "
                  f"{material}", fontsize=13, y=1.0)
@@ -238,7 +238,7 @@ def plot_ratios(records, attrs, material, out_path):
                           r"{\mathrm{cond}(A,x)\,\omega}$", fontsize=16)
 
     extra = [(Line2D([], [], color="k", ls="--", lw=1.0), "bound attained")]
-    handles, labels = legend_handles(solvers, [], extra=extra)
+    handles, labels = legend_handles(named_for_legend(solvers), [], extra=extra)
 
     fig.suptitle(
         r"top  $\|\hat{x}-x\|_\infty/\|x\|_\infty \,/\, "
