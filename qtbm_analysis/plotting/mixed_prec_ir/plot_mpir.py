@@ -265,7 +265,11 @@ def plot_summary(run_rows, attrs, out_path):
     top = int(np.nanmax(iters))
     ax.set_yticks(np.arange(0, top + 2) if top <= 20
                   else np.linspace(0, top + 1, 12, dtype=int))
-    ax.set_ylim(bottom=0)
+    # Bottom pulled slightly below 0 rather than pinned to it: a point at
+    # outer_iters=0 (a factorization failure) would otherwise sit exactly on
+    # the axis line and render as a half-dot. The margin scales with the
+    # axis range so it stays visually consistent regardless of top.
+    ax.set_ylim(bottom=-max(0.4, 0.04 * top))
 
     fig.suptitle(_summary_title(attrs, refined), fontsize=9)
     fig.tight_layout(rect=(0, 0, 1, 0.93))
