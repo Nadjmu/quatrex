@@ -19,7 +19,7 @@ with incompatible requirements. `mpir.py` varies the precision and the inner
 solver over one solver family and asks about accuracy; `mpcost.py` holds the
 precision fixed and varies the family, and its numbers are only comparable
 when every variant of one index is measured back to back in one process. They
-share the refinement loops, the solver registry and the stopping criteria:
+share the refinement loops, the solver registry and the stopping rule:
 `mpcost.py` imports them from `mpir.py` rather than reimplementing them, so
 both studies measure the same code.
 
@@ -173,12 +173,14 @@ python mpir.py .../si-bulk.h5 --idx 254 --solver cudss \
     --factor-dtype complex64 --reference-solver cudss
 ```
 
-Loosening the stopping criteria, and writing the tables somewhere else.
+Raising the safety net and the convergence level, and writing the tables
+somewhere else. The stopping rule itself takes no option — see
+[Stopping criterion](#stopping-criterion).
 
 ```bash
 python mpir.py .../si-bulk.h5 --idx 254 --solver cudss \
     --factor-dtype complex64 --inner gmres \
-    --rho-thresh 0.9 --max-iter 30 --k-max 0 --ferr-thresh 0 --outdir ./scratch
+    --max-iter 60 --ferr-tol 1e-12 --outdir ./scratch
 ```
 
 Three variants of the **same** solver family are measured, so the comparison
@@ -194,64 +196,58 @@ solution, the normwise and componentwise backward errors, wall time split into
 factorization and solve, factor memory, the outer convergence history, and, for
 GMRES-IR, the inner iteration counts.
 
-### Stopping criteria
+### Stopping criterion
 
-The loop does **not** stop on a fixed residual tolerance. It uses the four
-criteria of [Oktay and Carson, section 2.1.1](#references), which read the
-corrections the loop already produces and so cost nothing extra, plus one more
-of the same kind:
+The loop does **not** stop on a fixed residual tolerance, and no longer uses
+the five conditions it once did. There is one rule:
 
-| # | Condition | Option | Meaning |
-|---|---|---|---|
-| 1 | `‖d_{i+1}‖ / ‖x_i‖ ≤ u` | — | the correction no longer moves the iterate |
-| 2 | `‖d_{i+1}‖ / ‖d_i‖ ≥ ρ_thresh` | `--rho-thresh` (0.5) | corrections stopped shrinking geometrically; a ratio above 1 is divergence |
-| 3 | `iter ≥ i_max` | `--max-iter` (10) | |
-| 4 | `k_GMRES ≥ k_max` | `--k-max` (`ceil(0.1n)`) | one outer step now costs about what refactorizing would; GMRES-IR only, `0` disables |
-| 5 | `ferr_i / ferr_{i-1} ≥ ferr_thresh` | `--ferr-thresh` (1.0) | the forward error against the reference solution stopped improving; needs `--reference-solver`, `0` or negative disables |
+> **stop when the forward error against the reference solution increases.**
 
-**Condition 5 is not from Oktay and Carson.** It measures the thing that
-actually matters rather than a proxy for it: the reference solution is the
-best available estimate of the exact answer, so once the iterate stops getting
-closer to it there is nothing left to gain, whatever the correction norms are
-doing. It is a cheap `O(n)` vector-norm comparison — exactly like conditions 1
-and 2, not an extra solve — computed from the same iterates already retained.
-It complements rather than duplicates 1 and 2: a correction can keep looking
-healthy by every internal measure while `ferr` has already reached the
-reference's own accuracy floor (condition 5 catches this, conditions 1–2
-don't), and conversely a nonnormal matrix can make corrections look erratic
-well before `ferr` actually stops improving (conditions 1–2 catch this,
-condition 5 doesn't). When both are true at once — typical once rounding noise
-dominates — they fire together and `stop_reason` names both.
+An increase means the correction just applied made the answer worse — rounding
+noise rather than refinement — so the previous iterate was the best the method
+reached, and that is what gets returned. `--max-iter` (30) is a safety net
+behind it, and the only thing that ends the loop when no reference solution is
+available.
 
-Convergence itself is declared on the normwise error estimate of Demmel et al.
-that Oktay and Carson carry alongside them,
+The rule is checked at the *top* of each pass, before the pass spends a solve
+on a correction. Every criterion this module used previously looked backwards
+— whether step `i` was worth taking could only be judged once step `i+1` had
+been formed — so a run always paid for one correction it had already decided
+it did not want. Comparing the forward error of the iterate in hand against
+the previous one needs nothing from the future, so `outer_iters` counts the
+corrections that produced the returned solution, and no more.
+
+**What was deleted, and why.** The five Oktay–Carson conditions (correction no
+longer moves the iterate; corrections stopped shrinking geometrically; an
+iteration limit; inner GMRES too long; forward error improving by less than a
+threshold) and the Demmel et al. `psi` convergence estimate. Each needed a
+constant whose right value varied with `u_f` and `kappa_inf`, and every one of
+them could cut off a run that was still genuinely converging — which happens
+precisely at the ill-conditioned end of a sweep, biasing the iteration count
+downward exactly where it is most interesting. Measured on carbon-nanotube
+E_1608 at complex32, 29 corrections were still productive; the old
+`--rho-thresh 0.5` would have stopped it at 13. An increase in the measured
+forward error needs no constant and cannot be argued with.
+
+### Did it converge?
+
+Stopping and converging are separate questions. Stopping says the method got as
+far as it was going to; `converged` says whether that was far enough:
 
 ```
-phi = z / (1 - rho_max),   z = ‖d_{i+1}‖/‖x_i‖,  rho_max = max_j ‖d_{j+1}‖/‖d_j‖
+converged  <=>  best ferr <= ferr_tol,   ferr_tol defaulting to sqrt(n) u
 ```
 
-with convergence when `0 ≤ phi ≤ sqrt(n) u`. Both bounds matter: `phi` is
-negative exactly when `rho_max > 1`, that is when a correction grew, and that
-is divergence rather than a small error.
+`u` here is the **working** precision for every variant, never `u_f`: the
+question is whether refinement reached the accuracy the working precision can
+hold, and asking it at `u_f` would accept a solution only as good as the
+factorization refinement exists to improve on.
 
-`u` here is the **working** precision for every variant, never `u_f`. The
-question the criteria answer is whether refinement reached the accuracy the
-working precision can hold; asking it at `u_f` would accept a solution only as
-good as the factorization refinement exists to improve on. `u_f` enters the
-metrics below as `u_s`, and the stopping test never.
-
-Two consequences are worth expecting rather than being surprised by. Condition
-2 is what normally ends a healthy run: refinement reaches the floor set by
-rounding and the reference solution, the next correction fails to shrink, and
-the loop stops — often one step after the accuracy stopped improving. And a run
-that has genuinely converged to the reference floor may still fail the `phi`
-convergence test when that floor sits above `sqrt(n) u`, since the reference
-solution is itself only accurate to its own backward error, which is reported
-beside it. The console reports the plain outer-iteration count and the reason
-the loop stopped rather than a converged/failed verdict, since which stopping
-condition fired is more informative than a binary label, and the count is what
-you need to compute an average convergence rate over a sweep. `converged` is
-still recorded as its own column in `runs` for filtering.
+An ill-conditioned index can legitimately stop above this level. Corollary
+3.3's limiting accuracy is of order `cond(A,x) u`, which is larger, so a "did
+not converge" verdict there means working precision was not reached — not that
+refinement misbehaved. `--ferr-tol` overrides the level; `ferr_best` and
+`ferr_tol` are both recorded per run so the verdict can always be re-derived.
 
 ### Convergence metrics
 
@@ -325,53 +321,36 @@ complex128 solve. `reference_floor = kappa_inf(A)·eps_ext` is recorded per
 index — a `ferr_ref` within an order of magnitude of it is measuring the
 reference, not the method.
 
-### Convergence rate: `n_contract` and `rho_bar`
+### What the sweep actually reports
 
-A run has two regimes — roughly geometric decay, then a flat or worsening tail
-once the limiting accuracy is reached or the stopping criteria overshoot it (see
-below). Averaging the observed `rho` over the whole run mixes them and reports
-a rate far closer to 1 than anything the method did.
-
-The two regimes are separated at the run's own best point — the step where
-`ferr_ref` was smallest — rather than by a threshold on `rho`:
+The `phi_*` and `mu_hat` columns above are recorded but **not plotted**. The
+one quantity a convergence-versus-conditioning study reads is
 
 ```
-n_contract    argmin_i ferr_ref[i], the index of the best step
-rho_bar       (ferr[n_contract] / ferr[0]) ** (1/n_contract)
-rho_censored  1 if n_contract == 1 (a single ratio, not a mean)
+outer_iters   the corrections that produced the returned solution
 ```
 
-which *is* the geometric mean of `rho` over those steps — successive ratios
-telescope — so it needs no fit. This is possible because `ferr_ref` is already
-available whenever a reference solver was given, the same information
-stopping condition 5 already uses.
+together with `converged`. Those two, against `kappa_inf(A)`, are what decide
+whether mixed-precision refinement is worth using on a system: the iteration
+count multiplies the cost of the cheap low-precision factorization, so a method
+needing thirty steps has given back what the low precision won. They are the
+whole content of the summary figure — see
+`plotting/mixed_prec_ir/plot_mpir.py`.
 
-An earlier version used a threshold instead (`rho < 0.5` and an endpoint above
-10× the achieved floor). It broke on the complex32 sweeps this statistic is
-mainly for: measured on carbon-nanotube E_1762 and E_1608 (`kappa_inf` = 3.0e3
-and 6.3e4), the threshold cut the contraction phase off after 8 and 13 steps,
-while the run kept genuinely improving to steps 10 and 29 — a per-step `rho` of
-0.3–0.5 is the normal rate at this precision, not a plateau, and no fixed
-threshold tells the two apart. The argmin has no such failure mode: it also
-avoids the opposite mistake a fixed offset like "`outer_iters - 2`" would make
-— on a run that converges cleanly with no wasted tail (the common case for
-LU-IR well inside the `kappa_inf u_f < 1` bound), the best point *is* the last
-one, `n_contract == outer_iters`, and subtracting a constant would cut off
-steps that were still perfectly good.
+The convergence factor is a *mechanism*, not a decision variable. It stays in
+the `iterations` table for the per-index figures and for the thesis text, and
+nothing is derived from it automatically. An earlier version of this module
+also reduced it to a per-run mean (`n_contract`, `rho_bar`, `rho_censored`);
+those columns are gone, along with the two different rules tried for splitting
+the geometric phase from the plateau, neither of which survived contact with
+the complex32 sweeps.
 
-Two things to keep in mind when plotting it. At `n_contract == 1` there is no
-averaging and `rho_bar` is a single measured ratio; short runs are the norm for
-GMRES-IR, so a figure must show `n_contract` beside it. And `rho_bar` is a
-summary, not a parameter: `phi_i` in (3.9) varies over a run through `mu_i`,
-which Carson and Higham observe is smallest early, so the contraction genuinely
-slows before the best point and no single rate describes the run.
-
-`--rho-thresh` is unrelated to this and should still be set to `1.0` for a
-convergence sweep: at its default `0.5` it is a *stopping* rule that truncates
-a run still converging slowly, which happens precisely at large `kappa_inf` and
-biases `outer_iters` downward there. `1.0` leaves condition 2 to catch genuine
-divergence only, so the run reaches its true best point and `n_contract` can
-find it.
+`outer_iters` is only as good as the reference solution it is measured against,
+which is why `--reference-solver extended` exists: a complex128 reference
+carries a forward error of the same order as refinement's own limiting
+accuracy, so the stopping rule would fire when the *reference* ran out rather
+than when the method did — earliest exactly where `kappa_inf` is largest,
+flattening the very trend being measured.
 
 **None of this is computed inside the refinement loop.** The loop retains its
 iterates, corrections and residual vectors and nothing else; every metric is
@@ -525,8 +504,8 @@ produced it.
 
 Everything needed to say what a run was, in one place: `material`, `source`,
 `timestamp`, `command`, `solver`, `factor_dtype`, `inv_dtype`, `inner` and
-`inner_label`, `working_dtype`, `residual_dtype`, `working_u`, `rho_thresh`,
-`max_iter`, `k_max`, `ferr_thresh`, `gmres_tol`, `gmres_restart`,
+`inner_label`, `working_dtype`, `residual_dtype`, `working_u`,
+`max_iter`, `ferr_tol`, `gmres_tol`, `gmres_restart`,
 `gmres_max_iter`, `reference_solver`, `repeats`, `indices`, `n_requested`, `n_skipped`,
 `criteria`, `convergence_factor`, plus the material's band edges and energy
 grid. They sit on the experiment group and not on the two tables, so a reader
@@ -544,8 +523,7 @@ performs outer steps, so only it appears in `iterations`.
 `idx`, `energy`, `n`, `nnz`, `n_rhs`, `n_blocks`, `solver`, `factor_dtype`,
 `inner`, `variant`, `is_refined`, `u_f`, `u`, `u_s`, `kappa_2`, `kappa_inf`,
 `cond_skeel`, `cond_skeel_x`, `lu_ir_bound`, `relres`, `ferr_ref`, `eta1`, `eta2`, `etainf`, `omega`,
-`outer_iters`, `converged`, `rho_max`, `psi_final`, `stop_reason`,
-`n_contract`, `rho_bar`, `rho_censored`,
+`outer_iters`, `converged`, `ferr_best`, `ferr_tol`, `stop_reason`,
 `gmres_total`, `wall_s`, `factor_s`, `factor_symbolic_s`, `factor_numeric_s`,
 `inner_s`, `solve_s`, `residual_s`, `other_s`, `n_solves`, `factor_mb`,
 `factor_mb_reported`, `working_mb`, `reference_solver`, `reference_nbe`,
@@ -579,19 +557,23 @@ rather than draw the zero.
 **`iterations`** — the convergence trajectory and the quantities Corollary 3.3
 is stated in: `outer_iteration`, `relres`, `residual_norm_inf`, `ferr_ref`,
 `rho`, `etainf`, `omega`, `mu_hat`, `phi_cond_hat`, `phi_solve_hat`,
-`phi_hat`, `phi_cond_binding`, `phi_cond_form`, `z`, `v`, `rho_max`,
-`phi_demmel`, `ferr_ratio`,
+`phi_hat`, `phi_cond_binding`, `phi_cond_form`, `ferr_ratio`,
 `correction_norm_inf`, `reference_correction_norm_inf`,
 `gmres_inner_iterations`, `gmres_inner_max`, `note`, alongside the same
 identifying columns.
 
-`z`, `v`, `rho_max`, `phi_demmel` and `ferr_ratio` are the stopping-criteria
-quantities themselves, so a figure can show not only that a run stopped but
-which condition was about to fire and how close the others were. `ferr_ratio`
-is `ferr_i / ferr_{i-1}`, the quantity condition 5 tests; it is numerically the
-same ratio as `rho` one step later (`ferr_ratio[i] == rho[i-1]`), but kept as
-its own column since it is what the monitor actually saw at decision time,
-looking backward rather than `rho`'s forward-looking convention.
+`ferr_ratio` is `ferr_i / ferr_{i-1}`, the stopping rule's own quantity: the
+step where it first exceeds 1 is the step the loop stopped on. It is
+numerically the same ratio as `rho` one step later
+(`ferr_ratio[i] == rho[i-1]`), but kept as its own column since it is what the
+monitor actually saw at decision time, looking backward rather than `rho`'s
+forward-looking convention.
+
+This table has **one row more than `outer_iters`** for a run that stopped on an
+increase: the iterate whose forward error rose is recorded too, since it is the
+evidence the rule acted on. It carries `ferr_ref`/`relres`/`etainf`/`omega` but
+no `correction_norm_inf`, `phi_solve_hat` or `gmres_inner_iterations`, because
+no correction was computed from it.
 
 Raw iterate, correction and residual **vectors are not stored**: they are
 `O(n)` per step per index and a sweep would run to gigabytes, while every
@@ -781,7 +763,9 @@ draws four figures into `cost<NNNN>/` beside the cost file, matching the
   *Numer. Linear Algebra Appl.* 29(4), 2022; arXiv:2107.06200. Section 2.1.1 is
   the source of the stopping criteria.
 - J. Demmel et al., Error bounds from extra-precise iterative refinement,
-  *ACM TOMS* 32(2), 2006. The `psi` estimate the convergence test uses.
+  *ACM TOMS* 32(2), 2006. Source of the `psi` estimate this module used
+  as its convergence test until the stopping rule was reduced to a single
+  forward-error comparison; kept as a pointer for the thesis text.
 - M. Zounon, N. J. Higham, C. Lucas and F. Tisseur, Performance impact of
   precision reduction in sparse linear systems solvers, *PeerJ Comput. Sci.*
   8:e778, 2022. The factorization speedup `mpcost.py` reports and the stage

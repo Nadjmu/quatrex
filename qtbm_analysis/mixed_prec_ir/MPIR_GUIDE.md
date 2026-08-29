@@ -120,9 +120,9 @@ python mpir.py carbon-nanotube.h5 --idx 84 --solver block-thomas-inv \
 python mpir.py carbon-nanotube.h5 --stride 10 --solver block-thomas \
     --factor-dtype complex32 --inner gmres
 
-# Loosen the stopping criteria, pick where the file goes
+# Raise the safety net and the convergence level, pick where the file goes
 python mpir.py si-bulk.h5 --idx 254 --solver cudss --factor-dtype complex64 \
-    --inner gmres --rho-thresh 0.9 --max-iter 30 --k-max 0 --ferr-thresh 0 --outdir ./scratch
+    --inner gmres --max-iter 60 --ferr-tol 1e-12 --outdir ./scratch
 
 # List what's already in a file, without running anything
 python mpir.py carbon-nanotube.h5 --list-experiments
@@ -137,10 +137,8 @@ python mpir.py carbon-nanotube.h5 --list-experiments
 | `--factor-dtype` | `complex64` | `u_f`: `complex128`, `complex64`, or `complex32` (Block Thomas only) |
 | `--inv-dtype` | `float32` | `block-thomas-inv` + `complex32` only: precision the explicit inverse is formed in before rounding to `float16` |
 | `--inner` | `direct` | `direct` = LU-IR, `gmres` = GMRES-IR |
-| `--rho-thresh` | `0.5` | stopping condition 2 threshold (§3) |
-| `--max-iter` | `10` | stopping condition 3: max outer steps |
-| `--k-max` | `ceil(0.1n)` | stopping condition 4: max inner GMRES iterations in one step (`--inner gmres` only; `0` disables) |
-| `--ferr-thresh` | `1.0` | stopping condition 5: stop once `ferr_i/ferr_{i-1} ≥` this (needs `--reference-solver`; `0` or negative disables) |
+| `--max-iter` | `30` | safety net on the outer steps; the stopping rule itself takes no option (§3) |
+| `--ferr-tol` | `sqrt(n) u` | accuracy the returned solution must reach to count as converged (§3) |
 | `--repeats` | `1` | repeats per variant; the median is reported |
 | `--reference-solver` | `mumps` | supplies `x_true` and the reference corrections `phi_solve` is measured against |
 | `--gmres-tol`, `--gmres-restart`, `--gmres-max-iter` | `1e-8`, `30`, `50` | inner GMRES parameters (`--inner gmres` only) |
@@ -156,123 +154,97 @@ python mpir.py carbon-nanotube.h5 --list-experiments
 There is **no fixed residual tolerance**. On these systems the residual
 reaches the working precision long before the forward error does, so a
 residual tolerance would declare convergence while the solution is still
-wrong — and it cannot tell slow convergence from divergence at all. Instead
-the loop uses the four criteria of Oktay and Carson (2021), section 2.1.1,
-plus one more of the same kind — all read from quantities the loop produces
-anyway, so none of them costs an extra solve:
+wrong — and it cannot tell slow convergence from divergence at all.
 
-| # | Condition | Meaning |
-|---|---|---|
-| 1 | `‖d_{i+1}‖/‖x_i‖ ≤ u` | the correction no longer moves the iterate |
-| 2 | `‖d_{i+1}‖/‖d_i‖ ≥ ρ_thresh` | corrections stopped shrinking geometrically (a ratio `> 1` is divergence) |
-| 3 | `iter ≥ max_iter` | |
-| 4 | `k_GMRES ≥ k_max` | one step now costs about what refactorizing would (GMRES-IR only) |
-| 5 | `ferr_i/ferr_{i-1} ≥ ferr_thresh` | the forward error against the reference solution stopped improving (needs `--reference-solver`) |
+Instead there is one rule:
 
-`u` here is always the **working precision** (complex128), never `u_f` — the
+> **stop when the forward error against the reference solution increases.**
+
+An increase means the correction just applied made the answer worse — rounding
+noise, not refinement. The previous iterate was the best the method reached,
+and that is what gets returned. `--max-iter` (30) sits behind it as a safety
+net, and is the only thing that ends the loop when no reference solution is
+available.
+
+The rule is checked at the **top** of each pass, before the pass spends a solve
+on a correction, so `outer_iters` counts the corrections that produced the
+returned solution and no more.
+
+**What was deleted.** The five Oktay–Carson conditions (correction too small;
+corrections stopped shrinking; iteration limit; inner GMRES too long; forward
+error improving by less than a threshold) and Demmel's `psi` convergence
+estimate. Each needed a constant whose right value varied with `u_f` and
+`kappa_inf`, and every one of them could cut off a run still genuinely
+converging — which happens precisely at the ill-conditioned end of a sweep,
+biasing the iteration count downward exactly where it is most interesting.
+Measured on carbon-nanotube E_1608 at complex32, 29 corrections were still
+productive; `--rho-thresh 0.5` would have stopped it at 13.
+
+### Did it converge?
+
+A separate question from stopping. Stopping says the method got as far as it
+was going to; `converged` says whether that was far enough:
+
+```
+converged  <=>  best ferr <= ferr_tol,   ferr_tol defaulting to sqrt(n) * u
+```
+
+`u` is always the **working precision** (complex128), never `u_f` — the
 question is whether refinement reached the accuracy the working precision can
 hold, and asking it at `u_f` would accept a solution only as good as the
 factorization itself.
 
-**Condition 5 is not from Oktay and Carson** — it was added because the other
-four are all proxies for accuracy (correction size, iteration budget), while
-the reference solution is the actual best-available estimate of the exact
-answer. Once the iterate stops getting closer to it, there is nothing left to
-gain regardless of what the corrections look like. It's a cheap `O(n)`
-vector-norm comparison, computed the same way as conditions 1 and 2, not an
-extra solve — and it complements rather than duplicates them:
-
-- A correction can keep looking healthy by every internal measure (conditions
-  1–2 silent) while `ferr` has already hit the reference's own accuracy
-  floor — condition 5 catches this case, the other two don't.
-- A nonnormal matrix can make corrections look erratic (tripping 1–2) well
-  before `ferr` has actually stopped improving — the other two catch this
-  case, condition 5 doesn't.
-- Once rounding noise dominates (both symptoms present at once), they
-  typically fire together, and `stop_reason` names both.
-
-Convergence is declared on Demmel's normwise error estimate:
-
-```
-phi = z / (1 - rho_max)      z = ‖d_{i+1}‖/‖x_i‖
-                              rho_max = max_j ‖d_{j+1}‖/‖d_j‖  (over j <= i)
-
-converged  <=>  0 <= phi <= sqrt(n) * u
-```
-
-Both bounds matter: `phi < 0` means `rho_max > 1`, i.e. some correction grew —
-that is divergence, not a small error.
-
-**What a healthy run usually looks like:** it converges, then one step later
-condition 2 fires (the next correction fails to shrink relative to an already
-tiny one) and the loop stops — often one step after accuracy stopped
-improving. A run can also report *did not converge* while sitting at the
-reference-solution floor, if that floor is above `sqrt(n) * u`; the reference
-solver's own backward error is reported alongside so this is visible rather
-than silently misread as failure.
+An ill-conditioned index can legitimately stop above this level: Corollary
+3.3's limiting accuracy is of order `cond(A,x) u`, which is larger. A "did not
+converge" verdict there means working precision was not reached, **not** that
+refinement misbehaved. `--ferr-tol` overrides the level, and `ferr_best` /
+`ferr_tol` are both recorded per run so the verdict can be re-derived.
 
 ---
 
 ## 3b. Measuring convergence speed
 
-Two numbers per index, both in the `runs` table:
+One number per index, in the `runs` table:
 
 | Column | Meaning |
 |---|---|
-| `outer_iters` | how many outer steps the run took |
-| `n_contract` | `argmin_i ferr_ref[i]`, the index of the run's own best step |
-| `rho_bar` | `(ferr[n_contract]/ferr[0]) ** (1/n_contract)`, the geometric mean of `rho` up to it |
-| `rho_censored` | 1 where `n_contract == 1` (a single ratio, not a mean) |
+| `outer_iters` | the corrections that produced the returned solution |
+| `converged` | whether that solution reached `ferr_tol` (§3) |
+| `kappa_inf` | the x axis of the summary figure |
 
-The split is at the run's own best point rather than a threshold on `rho`, and
-that matters on exactly the sweeps this statistic is for. An earlier version
-required `rho < 0.5` and an endpoint above `10x` the achieved floor; measured on
-carbon-nanotube E_1762 and E_1608 (complex32, `kappa_inf` = 3.0e3 and 6.3e4),
-that threshold cut the contraction phase off after 8 and 13 steps while the run
-kept genuinely improving to steps 10 and 29 — a per-step `rho` of 0.3–0.5 is the
-normal rate at this precision, not a plateau, and no fixed threshold tells them
-apart. `argmin` has no such failure: it also avoids the opposite mistake a
-fixed offset like "`outer_iters - 2`" would make on a clean LU-IR run with no
-wasted tail, where the best point *is* the last one and subtracting a constant
-would cut off steps that were still good.
+**Plot `outer_iters` against `kappa_inf`.** That is the whole statistic. The
+iteration count multiplies the cost of the cheap low-precision factorization,
+so a method needing thirty steps has given back what the low precision won —
+it is the only quantity here that decides whether to use mixed-precision
+refinement on a system.
 
-Plotted against `kappa_inf` these are the convergence-speed result. Restricting
-the mean to the steps up to the best one is not optional: the forward error
-decays geometrically and then flattens or worsens past it, and a mean over the
-whole run reports a rate far closer to 1 than anything the method did.
+The convergence factor is deliberately **not** part of this. It is a
+mechanism, not a decision variable; `mu_hat` and the `phi_*` columns stay in
+the `iterations` table for the per-index figures and the thesis text, and
+nothing is derived from them automatically.
 
-**For such a sweep, change two flags:**
+**For a sweep, two flags matter:**
 
 ```
 --reference-solver extended     an accurate enough ruler; see below
---rho-thresh 1.0                stop on divergence, not on slow convergence
 --max-iter 40                   a safety net that should not bind
 ```
 
-`--rho-thresh 0.5` is the right *stopping* default but the wrong setting here:
-it cuts off a run that is still converging slowly, which is what happens at
-large `kappa_inf`, biasing `outer_iters` downward at exactly the end of the
-sweep the study is about. `1.0` leaves condition 2 to catch genuine divergence
-only, so the run reaches its true best point and `n_contract` (unrelated to
-`--rho-thresh` — it is computed offline from `ferr_ref`) can find it.
-
 **Why the reference has to be `extended`.** `ferr_ref` cannot fall below
 `x_true`'s own error. A complex128 direct solve carries `cond(A,x)·u`, the same
-order as refinement's limiting accuracy, so stopping condition 5 fires when the
-*reference* runs out — earliest where `kappa_inf` is largest, flattening the
-trend — and the last `rho` values sit on the reference's plateau.
-`--reference-solver extended` refines with a `np.clongdouble` residual and is
-about `2×10³` times more accurate (measured: 1600–3200× against an exact
-rational solution). `reference_floor = kappa_inf·eps_ext` is recorded so a
-`ferr_ref` near it can be recognised as measuring the reference.
+order as refinement's limiting accuracy, so the stopping rule would fire when
+the *reference* ran out rather than when the method did — earliest where
+`kappa_inf` is largest, flattening the very trend being measured.
+`--reference-solver extended` refines with an `np.clongdouble` residual;
+measured against an exact rational solution it is 1600–3200× more accurate on
+an x86 build, and far more where `np.longdouble` is IEEE binary128.
+`reference_floor = kappa_inf·eps_ext` is recorded so a `ferr_ref` near it can
+be recognised as measuring the reference.
 
-Two caveats for the figure: at `n_contract == 1` there is no averaging at all,
-and short runs are normal for GMRES-IR; and `rho_bar` is a summary rather than
-a parameter, since `phi_i` varies over a run through `mu_i`, so the contraction
-genuinely slows before the best point is reached.
+Runs that stopped on `max_iter` did not finish — filter on `stop_reason` and
+report their count separately rather than averaging them in.
 
-Runs that stopped on `max_iter` or `k_max` did not finish — filter on
-`stop_reason` and report their count separately rather than averaging them in.
+---
 
 ## 4. Convergence metrics
 
@@ -359,7 +331,7 @@ the last run silently replacing the previous one.
 Everything needed to say what a run was, on the experiment group itself:
 `material`, `source`, `timestamp`, `command`, `solver`, `factor_dtype`,
 `inv_dtype`, `inner`, `inner_label`, `working_dtype`, `residual_dtype`,
-`working_u`, `rho_thresh`, `max_iter`, `k_max`, `ferr_thresh`, `gmres_tol`,
+`working_u`, `max_iter`, `ferr_tol`, `gmres_tol`,
 `gmres_restart`, `gmres_max_iter`, `reference_solver`, `repeats`, `indices`, `n_requested`,
 `n_skipped`, `criteria`, `convergence_factor`, plus the material's band edges
 and energy grid.
@@ -371,8 +343,7 @@ idx, energy, n, nnz, n_rhs, n_blocks, solver, factor_dtype, inner, variant,
 is_refined, u_f, u, u_s, kappa_2, kappa_inf, cond_skeel, cond_skeel_x,
 lu_ir_bound,
 relres, ferr_ref, eta1, eta2, etainf, omega,
-outer_iters, converged, rho_max, psi_final, stop_reason,
-n_contract, rho_bar, rho_censored,
+outer_iters, converged, ferr_best, ferr_tol, stop_reason,
 gmres_total, wall_s, factor_s, factor_symbolic_s, factor_numeric_s, inner_s,
 solve_s, residual_s, other_s, n_solves,
 factor_mb, factor_mb_reported, working_mb, reference_solver, reference_nbe,
@@ -411,37 +382,24 @@ These columns are what the companion cost study reads; see `mpcost.py` and
 idx, energy, n, nnz, solver, factor_dtype, inner, variant, outer_iteration,
 relres, residual_norm_inf, ferr_ref, rho, etainf, omega,
 mu_hat, phi_cond_hat, phi_solve_hat, phi_hat, phi_cond_binding, phi_cond_form,
-z, v, rho_max, phi_demmel, ferr_ratio,
+ferr_ratio,
 correction_norm_inf, reference_correction_norm_inf,
 gmres_inner_iterations, gmres_inner_max, note
 ```
 
-**One row more than `outer_iters`.** The loop only ever records the iterate
-*before* each correction is applied; the actually-returned solution -- after
-the *last* correction -- would otherwise never appear anywhere, including in
-this table and the convergence-history plot. It is appended as one extra row,
-`outer_iteration == outer_iters`, after the timed region. That row has
-`ferr_ref`/`relres`/`etainf`/`omega` (its accuracy) but no
-`correction_norm_inf`, `phi_solve_hat`, `z`, `v` or `gmres_inner_iterations`
-(no new correction or monitor step exists for it); those come back `NaN`/`-1`
-rather than a stale value. The row before it (`outer_iters - 1`) gains a real
-`rho`, the contraction of that final correction, which was previously invisible
-to `rho_bar` entirely.
-
-This matters when the run stopped on divergence: measured on carbon-nanotube
-E_1603 at complex64, the last *pre*-correction iterate had `ferr_ref = 1.49e-14`,
-but the returned solution -- one more correction applied after the run had
-already started diverging -- has `ferr_ref = 2.22e-14`, worse than an even
-earlier iterate (`6.65e-15`) the loop passed through and discarded. Without
-this row that final, actually-reported number never appeared in the plot.
+**One row more than `outer_iters`** when the run stopped on an increase: the
+iterate whose forward error rose is recorded too, since it is the evidence the
+rule acted on. It carries `ferr_ref`/`relres`/`etainf`/`omega` but no
+`correction_norm_inf`, `phi_solve_hat` or `gmres_inner_iterations`, because no
+correction was computed from it; those come back `NaN`/`-1` rather than a
+stale value.
 
 Only the refinement variant performs outer steps, so only it appears here.
-`z`, `v`, `rho_max`, `phi_demmel` and `ferr_ratio` are the stopping-criteria
-quantities themselves — a figure can show not only that a run stopped but
-which condition was about to fire and how close the others were. `ferr_ratio`
-is `ferr_i/ferr_{i-1}`, condition 5's own quantity; it equals `rho` shifted by
-one step (`ferr_ratio[i] == rho[i-1]`) but is kept separately since it's what
-the monitor actually saw, looking backward, at the moment it decided.
+`ferr_ratio` is `ferr_i/ferr_{i-1}`, the stopping rule's own quantity: the step
+where it first exceeds 1 is the step the loop stopped on. It equals `rho`
+shifted by one step (`ferr_ratio[i] == rho[i-1]`) but is kept separately since
+it's what the monitor actually saw, looking backward, at the moment it
+decided.
 
 Both tables carry `idx`, so either joins back to the other when a figure needs
 both. Raw iterate/correction/residual **vectors are not stored** — `O(n)` per
@@ -488,34 +446,41 @@ python plot_mpir.py <material.h5> --summary-only              # skip per-index f
 
 ### Per-index figure — `exp<NNNN>/<material>_E<idx>.png`
 
-One per energy index (capped by `--max-figures`, default 12, unless `--idx`
-names specific ones). Two panels:
-
-- **Left — convergence history.** `ferr_ref` (red), `nbe = etainf` (blue),
-  `cbe = omega` (green) against the outer refinement step, log scale, with a
-  dotted line at the working precision `u`.
-- **Right — convergence-factor analysis (Corollary 3.3).** `phi_cond_hat`,
-  `phi_solve_hat`, `phi_hat`, and the observed `rho`, log scale, dotted line
-  at 1. `phi_hat` is drawn wide and pale *because* it's the sum of the other
-  two — whichever term dominates coincides with it exactly and would
-  otherwise be invisible underneath a line of equal weight.
+One per energy index (capped by `--max-figures`, unless `--idx` names specific
+ones). One panel: the **convergence history** — `ferr_ref` (red),
+`nbe = etainf` (blue), `cbe = omega` (green) against the outer refinement step,
+log scale, with a dotted line at the working precision `u`. When the run
+stopped on an increase you can see it: `ferr_ref` turns upward on the last
+point, and `outer_iters` in the title is the step before it.
 
 The title carries the material, the energy, `kappa_inf`, the method, the outer
 iteration count, and why the loop stopped.
 
+The convergence-factor panel that used to sit beside it is gone. `mu_hat` and
+the `phi_*` columns are still recorded in the `iterations` table; nothing
+plots them.
+
 ### Summary figure — `exp<NNNN>/<material>_summary.png`
 
-One figure covering the whole swept experiment, three panels against energy
-(or index, if the file has no energy grid), with band edges marked:
+**One panel: outer iterations against `kappa_inf(A)`.** One point per index,
+x on a log scale, y an integer count.
 
-1. Final `ferr_ref` for all three variants — refined, `complex128` direct,
-   and unrefined low precision — so the recovery is visible at a glance.
-2. Outer iteration count per index, with indices that did not converge marked.
-3. Total inner GMRES iterations per index (LU-IR has none, and the panel says
-   so rather than drawing an empty axis).
+- **blue** where the run converged, **red** where it did not (§3).
+- a dashed vertical line at `kappa_inf = 1/u_f`, the classical LU-IR
+  requirement `kappa_inf(A) u_f < 1`. Points to the right of it are outside
+  what the theory guarantees — exactly where GMRES-IR should keep working and
+  LU-IR should not.
+- for **GMRES-IR only**, each point is labelled with its own iteration count.
+  There the interesting counts are small and close together (two or three
+  steps), so reading them off a shared axis is imprecise in the regime that
+  matters.
 
-This is the figure to read for a sweep of many indices; the per-index panels
-are for the specific ones worth looking at closely.
+Points are sorted by `kappa_inf`; indices with no `kappa_inf` in the
+condition-est file are dropped, and the count of dropped indices is printed.
+
+This is the figure the study exists to produce. Nothing else is plotted across
+the sweep: the iteration count multiplies the cost of the cheap factorization,
+so it is what decides whether mixed-precision refinement is worth using.
 
 ---
 

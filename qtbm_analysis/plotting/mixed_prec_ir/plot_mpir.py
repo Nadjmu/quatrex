@@ -20,38 +20,30 @@ No computation is performed. Every quantity plotted was reconstructed by
 ``mpir.refinement_metrics`` when the experiment ran; see
 ``mixed_prec_ir/README.md`` for what each one estimates and why.
 
-Figure 1, one per energy index, follows the layout of the numerical
-experiments of Carson and Higham (2018).
+Figure 1, one per energy index, is the convergence history: the forward error
+relative to the reference solution, and the normwise and componentwise backward
+errors, against the outer refinement step. The dotted line marks the working
+precision u, the level refinement is trying to reach. A forward error that
+stalls far above the backward errors is ill-conditioning rather than an
+unstable factorization.
 
-The left panel is the convergence history: the forward error relative to the
-reference solution, and the normwise and componentwise backward errors, against
-the outer refinement step. The dotted line marks the working precision u, the
-level refinement is trying to reach. A forward error that stalls far above the
-backward errors is ill-conditioning rather than an unstable factorization.
+Figure 2 is the sweep, and is the figure the study exists to produce: outer
+iterations against kappa_inf(A), one point per index, blue where the run
+converged and red where it did not, with a vertical line at kappa_inf = 1/u_f
+marking the classical LU-IR requirement kappa_inf(A) u_f < 1. For GMRES-IR each
+point is labelled with its own count.
 
-The right panel is the convergence-factor analysis, which is Corollary 3.3
-read off the run:
-
-    phi_i = 2 u_s min(cond(A), kappa_inf(A) mu_i) + u_s ||E_i||_inf
-          = phi_cond                              + phi_solve
-
-Refinement converges while phi_i is comfortably below 1, and the split says
-which of the two is the binding constraint: phi_cond is conditioning together
-with the direction the current error points in, phi_solve is how accurately the
-correction equation was solved. The observed contraction rho is drawn beside
-them, since it is the measurement the two are a prediction of. The dotted line
-marks 1.
-
-Figure 2 summarises the whole experiment against energy: the forward error the
-refinement variant reached against the one the unrefined low-precision solve
-reached, the outer iteration count, and the inner GMRES count. It is the figure
-to read for a sweep; the per-index panels are for the indices worth looking at
-individually.
+The iteration count is the only quantity here that decides anything: it
+multiplies the cost of the cheap low-precision factorization, so a method
+needing thirty steps has given back what the low precision won. The
+convergence-factor analysis of Corollary 3.3 is a mechanism rather than a
+decision variable; mpir.py still records mu_hat and the phi_* columns in the
+iterations table, and nothing here plots them.
 
 Output
 ------
-    <outdir>/<material>_E<idx>.png     one per index
-    <outdir>/<material>_summary.png    the sweep
+    <outdir>/<material>_E<idx>.png     one per index, convergence history
+    <outdir>/<material>_summary.png    the sweep, iterations vs kappa_inf
 
 The default output directory is exp<NNNN>/ beside the analysis file, i.e. one
 subdirectory per experiment inside the material's own directory:
@@ -96,7 +88,7 @@ import matplotlib.pyplot as plt
 import cli
 from factor_io import table_rows
 from mpir import experiment_names, load_experiment, unit_roundoff
-from style import axis_label, energies_of, mark_band_edges, save_figure
+from style import save_figure
 
 # Convergence history, left panel. The three colours are those of Carson and
 # Higham's figures, so that a panel here can be read beside one of theirs.
@@ -105,26 +97,6 @@ ERROR_STYLE = {
     "etainf":    ("#1F77B4", "o", "-",  r"nbe ($\eta_\infty$)"),
     "omega":     ("#2CA02C", "v", "-",  r"cbe ($\omega$)"),
 }
-
-# Convergence-factor analysis, right panel. Drawn in this order, and phi_hat is
-# drawn first, wide and pale, because it is the sum of the two terms above it:
-# whichever of them dominates coincides with it exactly, and a thin line of
-# equal weight would simply be hidden underneath. Widening the total instead
-# leaves it visible as a band the components sit inside.
-FACTOR_STYLE = [
-    ("phi_hat",       "#111111", "v", "-",  2.6, 0.35, r"$\hat\phi$ (total)"),
-    ("phi_cond_hat",  "#17BECF", "x", "-",  1.1, 1.0,  r"$\hat\phi^{\mathrm{cond}}$"),
-    ("phi_solve_hat", "#E377C2", "o", "-",  1.1, 1.0,  r"$\hat\phi^{\mathrm{solve}}$"),
-    ("rho",           "#7F7F7F", "s", "--", 1.1, 1.0,  r"$\rho$ (observed)"),
-]
-
-# Final-accuracy comparison in the summary figure, by role in the experiment.
-VARIANT_ROLE = {
-    "refined":   ("#2E86AB", "^", "-",  "refined"),
-    "reference": ("#555555", "x", ":",  "complex128 direct"),
-    "low":       ("#C0392B", "o", "--", "low precision, no refinement"),
-}
-
 
 def _finite(x, y):
     """The pairs of (x, y) where y is finite, as two arrays."""
@@ -149,60 +121,31 @@ def _role(variant, attrs):
 
 
 def plot_index(rows, runs_for_idx, attrs, idx, out_path):
-    """The two-panel convergence figure of one energy index."""
+    """The convergence history of one energy index."""
     rows = sorted(rows, key=lambda r: r["outer_iteration"])
     steps = [r["outer_iteration"] for r in rows]
     u = float(attrs.get("working_u", unit_roundoff(np.complex128)))
 
-    fig, (left, right) = plt.subplots(1, 2, figsize=(11, 4.2))
+    fig, ax = plt.subplots(1, 1, figsize=(6.5, 4.2))
 
-    # ---- left: convergence history -------------------------------------
     for key, (colour, marker, ls, label) in ERROR_STYLE.items():
         if key not in rows[0]:
             continue
         x, y = _finite(steps, [r[key] for r in rows])
         if x.size:
-            left.semilogy(x, y, color=colour, marker=marker, ls=ls, ms=4,
-                          lw=1.1, label=label)
-    left.axhline(u, color="black", ls=":", lw=1.0,
-                 label=f"working precision $u$ = {u:.1e}")
-    left.set_xlabel("refinement step")
-    left.set_ylabel("error")
-    left.set_title("convergence history")
-    left.grid(alpha=0.25, which="both", lw=0.4)
-    left.legend(fontsize=7, framealpha=0.9)
-
-    # ---- right: convergence-factor analysis -----------------------------
-    drew = False
-    for key, colour, marker, ls, lw, alpha, label in FACTOR_STYLE:
-        if key not in rows[0]:
-            continue
-        x, y = _finite(steps, [r[key] for r in rows])
-        # A convergence factor is positive by construction; a non-positive
-        # value is a missing input, not a small factor, and is dropped rather
-        # than clamped so that the log axis cannot imply one.
-        keep = y > 0
-        if keep.any():
-            right.semilogy(x[keep], y[keep], color=colour, marker=marker,
-                           ls=ls, ms=4, lw=lw, alpha=alpha, label=label)
-            drew = True
-    right.axhline(1.0, color="black", ls=":", lw=1.0, label="1")
-    right.set_xlabel("refinement step")
-    right.set_ylabel(r"convergence factor")
-    right.set_title(r"convergence factor")
-    right.grid(alpha=0.25, which="both", lw=0.4)
-    right.legend(fontsize=7, framealpha=0.9)
-    if not drew:
-        right.text(0.5, 0.5, "no convergence-factor data\n"
-                             "(no reference solver, or kappa_inf unavailable)",
-                   ha="center", va="center", transform=right.transAxes,
-                   fontsize=8, color="#888888")
-
-    for ax in (left, right):
-        ax.set_xticks(steps)
+            ax.semilogy(x, y, color=colour, marker=marker, ls=ls, ms=4,
+                        lw=1.1, label=label)
+    ax.axhline(u, color="black", ls=":", lw=1.0,
+               label=f"working precision $u$ = {u:.1e}")
+    ax.set_xlabel("refinement step")
+    ax.set_ylabel("error")
+    ax.set_title("convergence history")
+    ax.grid(alpha=0.25, which="both", lw=0.4)
+    ax.legend(fontsize=7, framealpha=0.9)
+    ax.set_xticks(steps)
 
     fig.suptitle(_index_title(attrs, runs_for_idx, idx), fontsize=9)
-    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
     save_figure(fig, out_path)
 
 
@@ -228,78 +171,93 @@ def _index_title(attrs, runs_for_idx, idx):
 
 
 def plot_summary(run_rows, attrs, out_path):
-    """Final accuracy, outer steps and inner iterations across the sweep."""
-    by_role = {}
-    for r in run_rows:
-        by_role.setdefault(_role(r["variant"], attrs), []).append(r)
-    for rows in by_role.values():
-        rows.sort(key=lambda r: r["idx"])
+    """
+    Outer iterations against kappa_inf(A), the whole sweep in one panel.
 
-    refined = by_role.get("refined", [])
+    This is the figure the study exists to produce. The number of outer
+    iterations is what decides whether mixed-precision refinement is worth
+    using on a system: it multiplies the cost of the cheap factorization, so a
+    method that needs thirty steps has given back what the low precision won.
+    Nothing else is drawn -- the convergence factor is a mechanism, not a
+    decision variable, and lives in the per-index figures.
+
+    Colour is the verdict, not a quantity: blue where the run reached the
+    accuracy of mpir.RefinementMonitor's ferr_tol, red where it did not. The
+    vertical line at kappa_inf = 1/u_f is the classical LU-IR requirement
+    kappa_inf(A) u_f < 1; points to the right of it are outside what the
+    theory guarantees, which is exactly where GMRES-IR is supposed to keep
+    working and LU-IR is not.
+
+    For GMRES-IR each point is labelled with its own iteration count. There
+    the interesting counts are small and close together -- two or three steps
+    -- so reading them off a shared axis is imprecise in the regime that
+    matters, and the label removes the ambiguity.
+    """
+    refined = sorted(
+        (r for r in run_rows if _role(r["variant"], attrs) == "refined"),
+        key=lambda r: r["idx"])
     if not refined:
         print("  [skip] summary: the experiment has no refinement variant")
         return
 
-    indices = [r["idx"] for r in refined]
-    energies = energies_of(attrs, indices)
-    have_energy = energies is not None
-    x_all = energies if have_energy else np.asarray(indices, dtype=float)
+    kappa = np.asarray([r.get("kappa_inf", np.nan) for r in refined], dtype=float)
+    iters = np.asarray([r.get("outer_iters", np.nan) for r in refined], dtype=float)
+    conv = np.asarray([bool(r.get("converged", 0)) for r in refined])
 
-    fig, axes = plt.subplots(3, 1, figsize=(8.5, 9), sharex=True)
-    acc, outer, inner = axes
+    keep = np.isfinite(kappa) & np.isfinite(iters) & (kappa > 0)
+    if not keep.any():
+        print("  [skip] summary: no index has a finite kappa_inf; run "
+              "condition-est/condition_est.py first")
+        return
+    dropped = int((~keep).sum())
+    if dropped:
+        print(f"  [note] summary: {dropped} of {len(refined)} indices have no "
+              f"kappa_inf and are not drawn")
+    kappa, iters, conv = kappa[keep], iters[keep], conv[keep]
 
-    # ---- final accuracy, refined against the two references -------------
-    for role, rows in by_role.items():
-        colour, marker, ls, label = VARIANT_ROLE[role]
-        xs = energies_of(attrs, [r["idx"] for r in rows]) if have_energy \
-            else np.asarray([r["idx"] for r in rows], dtype=float)
-        x, y = _finite(xs, [r["ferr_ref"] for r in rows])
-        if x.size:
-            acc.semilogy(x, y, color=colour, marker=marker, ls=ls, ms=3.5,
-                         lw=1.0, label=label)
-    acc.set_ylabel("final ferr (vs reference)")
-    acc.set_title("what refinement recovered")
-    acc.grid(alpha=0.25, which="both", lw=0.4)
+    # Sorted by kappa_inf, which is the x axis: the indices were selected by
+    # energy and arrive in that order, so without this the points would be
+    # joined in the wrong sequence if a line were ever drawn through them.
+    order = np.argsort(kappa)
+    kappa, iters, conv = kappa[order], iters[order], conv[order]
 
-    # ---- outer iterations, and whether the run converged ----------------
-    x, y = _finite(x_all, [r["outer_iters"] for r in refined])
-    outer.plot(x, y, color="#2E86AB", marker="^", ls="-", ms=3.5, lw=1.0,
-               label="outer steps")
-    failed = [(xi, r) for xi, r in zip(x_all, refined) if not r["converged"]]
-    if failed:
-        outer.plot([xi for xi, _ in failed],
-                   [r["outer_iters"] for _, r in failed],
-                   ls="none", marker="x", ms=6, color="#C0392B",
-                   label="did not converge")
-    outer.set_ylabel("outer refinement steps")
-    outer.grid(alpha=0.25, lw=0.4)
+    fig, ax = plt.subplots(1, 1, figsize=(8.0, 5.0))
 
-    # ---- inner GMRES iterations -----------------------------------------
-    totals = np.asarray([r["gmres_total"] for r in refined], dtype=float)
-    if np.any(totals >= 0):
-        totals[totals < 0] = np.nan
-        x, y = _finite(x_all, totals)
-        inner.plot(x, y, color="#8E44AD", marker="o", ls="-", ms=3.5, lw=1.0,
-                   label="total inner GMRES iterations")
-        inner.set_ylabel("inner GMRES iterations")
-    else:
-        inner.text(0.5, 0.5, "LU-IR: no inner iterations", ha="center",
-                   va="center", transform=inner.transAxes, fontsize=9,
-                   color="#888888")
-        inner.set_ylabel("inner GMRES iterations")
-    inner.grid(alpha=0.25, lw=0.4)
-    inner.set_xlabel(axis_label(have_energy))
+    for mask, colour, label in (
+            (conv, "#2E86AB", "converged"),
+            (~conv, "#C0392B", "did not converge")):
+        if mask.any():
+            ax.scatter(kappa[mask], iters[mask], s=34, c=colour,
+                       edgecolors="white", linewidths=0.5, zorder=3,
+                       label=label)
 
-    for ax in axes:
-        if have_energy:
-            mark_band_edges(ax, attrs, label=ax is acc)
-        # Only where something labelled was actually drawn: the inner-iteration
-        # panel carries no lines at all for LU-IR.
-        if ax.get_legend_handles_labels()[0]:
-            ax.legend(fontsize=7, framealpha=0.9)
+    # kappa_inf = 1/u_f, the classical LU-IR requirement kappa_inf u_f < 1.
+    u_f = float(refined[0].get("u_f", np.nan))
+    if np.isfinite(u_f) and u_f > 0:
+        ax.axvline(1.0 / u_f, color="black", ls="--", lw=1.1, zorder=2,
+                   label=rf"$\kappa_\infty = 1/u_f$ = {1.0 / u_f:.1e}")
+
+    # The per-point iteration count, for GMRES-IR only; see the docstring.
+    if str(attrs.get("inner", "")) == "gmres":
+        for xi, yi in zip(kappa, iters):
+            ax.annotate(f"{int(yi)}", (xi, yi), textcoords="offset points",
+                        xytext=(0, 7), ha="center", fontsize=7,
+                        color="#333333", zorder=4)
+
+    ax.set_xscale("log")
+    ax.set_xlabel(r"$\kappa_\infty(A)$")
+    ax.set_ylabel("outer refinement steps")
+    ax.grid(alpha=0.25, which="both", lw=0.4)
+    ax.legend(fontsize=8, framealpha=0.9)
+
+    # Integer ticks: the y axis counts steps, so a 2.5 would be meaningless.
+    top = int(np.nanmax(iters))
+    ax.set_yticks(np.arange(0, top + 2) if top <= 20
+                  else np.linspace(0, top + 1, 12, dtype=int))
+    ax.set_ylim(bottom=0)
 
     fig.suptitle(_summary_title(attrs, refined), fontsize=9)
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
     save_figure(fig, out_path)
 
 
@@ -312,9 +270,8 @@ def _summary_title(attrs, refined):
             f"{attrs.get('inner_label', '?')}   "
             f"reference {attrs.get('reference_solver', '?')}\n"
             f"converged on {converged}/{len(refined)} indices   "
-            f"[rho_thresh={attrs.get('rho_thresh', '?')}  "
-            f"max_iter={attrs.get('max_iter', '?')}  "
-            f"k_max={attrs.get('k_max', '?')}]   {attrs.get('timestamp', '')}")
+            f"[stop: ferr increased   max_iter={attrs.get('max_iter', '?')}]   "
+            f"{attrs.get('timestamp', '')}")
 
 
 def list_experiments(h5path):

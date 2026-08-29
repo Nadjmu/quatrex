@@ -14,8 +14,9 @@ Input
     --inv-dtype        for block-thomas-inv at complex32 only, the precision
                        its explicit block inverses are formed in
     --inner            the inner correction solve, direct or gmres
-    --rho-thresh, --max-iter, --k-max
-                       the outer stopping criteria; see Stopping below
+    --max-iter         safety net on the outer steps; the stopping rule itself
+                       takes no option, see Stopping below
+    --ferr-tol         the accuracy that counts as converged, default sqrt(n) u
     --outdir           where the analysis file is written
 
 The solver family and the factorization precision are chosen independently:
@@ -85,49 +86,38 @@ Both variants share the outer loop and differ only in step 4.
 
 Stopping
 --------
-The loop does not stop on a fixed residual tolerance. It uses the four
-criteria of Oktay and Carson, section 2.1.1, which read the corrections the
-loop already produces and so cost nothing extra, plus one more of the same
-kind:
+The loop stops on one rule: the forward error against the reference solution
+increased. An increase means the correction just applied made the answer
+worse, which is rounding noise rather than refinement, so the previous iterate
+was the best the method reached and is what gets returned. --max-iter is a
+safety net behind it, and the only thing that ends the loop when no reference
+solution is available.
 
-    1. ||d_{i+1}|| / ||x_i||  <= u              the correction no longer moves
-                                                the iterate
-    2. ||d_{i+1}|| / ||d_i||  >= --rho-thresh   corrections stopped shrinking
-                                                geometrically; > 1 is divergence
-    3. iter >= --max-iter
-    4. inner GMRES iterations of one step >= --k-max     GMRES-IR only
-    5. ferr_i / ferr_(i-1) >= --ferr-thresh     forward error against the
-                                                reference stopped improving;
-                                                needs --reference-solver
+The rule is checked before the pass spends a solve, so a run stops the moment
+it stops improving and outer_iters counts the corrections that produced the
+returned solution. It costs a vector norm, not a solve.
 
-Condition 2 is a stopping rule, and for a convergence study it is the wrong
-one: at --rho-thresh 0.5 a run that is still converging, only slowly, is cut
-off, and that happens exactly where kappa_inf is largest, which biases the
-iteration count downward at the end of the sweep that the study is about. Pass
---rho-thresh 1.0 there, so condition 2 fires on divergence alone and the run
-goes to the accuracy floor. The 0.5 is then applied offline instead, as the
-label separating the contracting steps from the plateau; see
-contraction_summary.
+This replaced the five conditions of Oktay and Carson, section 2.1.1 (the
+correction no longer moves the iterate; corrections stopped shrinking
+geometrically; an iteration limit; inner GMRES too long; the forward error
+improving by less than a threshold) together with the Demmel et al. psi
+estimate that declared convergence. Each needed a constant whose right value
+varied with u_f and kappa_inf, and every one of them could cut off a run that
+was still genuinely converging -- which happens precisely at the
+ill-conditioned end of a sweep, biasing the iteration count downward exactly
+where it is most interesting. An increase in the measured forward error needs
+no constant.
 
-Condition 5 is not from Oktay and Carson; it measures the thing that actually
-matters rather than a proxy for it. The reference solution is the best
-available estimate of the exact answer, so once the iterate stops getting
-closer to it there is nothing left to gain, whatever the correction norms are
-doing. It is a cheap O(n) vector-norm comparison, exactly like conditions 1
-and 2, not an extra solve.
+Convergence is a separate question from stopping. Stopping says the method got
+as far as it was going to; converged says whether that was far enough, and is
 
-Convergence itself is declared on the normwise error estimate of Demmel et
-al. that Oktay and Carson carry alongside them,
+    best ferr <= --ferr-tol,   defaulting to sqrt(n) u
 
-    psi = z / (1 - rho_max),   z = ||d_{i+1}|| / ||x_i||,
-                               rho_max = max over j <= i of ||d_{j+1}||/||d_j||
-
-with convergence when 0 <= psi <= sqrt(n) u. A negative psi means rho_max > 1,
-that is a correction grew, and is divergence rather than a small error, which
-is why both bounds are tested. See RefinementMonitor. (Named psi rather than
-phi to keep it visually distinct from the Carson-Higham phi_hat quantities in
-Metrics below -- the two are unrelated estimates that happen to share a
-common Greek-letter convention in the literature.)
+the accuracy the working precision can hold. An ill-conditioned index can
+legitimately stop above this level, since Corollary 3.3's limiting accuracy is
+of order cond(A, x) u, which is larger; a "did not converge" verdict there
+means working precision was not reached, not that refinement misbehaved. See
+RefinementMonitor.
 
 A residual tolerance is the wrong criterion here: on these systems the
 residual reaches the working precision long before the forward error does,
@@ -154,24 +144,24 @@ inside it: the loop is timed and its memory is measured, so a diagnostic solve
 performed there would corrupt the figures the report exists to give. See
 refinement_metrics, which also states which of these are estimates and why.
 
-Two summary quantities are derived from the same history, and they are what a
-convergence-versus-conditioning study reads:
+These are recorded but not plotted. The one quantity a
+convergence-versus-conditioning study reads is
 
-    outer_iters  how many outer steps the run took
-    rho_bar      the geometric mean of the observed contraction, taken over
-                 the contracting steps alone
+    outer_iters  the corrections that produced the returned solution
 
-The restriction matters. The forward error falls roughly geometrically and then
-flattens at the limiting accuracy of Corollary 3.3, of order cond(A, x) u here
-since u_r = u; averaging the observed ratio over the whole run mixes a rate
-with a plateau and reports something far closer to 1 than anything the method
-did. n_contract records how many steps the mean was taken over, and is 1 often
-enough -- GMRES-IR converges in two or three steps -- that a figure must show
-it rather than present every rho_bar as a mean. See contraction_summary.
+together with converged, which says whether that solution reached the accuracy
+above. Those two, against kappa_inf(A), are what decide whether mixed-precision
+refinement is worth using on a given system, and are the whole content of the
+summary figure; see plotting/mixed_prec_ir/plot_mpir.py. The Corollary 3.3
+quantities stay in the iterations table for the per-index figure and for the
+thesis text, and nothing is derived from them automatically.
 
-Both quantities are only as good as the reference solution they are measured
-against, which is why --reference-solver extended exists; see
-_ExtendedReference for what a complex128 reference does to them.
+outer_iters is only as good as the reference solution it is measured against,
+which is why --reference-solver extended exists: a complex128 reference has a
+forward error of the same order as refinement's own limiting accuracy, so the
+stopping rule would fire when the reference ran out rather than when the
+method did, earliest exactly where kappa_inf is largest. See
+_ExtendedReference.
 
 The preconditioner in the GMRES variant requires only the action of the
 factorization as an operator, never explicit access to L and U. That is what
@@ -374,8 +364,7 @@ RUN_COLUMNS = [
     "u_f", "u", "u_s", "kappa_2", "kappa_inf", "cond_skeel", "cond_skeel_x",
     "lu_ir_bound",
     "relres", "ferr_ref", "eta1", "eta2", "etainf", "omega",
-    "outer_iters", "converged", "rho_max", "psi_final", "stop_reason",
-    "n_contract", "rho_bar", "rho_censored",
+    "outer_iters", "converged", "ferr_best", "ferr_tol", "stop_reason",
     "gmres_total", "wall_s", "factor_s", "factor_symbolic_s",
     "factor_numeric_s", "inner_s", "solve_s", "residual_s", "other_s",
     "n_solves", "factor_mb", "factor_mb_reported", "working_mb",
@@ -388,7 +377,7 @@ ITERATION_COLUMNS = [
     "etainf", "omega",
     "mu_hat", "phi_cond_hat", "phi_solve_hat", "phi_hat",
     "phi_cond_binding", "phi_cond_form",
-    "z", "v", "rho_max", "psi_demmel", "ferr_ratio",
+    "ferr_ratio",
     "correction_norm_inf", "reference_correction_norm_inf",
     "gmres_inner_iterations", "gmres_inner_max", "note",
 ]
@@ -1126,39 +1115,32 @@ def load_condition_numbers(h5path, idx):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stopping criteria
+# Stopping criterion
 #
-# The outer loop stops on the four conditions of Oktay and Carson, section
-# 2.1.1, plus a fifth measuring accuracy against the reference solution
-# directly, rather than on a fixed residual tolerance. All five are monitored
-# from quantities the loop already produces, so none of them costs an extra
-# solve or an extra matrix product; see RefinementMonitor.
+# One rule: stop as soon as the forward error against the reference solution
+# increases. An increase means the correction just applied made the answer
+# worse, which is rounding noise rather than refinement -- there is nothing
+# left to converge to, and the previous iterate was the best the method
+# reached. See RefinementMonitor.
+#
+# This replaces the five conditions of Oktay and Carson, section 2.1.1, that
+# this module used previously (correction too small, successive corrections
+# stopped shrinking, iteration limit, inner GMRES too long, forward error
+# stopped improving by a threshold) together with the Demmel et al. psi
+# convergence estimate. They were dropped deliberately: each needed a constant
+# whose right value varied with u_f and kappa_inf, and every one of them could
+# cut off a run that was still genuinely converging, which happens exactly at
+# the large kappa_inf end of a sweep and so biased the iteration count downward
+# there -- the one number this module now exists to report. An increase in the
+# measured forward error needs no constant and cannot be argued with.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Threshold on the ratio of successive corrections, condition 2. Oktay and
-# Carson distinguish a 'cautious' setting of 0.5, which is Wilkinson's, from an
-# 'aggressive' 0.9 that runs longer on the hardest problems. The cautious
-# setting is used throughout their experiments and is the default here.
-DEFAULT_RHO_THRESH = 0.5
-
-# Threshold on the ratio of successive forward errors against the reference
-# solution, condition 5. 1.0 would mean: stop as soon as the iterate stops
-# getting closer to the reference at all; 0.97 gives it a little slack so that
-# a step which is still improving, just slowly, isn't mistaken for a plateau.
-# Unlike rho_thresh there is no established 'cautious'/'aggressive' pair to
-# draw this from -- it is not from the literature, just the plain statement
-# that the reference is the best estimate of the exact solution available, so
-# no further improvement is possible once ferr stops decreasing.
-DEFAULT_FERR_THRESH = 0.97
-
-# Cap on outer refinement steps, condition 3. It is a safety net, not a
-# convergence criterion: a healthy run stops on condition 1, 2 or 5 well
-# before it, and hitting it means refinement was still contracting when the
-# loop was cut off. 15 rather than 10 because a low-precision factorization
-# near the LU-IR bound contracts by only an order of magnitude per step, and
-# ten steps left such runs short of the working precision they were still
-# approaching.
-DEFAULT_MAX_ITER = 15
+# Cap on outer refinement steps. A safety net, not a convergence criterion:
+# without a reference solution there is no forward error to watch and this is
+# the only thing that ends the loop. 30 rather than 15 because complex32 at a
+# large kappa_inf contracts by only a factor of two or three per step --
+# measured on carbon-nanotube E_1608, 29 corrections were still productive.
+DEFAULT_MAX_ITER = 30
 
 
 def _inf_norm(X):
@@ -1177,169 +1159,144 @@ def _inf_norm(X):
 
 class RefinementMonitor:
     """
-    The stopping criteria of Oktay and Carson, section 2.1.1, and the
-    convergence test that accompanies them.
+    The stopping rule -- stop when the forward error increases -- and the
+    convergence verdict that follows it.
 
-    The loop stops as soon as any of
+    Usage is two calls per pass of the refinement loop. At the top, once the
+    current iterate's forward error is known:
 
-        1. z     = ||d_{i+1}||_inf / ||x_i||_inf  <= u
-                   the correction changes the solution too little to matter
-        2. v     = ||d_{i+1}||_inf / ||d_i||_inf  >= rho_thresh
-                   successive corrections stopped shrinking fast enough
-        3. iter  >= max_iter
-        4. k_gmres >= k_max
-                   one inner GMRES solve became as expensive as refactorizing;
-                   GMRES-IR only, and skipped when k_max is None
-        5. w     = ferr_i / ferr_{i-1}  >= ferr_thresh
-                   the forward error against the reference stopped improving;
-                   skipped when ferr_thresh is None or no reference is
-                   available
+        if monitor.check(ferr): break        # ferr rose: keep the previous x
 
-    holds, or as soon as the convergence test below is met. Conditions 1 and 2
-    are the interesting ones among the first four: 1 says refinement has
-    reached the point where it no longer moves the iterate, and 2 that it has
-    stopped converging geometrically, either because rounding error now
-    dominates or because the problem is too ill conditioned for u_f. Note that
-    v > 1 is divergence, which condition 2 catches on the first step it
-    happens.
+    and after a correction has been applied:
 
-    Condition 5 measures the thing that actually matters rather than a proxy
-    for it: the reference solution is the best available estimate of the exact
-    answer, so once the iterate stops getting closer to it there is nothing
-    left to gain, regardless of what the correction norms are doing. It
-    complements 1 and 2 rather than duplicating them: a correction can keep
-    looking healthy by every internal measure while ferr has already reached
-    the reference's own accuracy floor, and conversely a matrix can be
-    nonnormal enough that corrections look erratic well before ferr actually
-    stops improving. Either can fire first; when both are true at once, as is
-    typical once rounding noise dominates, they fire together and the report
-    names both.
+        if monitor.count(): break            # max_iter reached
 
-    Convergence is declared on the normwise relative error estimate of Demmel
-    et al., which Oktay and Carson carry in phi_i and which this class calls
-    psi_i, to keep it visually distinct from the unrelated Carson-Higham
-    phi_hat quantities of refinement_metrics:
+    check() is deliberately at the *top*, before the pass spends a solve on a
+    correction. Every criterion this class used to carry looked backwards --
+    whether step i was worth taking could only be judged once step i + 1 had
+    been formed -- so a run always paid for one correction it had already
+    decided not to want. Comparing the forward error of the iterate in hand
+    against the previous one needs nothing from the future, so the loop stops
+    the moment the answer stops improving, and `best_iter` is the number of
+    corrections that produced the best iterate rather than that number plus
+    one.
 
-        psi_i = z / (1 - rho_max),   rho_max = max over j <= i of v_j
+    Why an increase, and not a threshold on the rate: an increase means the
+    last correction made the answer worse. That is rounding noise, not
+    refinement, and no constant has to be chosen to recognise it. Every
+    threshold this class used to carry (a ratio of successive corrections, a
+    ratio of successive forward errors, a bound on inner GMRES iterations)
+    needed a value that depended on u_f and on kappa_inf, and each of them
+    could cut off a run still genuinely converging -- which happens precisely
+    at the ill-conditioned end of a sweep, biasing the iteration count downward
+    exactly where it is most interesting.
 
-    with convergence when 0 <= psi_i <= sqrt(n) u. Both halves matter: psi_i is
-    negative exactly when rho_max > 1, that is when some correction grew, and a
-    negative psi_i signals divergence rather than a small error. It is set to
-    -inf when rho_max == 1, where the geometric sum the estimate comes from
-    does not converge at all.
+    The verdict is separate from the rule. Stopping says the method got as far
+    as it was going to; `converged` says whether that was far enough, and is
+    simply
 
-    The criteria are one iteration behind, as the paper notes: whether step i
-    converged is only known once the correction of step i + 1 has been formed.
-    A run therefore performs at least two steps before stopping, unless
-    condition 4 fires, which is visible within the step it happens.
+        best_ferr <= ferr_tol,   ferr_tol defaulting to sqrt(n) u
+
+    the accuracy the working precision can hold. An ill-conditioned index can
+    legitimately stop above this level -- Corollary 3.3's limiting accuracy is
+    of order cond(A, x) u, which is larger -- so `converged` is a statement
+    about reaching working precision, not about whether refinement misbehaved.
+    Override the level with --ferr-tol.
+
+    Without a reference solution there is no forward error to watch: check()
+    then never fires, the loop runs to max_iter, and `converged` stays False
+    because nothing was measured that could establish it.
 
     This object only decides and records. It never touches the iterate, so the
     accuracy of the returned solution does not depend on it.
     """
 
-    def __init__(self, u, n, rho_thresh=DEFAULT_RHO_THRESH,
-                 max_iter=DEFAULT_MAX_ITER,
-                 k_max=None, ferr_thresh=DEFAULT_FERR_THRESH):
-        # u is the working precision in both conditions that use it, condition
-        # 1 and the sqrt(n) u convergence level, and is complex128 here for
-        # every variant. It is deliberately not u_s: the question the criteria
-        # answer is whether refinement reached the accuracy the working
-        # precision can hold, and asking it at u_f would pass a solution that
-        # is only as good as the factorization refinement set out to improve.
+    def __init__(self, u, n, max_iter=DEFAULT_MAX_ITER, ferr_tol=None):
+        # u is the working precision, complex128 here for every variant, and
+        # is deliberately not u_s: the question is whether refinement reached
+        # the accuracy the working precision can hold, and asking it at u_f
+        # would pass a solution only as good as the factorization refinement
+        # set out to improve on.
         self.u = float(u)
-        self.limit = math.sqrt(n) * float(u)      # sqrt(n) u, the convergence level
-        self.rho_thresh = float(rho_thresh)
+        self.ferr_tol = (math.sqrt(n) * float(u) if ferr_tol is None
+                         else float(ferr_tol))
         self.max_iter = int(max_iter)
-        self.k_max = k_max
-        self.ferr_thresh = None if ferr_thresh is None else float(ferr_thresh)
-        # d_0 = inf, as in the paper's initialization, so that v = 0 on the
-        # first step and condition 2 cannot fire before two corrections exist.
-        # ferr_0 = inf for the identical reason, applied to condition 5.
-        self._d_prev = math.inf
+        # ferr_0 = inf so the first iterate can never count as an increase.
         self._ferr_prev = math.inf
-        self.rho_max = 0.0
-        self.iter = 0
+        self.iter = 0            # corrections applied so far
+        self.best_iter = 0       # corrections applied to reach the best iterate
+        self.best_ferr = None
         self.converged = False
         self.reasons = []
-        # Per-step history, all recorded whether or not the loop stopped.
-        self.z_history = []
-        self.v_history = []
-        self.rho_max_history = []
-        self.psi_history = []
+        # Per-pass history, recorded whether or not the loop stopped.
         self.ferr_history = []
         self.ferr_ratio_history = []
 
-    def update(self, d, x_prev, gmres_iters=None, ferr=None):
+    def check(self, ferr):
         """
-        Record the step that produced correction `d` from iterate `x_prev`, and
-        report whether the loop should stop.
+        Record the forward error of the iterate now in hand and report whether
+        the loop should stop.
 
-        gmres_iters is the per-column inner iteration count of this step, or
-        None for LU-IR. `ferr` is the forward error of `x_prev` against the
-        reference solution (||x_prev - x_ref||_inf / ||x_ref||_inf), or None
-        when no reference is available; it feeds condition 5 only and is
-        otherwise identical to the ferr_ref that refinement_metrics reports,
-        since both are the same quantity computed the same way. Returns True
-        when any condition fired; self.converged then says which kind of stop
-        it was.
+        `ferr` is ||x_i - x_ref||_inf / ||x_ref||_inf, the same quantity
+        refinement_metrics reports as ferr_ref, or None when no reference
+        solver was given. Returns True when it rose above the previous pass's.
         """
-        self.iter += 1
-        d_norm = _inf_norm(d)
-        x_norm = _inf_norm(x_prev)
-
-        z = d_norm / x_norm if x_norm > 0 else math.inf
-        v = d_norm / self._d_prev if self._d_prev > 0 else math.inf
-        self._d_prev = d_norm
-        self.rho_max = max(self.rho_max, v)
-
-        denom = 1.0 - self.rho_max
-        psi = z / denom if denom != 0.0 else -math.inf
-
         w = None
-        if ferr is not None:
-            w = ferr / self._ferr_prev if self._ferr_prev > 0 else math.inf
-            self._ferr_prev = ferr
-
-        self.z_history.append(z)
-        self.v_history.append(v)
-        self.rho_max_history.append(self.rho_max)
-        self.psi_history.append(psi)
+        if ferr is not None and self._ferr_prev > 0:
+            w = ferr / self._ferr_prev
         self.ferr_history.append(ferr)
         self.ferr_ratio_history.append(w)
 
-        # The convergence test is checked first, so that a step which both
-        # converged and tripped a stopping condition is reported as converged.
-        self.converged = bool(0.0 <= psi <= self.limit)
-        reasons = []
-        if self.converged:
-            reasons.append(f"converged (psi={psi:.2e} <= sqrt(n) u={self.limit:.2e})")
-        if z <= self.u:
-            reasons.append(f"correction too small (z={z:.2e} <= u={self.u:.2e})")
-        if v >= self.rho_thresh:
-            reasons.append(f"convergence slowed (v={v:.2e} >= "
-                           f"rho_thresh={self.rho_thresh:.2f})")
+        if ferr is not None and ferr > self._ferr_prev:
+            self.reasons = [f"forward error increased "
+                            f"({self._ferr_prev:.3e} -> {ferr:.3e})"]
+            return True
+
+        if ferr is not None:
+            self._ferr_prev = ferr
+            self.best_ferr = ferr
+            self.best_iter = self.iter
+        return False
+
+    def at_limit(self):
+        """
+        True once max_iter corrections have been applied.
+
+        Checked before spending another solve, and after check() has already
+        recorded the iterate in hand, so a run that ends here has still had
+        its last iterate measured -- unlike a limit tested after the update,
+        which would leave the final correction's result unrecorded.
+        """
         if self.iter >= self.max_iter:
-            reasons.append(f"iteration limit (iter={self.iter} >= "
-                           f"max_iter={self.max_iter})")
-        if self.k_max is not None and gmres_iters:
-            k = max(gmres_iters)
-            if k >= self.k_max:
-                reasons.append(f"inner GMRES too long (k={k} >= "
-                               f"k_max={self.k_max})")
-        if self.ferr_thresh is not None and w is not None and w >= self.ferr_thresh:
-            reasons.append(f"forward error vs reference stopped improving "
-                           f"(ferr_i/ferr_i-1={w:.2e} >= "
-                           f"ferr_thresh={self.ferr_thresh:.2f})")
-        self.reasons = reasons
-        return bool(reasons)
+            self.reasons = [f"iteration limit (iter={self.iter} >= "
+                            f"max_iter={self.max_iter})"]
+            return True
+        return False
+
+    def count(self):
+        """Record that one more correction has been applied."""
+        self.iter += 1
+
+    def finish(self):
+        """Settle the convergence verdict once the loop has ended."""
+        self.converged = bool(self.best_ferr is not None
+                              and self.best_ferr <= self.ferr_tol)
+        return self.converged
 
     def summary(self):
         """The stopping decision, for the report and the result table."""
         return {
             "converged": self.converged,
-            "outer_iters": self.iter,
-            "rho_max": self.rho_max,
-            "psi_final": self.psi_history[-1] if self.psi_history else None,
+            # The corrections that produced the returned solution, which is the
+            # best iterate -- not self.iter, which also counts the one that
+            # made things worse when the loop stopped on an increase. Without a
+            # reference there is no best iterate to point at, so every applied
+            # correction counts; reporting best_iter there would say 0 steps
+            # for a loop that ran to max_iter.
+            "outer_iters": (self.best_iter if self.best_ferr is not None
+                            else self.iter),
+            "ferr_best": self.best_ferr,
+            "ferr_tol": self.ferr_tol,
             "stop_reason": "; ".join(self.reasons) if self.reasons
                            else "loop ended without a condition firing",
         }
@@ -1350,8 +1307,7 @@ class RefinementMonitor:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
-                   normA=None, inv_dtype=DEFAULT_INV_DTYPE,
-                   rho_thresh=DEFAULT_RHO_THRESH, ferr_thresh=DEFAULT_FERR_THRESH):
+                   normA=None, inv_dtype=DEFAULT_INV_DTYPE, ferr_tol=None):
     """
     LU-IR: iterative refinement whose correction solve is a single
     low-precision triangular substitution.
@@ -1361,10 +1317,11 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
     approximately kappa_inf(A) * u_f < 1, so this variant is the one that fails
     first as the matrix becomes ill-conditioned. See the module docstring.
 
-    The loop stops on the criteria of RefinementMonitor, not on a residual
-    tolerance. Its effective solve precision is u_s = u_f: the correction is
-    whatever the low-precision factors return, so refinement is limited by the
-    precision the factorization was computed at.
+    The loop stops when the forward error against the reference increases, not
+    on a residual tolerance; see RefinementMonitor. Its effective solve
+    precision is u_s = u_f: the correction is whatever the low-precision
+    factors return, so refinement is limited by the precision the
+    factorization was computed at.
 
     Parameters
     ----------
@@ -1372,34 +1329,33 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
         vectors handed to the solver are cast with cast_dtype(low_dtype), which
         is complex128 in that case and leaves every rounding to the solver.
     x_true : complex128 reference solution, optional. The relative forward
-        error against it is recorded every iteration for reporting, and, when
-        ferr_thresh is not None, also feeds stopping condition 5: the
-        reference is the best available estimate of the exact solution, so
-        once the iterate stops approaching it there is nothing left to gain.
-        This is a cheap O(n) vector-norm comparison, exactly like the z and v
-        checks already computed every step, not a solve, so it does not
-        perturb the timing or memory figures any more than they already do.
+        error against it is recorded every iteration and is what the stopping
+        rule watches: the reference is the best available estimate of the exact
+        solution, so once the iterate stops approaching it there is nothing
+        left to gain. This is a cheap O(n) vector-norm comparison, not a solve,
+        so it does not perturb the timing or memory figures. Without it the
+        loop can only run to max_iter.
     inv_dtype : passed to the builder; read only by block-thomas-inv at
         complex32.
-    rho_thresh : threshold of stopping condition 2.
-    ferr_thresh : threshold of stopping condition 5. None disables it (as does
-        x_true=None, since there is then nothing to compare against).
+    ferr_tol : accuracy the returned solution must reach to count as converged.
+        None means sqrt(n) u; see RefinementMonitor.
 
     Returns
     -------
-    (x, extra). Besides the residual history and the factor footprint, extra
-    carries the iterates, the corrections and the residual vectors the
-    correction solver was handed, from which refinement_metrics reconstructs
-    every convergence quantity afterwards. Nothing derived is computed inside
-    the timed region; see the module docstring.
+    (x, extra), where x is the best iterate the loop reached rather than the
+    last one it computed. Besides the residual history and the factor
+    footprint, extra carries the iterates, the corrections and the residual
+    vectors the correction solver was handed, from which refinement_metrics
+    reconstructs every convergence quantity afterwards. Nothing derived is
+    computed inside the timed region; see the module docstring.
     """
     b_high = np.asarray(b, dtype=HIGH_DTYPE)
     A_high = A.tocsc().astype(HIGH_DTYPE)
     cast = cast_dtype(low_dtype)
     norm_b = np.linalg.norm(b_high)
     norm_x_true = np.linalg.norm(x_true) if x_true is not None else None
-    # The infinity-norm counterpart of norm_x_true, for condition 5, which is
-    # stated in the same infinity norm as z and v; see RefinementMonitor and
+    # The infinity-norm counterpart of norm_x_true, for the stopping rule,
+    # which is stated in the infinity norm; see RefinementMonitor and
     # refinement_metrics.ferr_ref, which is exactly this quantity recomputed.
     norm_x_true_inf = _inf_norm(x_true) if x_true is not None else None
     history = []
@@ -1408,14 +1364,13 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
     d_history = []
     r_history = []
 
-    # The criteria are stated at the working precision, not at u_f: refinement
-    # is asked whether it reached the accuracy u can represent, and answering
-    # that at u_f would accept a solution good only to the factorization
-    # precision, which is what refinement exists to improve on. u_f enters the
-    # metrics as u_s, never the stopping test. See RefinementMonitor.
+    # The convergence level is stated at the working precision, not at u_f:
+    # refinement is asked whether it reached the accuracy u can represent, and
+    # answering that at u_f would accept a solution good only to the
+    # factorization precision, which is what refinement exists to improve on.
+    # u_f enters the metrics as u_s, never the stopping test.
     monitor = RefinementMonitor(unit_roundoff(HIGH_DTYPE), A_high.shape[0],
-                                rho_thresh=rho_thresh, max_iter=max_iter,
-                                ferr_thresh=ferr_thresh)
+                                max_iter=max_iter, ferr_tol=ferr_tol)
 
     t0 = time.perf_counter()
     solver = SOLVER_BUILDERS[solver_name](A, low_dtype, bs, b, inv_dtype)
@@ -1440,7 +1395,18 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
     solve_s += time.perf_counter() - t0
     n_solves += 1
 
-    for _ in range(max_iter):
+    # Every iterate the loop produces is recorded at the TOP of its pass,
+    # including the final one, so x_history is complete and needs no fix-up
+    # afterwards: the pass that stops does so before applying a correction, so
+    # there is never an unrecorded iterate left over. d_history is therefore
+    # one shorter than x_history, which refinement_metrics already guards for.
+    #
+    # x_best is what the function returns. When the loop stops on an increase,
+    # the iterate in hand is by definition worse than the one before it, and
+    # handing that back would mean knowingly returning the second-best answer
+    # the method computed; the previous iterate is kept instead.
+    x_best = x
+    for _ in range(max_iter + 1):
         t0 = time.perf_counter()
         r = b_high - A_high @ x
         residual_s += time.perf_counter() - t0
@@ -1460,44 +1426,22 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
         # tested method rounds it on the way in is part of what is measured.
         r_history.append(r)
 
+        if monitor.check(ferr_live):
+            break
+        x_best = x
+        if monitor.at_limit():
+            break
+
         t0 = time.perf_counter()
         d = solver.solve(r.astype(cast)).astype(HIGH_DTYPE)
         solve_s += time.perf_counter() - t0
         n_solves += 1
         d_history.append(d)
-        x_next = x + d
-        stop = monitor.update(d, x, ferr=ferr_live)
-        x = x_next
-        if stop:
-            break
+        x = x + d
+        monitor.count()
     inner_s = time.perf_counter() - t_inner
-
-    # x_history holds only the PRE-correction iterate of every pass, so the
-    # solution this function actually returns -- x after the LAST correction
-    # was applied -- is never in it: it is appended here, once, after the
-    # timed region, exactly as the other reconstructed quantities in this
-    # module are. Its cost is one sparse matvec, no larger than the residual
-    # already formed every pass, and it is what makes the plotted convergence
-    # history end where the returned solution's accuracy actually is, rather
-    # than one step short of it. No new correction is computed for it -- the
-    # loop already decided to stop -- so d_history is not extended to match;
-    # refinement_metrics already guards every read of d_history and r_history
-    # against x_history being longer, so this row's phi_solve_hat, z, v and
-    # gmres columns come back None rather than stale.
-    #
-    # This is not a cosmetic fix. Measured on carbon-nanotube E_1603 at
-    # complex64: the last PRE-correction iterate had ferr 1.49e-14, but the
-    # actually-returned solution -- one more (harmful) correction applied
-    # after the run had already started diverging -- has ferr 2.22e-14, worse
-    # than an even earlier iterate (6.65e-15) the loop passed through and
-    # discarded. Without this the plot and contraction_summary never see that
-    # the run's own last step made things worse.
-    r_final = b_high - A_high @ x
-    history.append(float(np.linalg.norm(r_final) / norm_b))
-    if x_true is not None:
-        true_err_history.append(float(np.linalg.norm(x - x_true) / norm_x_true))
-    x_history.append(x)
-    r_history.append(r_final)
+    monitor.finish()
+    x = x_best
 
     extra = {
         "history": history,
@@ -1517,85 +1461,6 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
     if hasattr(solver, "free"):
         solver.free()
     return x, extra
-
-
-def contraction_summary(metrics):
-    """
-    The mean contraction of the forward error, over the steps that actually
-    contracted, stopping at the run's own best point rather than at a
-    threshold.
-
-    A refinement run has two regimes: the forward error falls roughly
-    geometrically, then flattens -- or worsens -- at the limiting accuracy of
-    Corollary 3.3 (eq. 3.10, of order cond(A, x) u here since u_r = u).
-    Averaging the observed ratio rho over the whole run mixes the two and
-    reports a rate closer to 1 than anything the method did.
-
-    An earlier version of this function separated the two regimes with a
-    threshold on rho plus a margin above the achieved floor. Both constants
-    turned out to be the wrong tool: measured on carbon-nanotube E_1762 and
-    E_1608 (complex32, kappa_inf = 3.0e3 and 6.3e4), the threshold broke off
-    the contraction phase after 8 and 13 steps respectively, while the run
-    kept genuinely improving to steps 10 and 29 -- a per-step rho of 0.3-0.5 is
-    normal at this precision and is not a plateau, it is just a slow but real
-    geometric rate, and no fixed threshold separates the two cases.
-
-    The run's own best point needs no threshold: it is simply
-    argmin_i ferr_ref[i], the step where the forward error was smallest,
-    computed directly since ferr_ref is already available whenever a reference
-    solver was given -- the same information stopping condition 5 already
-    uses. Steps after it either plateaued or made things worse, in either case
-    contributing nothing to a contraction rate; steps up to and including it
-    were all genuine progress, whatever their individual rho happened to be.
-
-        n_contract  the index of the best point, i.e. how many corrections
-                    were applied to reach it
-        rho_bar     (ferr[n_contract] / ferr[0]) ** (1 / n_contract), the
-                    geometric mean rho over exactly those steps -- the product
-                    of successive ratios telescopes, so this needs no fit
-
-    This also fixes the failure mode a fixed offset like "outer_iters - 2"
-    would have: on a run that converges cleanly with no wasted tail (the
-    common case for LU-IR well inside the kappa_inf u_f < 1 bound), the best
-    point IS the last one, n_contract == outer_iters, and subtracting a
-    constant would cut off steps that were still perfectly good.
-
-    n_contract is reported beside rho_bar and is not decoration: at
-    n_contract == 1 there is no averaging at all and rho_bar is a single
-    measured ratio, flagged in rho_censored, which a figure should show as
-    such rather than as a mean.
-
-    Note that rho_bar is a summary, not a parameter. The predicted factor phi_i
-    of eq. (3.9) varies over a run through mu_i, which Carson and Higham
-    observe is smallest in the early iterations, so the contraction genuinely
-    slows before the best point is reached and no single rate describes the
-    run.
-
-    Returns a dict with n_contract, rho_bar, rho_censored, ferr_first and
-    ferr_last, the last two being the endpoints the mean was taken between.
-    n_contract is 0 and the rest NaN when the first step already is the best
-    one (no improvement at all), or when there is no forward error to measure
-    (no --reference-solver).
-    """
-    empty = {"n_contract": 0, "rho_bar": float("nan"), "rho_censored": 0,
-             "ferr_first": float("nan"), "ferr_last": float("nan")}
-    ferr = [m.get("ferr_ref") for m in metrics]
-    finite = [(i, f) for i, f in enumerate(ferr) if f is not None and f > 0]
-    if len(finite) < 2:
-        return empty
-
-    best_i, best_f = min(finite, key=lambda t: t[1])
-    if best_i == 0:
-        return empty
-
-    first = float(ferr[0])
-    return {
-        "n_contract": best_i,
-        "rho_bar": (best_f / first) ** (1.0 / best_i),
-        "rho_censored": int(best_i == 1),
-        "ferr_first": first,
-        "ferr_last": float(best_f),
-    }
 
 
 def _backward_error_histories(A_high, b_high, x_history, normA):
@@ -1775,13 +1640,10 @@ def refinement_metrics(A_high, x_true, extra, u_s, kappa_inf, ref_solve=None,
         row["phi_hat"] = sum(p for p in parts if p is not None) \
             if any(p is not None for p in parts) else None
 
-        # The stopping-criteria quantities of this step, from the monitor that
-        # made the decision; see RefinementMonitor.
-        if monitor is not None and i < len(monitor.z_history):
-            row["z"] = monitor.z_history[i]
-            row["v"] = monitor.v_history[i]
-            row["rho_max"] = monitor.rho_max_history[i]
-            row["psi_demmel"] = monitor.psi_history[i]
+        # The stopping rule's own quantity for this step, from the monitor that
+        # made the decision; see RefinementMonitor. ferr_ratio > 1 is the step
+        # the loop stopped on.
+        if monitor is not None and i < len(monitor.ferr_ratio_history):
             row["ferr_ratio"] = monitor.ferr_ratio_history[i]
 
         if i < len(gmres_hist):
@@ -1818,9 +1680,7 @@ def _gmres_solve(A_op, rhs, M_op, tol, restart, maxiter, callback):
 
 def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
                    gmres_tol=1e-8, gmres_restart=30, gmres_max_iter=50,
-                   normA=None, inv_dtype=DEFAULT_INV_DTYPE,
-                   rho_thresh=DEFAULT_RHO_THRESH, k_max=None,
-                   ferr_thresh=DEFAULT_FERR_THRESH):
+                   normA=None, inv_dtype=DEFAULT_INV_DTYPE, ferr_tol=None):
     """
     GMRES-IR: iterative refinement whose correction solve is preconditioned
     GMRES at the working precision.
@@ -1844,11 +1704,12 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
     low-precision solve and the residual and error bookkeeping remain
     vectorized.
 
-    The loop stops on the criteria of RefinementMonitor. Its effective solve
-    precision is u_s = u, the working precision: GMRES iterates on the
-    preconditioned system in complex128, so the correction is as accurate as
-    the working precision allows however low u_f is. That is the whole reason
-    this variant tolerates condition numbers LU-IR cannot.
+    The loop stops when the forward error against the reference increases; see
+    RefinementMonitor. Its effective solve precision is u_s = u, the working
+    precision: GMRES iterates on the preconditioned system in complex128, so
+    the correction is as accurate as the working precision allows however low
+    u_f is. That is the whole reason this variant tolerates condition numbers
+    LU-IR cannot.
 
     Parameters
     ----------
@@ -1856,18 +1717,17 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
         preconditioner applications are the only place the half-precision
         factorization is touched, and each vector reaches it cast losslessly to
         complex128; see cast_dtype.
-    x_true : as in solve_mixed_ir: recorded for reporting and, when
-        ferr_thresh is not None, feeds stopping condition 5.
-    rho_thresh : threshold of stopping condition 2.
-    k_max : threshold of stopping condition 4, on the inner iteration count of
-        a single outer step. None disables it.
-    ferr_thresh : threshold of stopping condition 5. None disables it.
+    x_true : as in solve_mixed_ir: recorded for reporting, and what the
+        stopping rule watches.
+    ferr_tol : accuracy the returned solution must reach to count as
+        converged. None means sqrt(n) u; see RefinementMonitor.
 
     Returns
     -------
-    (x, extra) with extra carrying the residual history, the iterates, the
-    corrections, the residual vectors handed to the correction solve, the inner
-    GMRES iteration counts and the factor footprint.
+    (x, extra), where x is the best iterate the loop reached rather than the
+    last one it computed, and extra carries the residual history, the iterates,
+    the corrections, the residual vectors handed to the correction solve, the
+    inner GMRES iteration counts and the factor footprint.
     """
     b_high = np.asarray(b, dtype=HIGH_DTYPE)
     orig_ndim = b_high.ndim
@@ -1895,8 +1755,7 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
     # At the working precision, as in solve_mixed_ir; u_f never enters the
     # stopping test.
     monitor = RefinementMonitor(unit_roundoff(HIGH_DTYPE), n,
-                                rho_thresh=rho_thresh, max_iter=max_iter,
-                                k_max=k_max, ferr_thresh=ferr_thresh)
+                                max_iter=max_iter, ferr_tol=ferr_tol)
 
     t0 = time.perf_counter()
     solver = SOLVER_BUILDERS[solver_name](A, low_dtype, bs, b, inv_dtype)
@@ -1937,7 +1796,10 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
     stage["solve_s"] += time.perf_counter() - t0
     stage["n_solves"] += 1
 
-    for _ in range(max_iter):
+    # Every iterate recorded at the top of its pass, and x2_best returned
+    # rather than the last iterate computed; see solve_mixed_ir for why.
+    x2_best = x2
+    for _ in range(max_iter + 1):
         t0 = time.perf_counter()
         r2 = b2 - A_high @ x2
         residual_s += time.perf_counter() - t0
@@ -1952,6 +1814,12 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
         x_history.append(x2)
         # Retained in complex128, before any cast; see solve_mixed_ir.
         r_history.append(r2)
+
+        if monitor.check(ferr_live):
+            break
+        x2_best = x2
+        if monitor.at_limit():
+            break
 
         d2 = np.zeros_like(x2)
         iters_this_round = []
@@ -1973,27 +1841,11 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
         gmres_iters_history.append(iters_this_round)
         d_history.append(d2)
 
-        x_next = x2 + d2
-        stop = monitor.update(d2, x2, gmres_iters=iters_this_round, ferr=ferr_live)
-        x2 = x_next
-        if stop:
-            break
+        x2 = x2 + d2
+        monitor.count()
     inner_s = time.perf_counter() - t_inner
-
-    # The actually-returned solution -- x2 after the LAST correction was
-    # applied -- is appended here for the same reason as in solve_mixed_ir:
-    # x_history otherwise holds only the PRE-correction iterate of every pass,
-    # one step behind what this function returns. See that function's comment
-    # for the measured effect this has. No new correction is computed for it,
-    # so d_history and gmres_iters_history are left as they are;
-    # refinement_metrics already guards every read of them against x_history
-    # being longer.
-    r2_final = b2 - A_high @ x2
-    history.append(float(np.linalg.norm(r2_final) / norm_b))
-    if x_true2 is not None:
-        true_err_history.append(float(np.linalg.norm(x2 - x_true2) / norm_x_true))
-    x_history.append(x2)
-    r_history.append(r2_final)
+    monitor.finish()
+    x2 = x2_best
 
     x = x2 if orig_ndim == 2 else x2[:, 0]
 
@@ -2207,9 +2059,7 @@ def benchmark_solver(fn, A_high, b_high, repeats, x_true=None, normA=None):
 def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
                    reference_solver=None, inner="direct",
                    gmres_tol=1e-8, gmres_restart=30, gmres_max_iter=50,
-                   inv_dtype=DEFAULT_INV_DTYPE,
-                   rho_thresh=DEFAULT_RHO_THRESH, k_max=None,
-                   ferr_thresh=DEFAULT_FERR_THRESH):
+                   inv_dtype=DEFAULT_INV_DTYPE, ferr_tol=None):
     A, b = load_system(h5path, idx)
     A_high = A.tocsc().astype(HIGH_DTYPE)
     b_high = np.asarray(b, dtype=HIGH_DTYPE)
@@ -2331,15 +2181,18 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
         return ref.solve(np.asarray(r, dtype=HIGH_DTYPE)).astype(HIGH_DTYPE)
 
     u_work = unit_roundoff(HIGH_DTYPE)
-    k_max_str = f"k_gmres >= {k_max}" if k_max is not None else "disabled"
-    ferr_str = (f"ferr_i/ferr_i-1 >= ferr_thresh={ferr_thresh:.2f}"
-               if ferr_thresh is not None and x_true is not None else "disabled")
-    print(f"Stopping: any of  "
-          f"(1) |d|/|x| <= u={u_work:.2e}  |  "
-          f"(2) |d_i+1|/|d_i| >= rho_thresh={rho_thresh:.2f}  |  "
-          f"(3) iter >= max_iter={max_iter}  |  "
-          f"(4, gmres only) {k_max_str}  |  "
-          f"(5, vs reference) {ferr_str}")
+    # The convergence level, resolved here so the banner can name the number
+    # actually used rather than "sqrt(n) u"; see RefinementMonitor.
+    ferr_level = (math.sqrt(A.shape[0]) * u_work if ferr_tol is None
+                  else float(ferr_tol))
+    if x_true is not None:
+        print(f"Stopping: forward error against the reference increases  |  "
+              f"or iter >= max_iter={max_iter}")
+    else:
+        print(f"Stopping: iter >= max_iter={max_iter} "
+              f"(no --reference-solver, so there is no forward error to watch)")
+    print(f"Converged: best ferr <= {ferr_level:.2e}"
+          f"{'  = sqrt(n) u' if ferr_tol is None else '  (--ferr-tol)'}")
 
     if repeats == 1:
         print("Runs    : 1 per variant\n")
@@ -2361,14 +2214,12 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
                                        gmres_restart=gmres_restart,
                                        gmres_max_iter=gmres_max_iter,
                                        normA=normA, inv_dtype=inv_dtype,
-                                       rho_thresh=rho_thresh, k_max=k_max,
-                                       ferr_thresh=ferr_thresh)
+                                       ferr_tol=ferr_tol)
     else:
         u_s = unit_roundoff(low_dtype)
         ir_fn = lambda: solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter,
                                        x_true=x_true, normA=normA,
-                                       inv_dtype=inv_dtype, rho_thresh=rho_thresh,
-                                       ferr_thresh=ferr_thresh)
+                                       inv_dtype=inv_dtype, ferr_tol=ferr_tol)
 
     # The third entry of each variant records what that method must hold
     # besides its factorization, for the working-set row of the report:
@@ -2626,29 +2477,10 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
         summary = monitor.summary()
         print(f"\n  Outer iterations: {summary['outer_iters']}   "
               f"(stopped: {summary['stop_reason']})")
-        if summary["psi_final"] is not None:
-            print(f"    psi = z/(1-rho_max) = {summary['psi_final']:.3e}   "
-                  f"rho_max = {summary['rho_max']:.3e}   "
-                  f"sqrt(n)*u = {monitor.limit:.3e}")
-
-    contraction = contraction_summary(metrics)
-    if metrics and contraction["n_contract"]:
-        # The two quantities a convergence-versus-kappa study reads: how many
-        # outer steps the run took, and how fast the forward error fell while
-        # it was still falling. See contraction_summary for why the mean is
-        # taken over the contracting steps alone.
-        note = " (a single ratio, not a mean)" if contraction["n_contract"] == 1 else ""
-        if contraction["rho_censored"]:
-            note = (" (its only contracting step ended on the accuracy floor, "
-                    "so this bounds the rate from above rather than measuring it)")
-        print(f"\n  Contraction: rho_bar = {contraction['rho_bar']:.3e} over "
-              f"{contraction['n_contract']} contracting step"
-              f"{'' if contraction['n_contract'] == 1 else 's'}{note}   "
-              f"ferr {contraction['ferr_first']:.2e} -> "
-              f"{contraction['ferr_last']:.2e}")
-    elif metrics:
-        print(f"\n  Contraction: the first step is already the best one; "
-              f"rho_bar is not defined")
+        if summary["ferr_best"] is not None:
+            verdict = "CONVERGED" if summary["converged"] else "did NOT converge"
+            print(f"    best ferr = {summary['ferr_best']:.3e}  vs  "
+                  f"ferr_tol = {summary['ferr_tol']:.3e}   -> {verdict}")
 
     if metrics:
         print(f"\n  Convergence history (first run, {ir_name}):")
@@ -2769,9 +2601,11 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
             omega=med_opt(nm, "omega") if med_opt(nm, "omega") is not None else float("nan"),
             outer_iters=int(summary.get("outer_iters", 0)),
             converged=int(bool(summary.get("converged", False))),
-            rho_max=float(summary.get("rho_max", float("nan"))),
-            psi_final=float(summary["psi_final"]) if summary.get("psi_final") is not None
+            # The accuracy the returned solution reached and the level it had
+            # to reach to count as converged; see RefinementMonitor.
+            ferr_best=float(summary["ferr_best"]) if summary.get("ferr_best") is not None
                       else float("nan"),
+            ferr_tol=float(summary.get("ferr_tol", float("nan"))),
             stop_reason=summary.get("stop_reason", "no refinement"),
             gmres_total=int(sum(sum(g) for g in gm)) if gm else -1,
             wall_s=med(nm, "wall_s"),
@@ -2796,12 +2630,6 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
             # entry out instead of drawing a bar at zero.
             factor_mb_reported=int(mem[nm] > 0),
             working_mb=working[nm] / MIB,
-            # The convergence-rate columns, on the refinement row only: the
-            # other two variants perform no outer steps. See
-            # contraction_summary.
-            n_contract=int(contraction["n_contract"]) if mon is not None else -1,
-            rho_bar=float(contraction["rho_bar"]) if mon is not None else float("nan"),
-            rho_censored=int(contraction["rho_censored"]) if mon is not None else -1,
             reference_solver=reference_solver or "",
             reference_nbe=float(ref_eta) if ref_eta is not None else float("nan"),
             reference_floor=ref_floor,
@@ -2853,38 +2681,25 @@ def main():
                          "a single low-precision triangular solve; 'gmres' is "
                          "GMRES-IR, GMRES in complex128 preconditioned by the "
                          "low-precision factorization")
-    # Stopping criteria, Oktay and Carson section 2.1.1. Conditions 1 and 2
-    # need no option: condition 1 compares against u, which is fixed by the
-    # working precision, and condition 2 against --rho-thresh.
-    ap.add_argument("--rho-thresh", type=float, default=DEFAULT_RHO_THRESH,
-                    metavar="RHO",
-                    help="stopping condition 2: stop once a correction is at "
-                         "least this fraction of the previous one, i.e. "
-                         "convergence has slowed. 0.5 is the 'cautious' "
-                         "setting of Oktay and Carson and Wilkinson's; 0.9 is "
-                         f"their 'aggressive' one (default: {DEFAULT_RHO_THRESH})")
+    # The stopping rule -- the forward error increased -- takes no option: an
+    # increase is an increase, and needs no constant. Only the safety net and
+    # the convergence level are settable.
     ap.add_argument("--max-iter", type=int, default=DEFAULT_MAX_ITER,
                     metavar="N",
-                    help="stopping condition 3: maximum outer refinement "
-                         f"iterations (default: {DEFAULT_MAX_ITER})")
-    ap.add_argument("--k-max", type=int, default=None, metavar="K",
-                    help="stopping condition 4: stop once one outer step needs "
-                         "this many inner GMRES iterations, at which point the "
-                         "step costs about what refactorizing would. Defaults "
-                         "to ceil(0.1 n), the value Oktay and Carson use. "
-                         "--inner gmres only; 0 disables the condition")
-    ap.add_argument("--ferr-thresh", type=float, default=DEFAULT_FERR_THRESH,
-                    metavar="RATIO",
-                    help="stopping condition 5: stop once the forward error "
-                         "against the reference solution stops improving, "
-                         "i.e. ferr_i / ferr_(i-1) >= ferr_thresh. The "
-                         "reference is the best available estimate of the "
-                         "exact solution, so once refinement stops "
-                         f"approaching it there is nothing left to gain "
-                         f"(default: {DEFAULT_FERR_THRESH}, i.e. stop as soon "
-                         f"as it does not improve). Requires "
-                         f"--reference-solver; 0 or negative disables the "
-                         f"condition")
+                    help="safety net on the outer refinement steps. A run with "
+                         "a reference solution normally stops well before it, "
+                         "when the forward error increases; without one this "
+                         f"is the only thing that ends the loop "
+                         f"(default: {DEFAULT_MAX_ITER})")
+    ap.add_argument("--ferr-tol", type=float, default=None, metavar="TOL",
+                    help="accuracy the returned solution must reach to count "
+                         "as converged. Default is sqrt(n) u, the level the "
+                         "working precision can hold. Note that an "
+                         "ill-conditioned index can legitimately stop above "
+                         "it: Corollary 3.3's limiting accuracy is of order "
+                         "cond(A,x) u, which is larger, so a 'did not "
+                         "converge' verdict there means it did not reach "
+                         "working precision, not that refinement misbehaved")
     ap.add_argument("--repeats", type=int, default=1,
                     help="repeats per variant; the median is reported")
     ap.add_argument("--reference-solver",
@@ -2962,23 +2777,11 @@ def main():
     factor_dtype = (C32 if args.factor_dtype == C32
                     else np.dtype(args.factor_dtype))
     inv_dtype = np.dtype(args.inv_dtype)
-    # 0 or negative disables condition 5, mirroring --k-max's convention.
-    ferr_thresh = args.ferr_thresh if args.ferr_thresh > 0 else None
 
     all_runs, all_iters, skipped = [], [], []
     for idx in indices:
         if len(indices) > 1:
             print("=" * 78)
-        # k_max defaults to ceil(0.1 n), so it needs n and is resolved per
-        # index rather than at parse time; 0 disables condition 4.
-        k_max = args.k_max
-        if args.inner != "gmres":
-            k_max = None
-        elif k_max is None:
-            with h5py.File(h5path, "r") as f:
-                k_max = math.ceil(0.1 * int(f[f"E_{idx}/M"]["indptr"].shape[0] - 1))
-        elif k_max <= 0:
-            k_max = None
         try:
             _records, run_rows, iter_rows = run_benchmarks(
                 h5path, idx, args.solver, None,
@@ -2987,8 +2790,7 @@ def main():
                 inner=args.inner, gmres_tol=args.gmres_tol,
                 gmres_restart=args.gmres_restart,
                 gmres_max_iter=args.gmres_max_iter,
-                inv_dtype=inv_dtype, rho_thresh=args.rho_thresh, k_max=k_max,
-                ferr_thresh=ferr_thresh)
+                inv_dtype=inv_dtype, ferr_tol=args.ferr_tol)
             all_runs.extend(run_rows)
             all_iters.extend(iter_rows)
         except SystemExit as e:              # a bad index, from load_system
@@ -3015,10 +2817,10 @@ def main():
         # u itself, so that a figure can draw the level refinement aims at
         # without having to know what complex128 rounds to.
         working_u=unit_roundoff(HIGH_DTYPE),
-        rho_thresh=float(args.rho_thresh),
         max_iter=int(args.max_iter),
-        k_max=int(args.k_max) if args.k_max is not None else -1,
-        ferr_thresh=float(ferr_thresh) if ferr_thresh is not None else -1.0,
+        # -1 means "not set, so sqrt(n) u per index"; the per-index value used
+        # is in the runs table's ferr_tol column.
+        ferr_tol=float(args.ferr_tol) if args.ferr_tol is not None else -1.0,
         gmres_tol=float(args.gmres_tol),
         gmres_restart=int(args.gmres_restart),
         gmres_max_iter=int(args.gmres_max_iter),
@@ -3027,7 +2829,7 @@ def main():
         indices=np.asarray(indices, dtype=np.int64),
         n_requested=len(indices),
         n_skipped=len(skipped),
-        criteria="Oktay and Carson 2021, section 2.1.1",
+        criteria="stop when the forward error against the reference increases",
         convergence_factor="Carson and Higham 2018, Corollary 3.3",
         **material_metadata(h5path),
     )

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-List energy indices by kappa_2 bucket, from a condition_est.py output file.
+List energy indices by kappa_inf bucket, from a condition_est.py output file.
 
 Input
 -----
@@ -14,10 +14,10 @@ resolution * i.
 Output
 ------
 Buckets widen by a factor of 10 above --first-edge, e.g. 0-100, 100-1e3,
-1e3-1e4, 1e4-1e5, ..., covering the observed kappa_2 range -- kappa_2 is the
-bucketing variable, kappa_inf is listed alongside it as a check against the
-LU-IR bound, which is stated in the infinity norm (see
-mixed_prec_ir/README.md). For each bucket, the index, energy and both
+1e3-1e4, 1e4-1e5, ..., covering the observed kappa_inf range -- kappa_inf is
+the bucketing variable, matching the LU-IR bound, which is stated in the
+infinity norm (see mixed_prec_ir/README.md); kappa_2 is listed alongside it.
+For each bucket, the index, energy and both
 condition numbers of every row falling in it, in index order, unless
 --max-per-bin caps it.
 
@@ -122,20 +122,20 @@ def main():
         order = np.argsort(indices)
         indices, cond_2, cond_inf = indices[order], cond_2[order], cond_inf[order]
 
-        edges = bin_edges(args.first_edge, cond_2.max())
+        edges = bin_edges(args.first_edge, cond_inf.max())
         for lo, hi in zip(edges[:-1], edges[1:]):
-            in_bin = np.flatnonzero((cond_2 >= lo) & (cond_2 < hi))
+            in_bin = np.flatnonzero((cond_inf >= lo) & (cond_inf < hi))
             if in_bin.size == 0:
                 continue
             shown = in_bin[:args.max_per_bin]
-            emit(f"kappa_2 in [{lo:.2e}, {hi:.2e}): {in_bin.size} rows"
+            emit(f"kappa_inf in [{lo:.2e}, {hi:.2e}): {in_bin.size} rows"
                  f"{f', showing {shown.size}' if shown.size < in_bin.size else ''}")
             for i in shown:
                 idx = int(indices[i])
                 e = energy_of(idx)
                 e_str = f"{e:.4f} eV" if e is not None else "unknown"
-                emit(f"  idx={idx:<6} E={e_str:<14} kappa_2={cond_2[i]:.3e}  "
-                     f"kappa_inf={cond_inf[i]:.3e}")
+                emit(f"  idx={idx:<6} E={e_str:<14} kappa_inf={cond_inf[i]:.3e}  "
+                     f"kappa_2={cond_2[i]:.3e}")
     finally:
         out_fh.close()
 

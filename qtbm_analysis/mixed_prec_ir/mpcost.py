@@ -191,7 +191,7 @@ from solver_classes import block_sizes_from_matrix
 
 from mpir import (
     C32, HIGH_DTYPE, EXPERIMENTS_GROUP, SOLVER_BUILDERS,
-    DEFAULT_RHO_THRESH, DEFAULT_MAX_ITER, DEFAULT_FERR_THRESH,
+    DEFAULT_MAX_ITER,
     DEFAULT_INV_DTYPE,
     benchmark_solver, dtype_label, experiment_names,
     load_condition_numbers, load_energy_metadata, load_system, energy_of_idx,
@@ -335,14 +335,13 @@ def _driver(key, solver_name, A, b, low_dtype, inv_dtype, opts):
         return lambda: solve_mixed_ir(
             solver_name, A, b, None, low_dtype, opts["max_iter"],
             x_true=opts["x_true"], normA=None, inv_dtype=inv_dtype,
-            rho_thresh=opts["rho_thresh"], ferr_thresh=opts["ferr_thresh"])
+            ferr_tol=opts["ferr_tol"])
     return lambda: solve_gmres_ir(
         solver_name, A, b, None, low_dtype, opts["max_iter"],
         x_true=opts["x_true"], gmres_tol=opts["gmres_tol"],
         gmres_restart=opts["gmres_restart"],
         gmres_max_iter=opts["gmres_max_iter"], normA=None,
-        inv_dtype=inv_dtype, rho_thresh=opts["rho_thresh"],
-        k_max=opts["k_max"], ferr_thresh=opts["ferr_thresh"])
+        inv_dtype=inv_dtype, ferr_tol=opts["ferr_tol"])
 
 
 def _memory_components(key, A_high, mem_bytes, low_dtype, gmres_restart):
@@ -536,15 +535,6 @@ def measure_index(h5path, idx, solvers, low_dtype, inv_dtype, opts, repeats,
         del ref
         gc.collect()
     opts = dict(opts, x_true=x_true)
-
-    # k_max, stopping condition 4, defaults to ceil(0.1 n) and so is resolved
-    # per index rather than at parse time; see mpir.main.
-    if opts.get("k_max_requested") is None:
-        opts["k_max"] = math.ceil(0.1 * n)
-    elif opts["k_max_requested"] <= 0:
-        opts["k_max"] = None
-    else:
-        opts["k_max"] = int(opts["k_max_requested"])
 
     common = dict(
         idx=int(idx), n=int(n), nnz=int(A.nnz), n_rhs=int(n_rhs),
@@ -785,23 +775,16 @@ def main():
     # The stopping criteria are mpir's; they are exposed here because they
     # determine how many solves a refinement variant performs and so are part
     # of what is being timed.
-    ap.add_argument("--rho-thresh", type=float, default=DEFAULT_RHO_THRESH,
-                    metavar="RHO",
-                    help=f"mpir stopping condition 2 (default: "
-                         f"{DEFAULT_RHO_THRESH})")
     ap.add_argument("--max-iter", type=int, default=DEFAULT_MAX_ITER,
                     metavar="N",
-                    help=f"mpir stopping condition 3, maximum outer "
-                         f"refinement steps (default: {DEFAULT_MAX_ITER})")
-    ap.add_argument("--k-max", type=int, default=None, metavar="K",
-                    help="mpir stopping condition 4, on the inner GMRES "
-                         "iterations of one outer step. Defaults to "
-                         "ceil(0.1 n); 0 disables it")
-    ap.add_argument("--ferr-thresh", type=float, default=DEFAULT_FERR_THRESH,
-                    metavar="RATIO",
-                    help=f"mpir stopping condition 5, on the forward error "
-                         f"against the reference (default: "
-                         f"{DEFAULT_FERR_THRESH}); 0 or negative disables it")
+                    help=f"mpir's safety net on the outer refinement steps. "
+                         f"The stopping rule itself -- the forward error "
+                         f"against the reference increased -- takes no option "
+                         f"(default: {DEFAULT_MAX_ITER})")
+    ap.add_argument("--ferr-tol", type=float, default=None, metavar="TOL",
+                    help="mpir's convergence level: the accuracy the returned "
+                         "solution must reach to count as converged. Default "
+                         "is sqrt(n) u")
     ap.add_argument("--gmres-tol", type=float, default=1e-8,
                     help="relative tolerance of the inner GMRES solve")
     ap.add_argument("--gmres-restart", type=int, default=30,
@@ -844,12 +827,10 @@ def main():
 
     low_dtype = np.dtype(args.factor_dtype)
     inv_dtype = np.dtype(args.inv_dtype)
-    ferr_thresh = args.ferr_thresh if args.ferr_thresh > 0 else None
-    opts = dict(max_iter=args.max_iter, rho_thresh=args.rho_thresh,
-                ferr_thresh=ferr_thresh, gmres_tol=args.gmres_tol,
+    opts = dict(max_iter=args.max_iter, ferr_tol=args.ferr_tol,
+                gmres_tol=args.gmres_tol,
                 gmres_restart=args.gmres_restart,
-                gmres_max_iter=args.gmres_max_iter,
-                k_max_requested=args.k_max, k_max=None, x_true=None)
+                gmres_max_iter=args.gmres_max_iter, x_true=None)
 
     print(f"Material : {h5path}")
     print(f"Solvers  : {', '.join(solvers)}")
@@ -896,10 +877,8 @@ def main():
         factor_u=unit_roundoff(low_dtype),
         repeats=int(args.repeats),
         reference_solver=args.reference_solver,
-        rho_thresh=float(args.rho_thresh),
         max_iter=int(args.max_iter),
-        k_max=int(args.k_max) if args.k_max is not None else -1,
-        ferr_thresh=float(ferr_thresh) if ferr_thresh is not None else -1.0,
+        ferr_tol=float(args.ferr_tol) if args.ferr_tol is not None else -1.0,
         gmres_tol=float(args.gmres_tol),
         gmres_restart=int(args.gmres_restart),
         gmres_max_iter=int(args.gmres_max_iter),
