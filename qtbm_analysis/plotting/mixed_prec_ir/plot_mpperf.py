@@ -78,7 +78,7 @@ Usage
     python plot_mpperf.py .../graphene_perf.h5 --list
     python plot_mpperf.py .../graphene_perf.h5 --experiment 2
     python plot_mpperf.py .../graphene_perf.h5 --solvers mumps block-thomas
-    python plot_mpperf.py .../graphene_perf.h5 --ymax 2.5
+    python plot_mpperf.py .../graphene_perf.h5 --ymax 400
 """
 
 import sys
@@ -189,22 +189,28 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
     share = GROUP_WIDTH / len(present)
     bar_w = share * (1.0 - PAIR_GAP) / len(VARIANTS)
 
-    fig, ax = plt.subplots(1, 1, figsize=(2.0 + 1.9 * len(order), 5.6))
+    fig, ax = plt.subplots(1, 1, figsize=(2.0 + 1.9 * len(order), 6.4))
 
-    # Milliseconds where every bar is under a second, seconds otherwise. A
-    # time axis reading 0.014 costs the reader two decimal places for nothing;
-    # the choice is made once for the whole figure so the bars stay comparable.
-    # The whiskers reach total_s_max, which is above the median the bar is
-    # drawn to, so the scale is taken from whichever is higher -- otherwise a
-    # bar whose repeats spread widely has its whisker clipped off the top,
-    # hiding exactly the thing the whisker exists to show.
-    tallest = max(max(float(r["total_s"]), float(r["total_s_max"]))
-                  for i in order for s in table[i].values() for r in s.values()
+    # Milliseconds throughout. These solves run in tens to hundreds of them,
+    # and a fixed unit keeps two figures comparable at a glance where an
+    # automatic one would silently change the axis between them.
+    unit, scale = "ms", 1e3
+
+    # The scale is set by the tallest BAR, not the tallest whisker. One
+    # disturbed repeat can be an order of magnitude above every median, and
+    # sizing the axis to it flattens every real bar into the bottom tenth of
+    # the figure -- which is exactly what the whisker is there to tell you
+    # about, at the cost of the data it is annotating. Whiskers that exceed
+    # the top are clipped and marked with a caret instead; the bar is also
+    # outlined in red and the run reported as unstable, so nothing is hidden.
+    tallest = max(float(r["total_s"]) for i in order
+                  for s in table[i].values() for r in s.values()
                   if np.isfinite(r["total_s"]))
-    unit, scale = ("ms", 1e3) if tallest < 1.0 else ("s", 1.0)
+    top_s = 1.08 * tallest if ymax is None else float(ymax) / scale
 
     not_converged = 0
     n_unstable = 0
+    overflow = []          # x of every whisker running off the top
     for s_i, solver in enumerate(present):
         base = style.SOLVER_STYLE[solver][1]
         for v_i, variant in enumerate(VARIANTS):
@@ -249,10 +255,12 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
                 # of magnitude, and a reader must be able to see that without
                 # opening the file.
                 if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
-                    ax.plot([slot[g_i] + offset + bar_w / 2] * 2,
-                            [lo * scale, hi * scale],
+                    x = slot[g_i] + offset + bar_w / 2
+                    ax.plot([x] * 2, [lo * scale, hi * scale],
                             color="#222222", lw=0.9, zorder=4,
                             marker="_", ms=3.0, mew=0.9)
+                    if hi > top_s:
+                        overflow.append(x)
 
     ax.set_xticks(slot)
     # n_rhs is on the tick because it is a confounder sitting underneath the
@@ -264,12 +272,17 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
     ax.set_xlabel(r"$\kappa_\infty(A)$")
     ax.set_ylabel(f"time [{unit}]")
     ax.set_xlim(-0.5, len(order) - 0.5)
-    # Headroom for the two legends, which sit in the upper corners and would
-    # otherwise cover the tallest bars of a full figure. Matplotlib's automatic
-    # top leaves about 5%, which is not enough for a legend.
-    ax.set_ylim(top=1.32 * tallest * scale)
+    # 8% headroom only. The legends live below the axes rather than in its
+    # upper corners precisely so the bars can use the full height.
+    ax.set_ylim(top=top_s * scale)
     if ymax is not None:
-        ax.set_ylim(top=float(ymax) * scale)
+        ax.set_ylim(top=float(ymax))
+
+    # Carets where a whisker was clipped, so a truncated spread is visible as
+    # truncated rather than as a whisker that happens to end at the axis.
+    for x in overflow:
+        ax.plot([x], [ax.get_ylim()[1]], marker="^", ms=4.0,
+                color="#D62728", clip_on=False, zorder=5)
     ax.grid(axis="y", alpha=0.25, lw=0.4, zorder=0)
     ax.set_axisbelow(True)
 
@@ -278,15 +291,18 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
               f"disagreeing by more than {limit:g}x and are outlined in red. "
               f"They measure the machine, not the solver.")
 
-    _legend(ax, present, attrs, not_converged, n_unstable, limit)
+    _legend(fig, present, attrs, not_converged, n_unstable, limit)
     fig.suptitle(_summary_title(attrs, order, present), fontsize=9)
     # The machine, along the bottom: a wall-clock figure is a statement about
     # one, and a reader cannot check comparability against a caption that is
     # not there. Small and grey -- it is provenance, not a finding.
-    fig.text(0.5, 0.005, _environment_line(attrs), ha="center", fontsize=6.5,
+    fig.text(0.5, 0.025, _environment_line(attrs), ha="center", fontsize=6.5,
              color="#555555")
-    fig.tight_layout(rect=(0, 0.03, 1, 1))
-    fig.subplots_adjust(top=0.86)
+    # Explicit, not tight_layout: the two legends are figure-level artists in
+    # the band below the axes, and tight_layout does not reserve space for
+    # them. The bands are, from the top: suptitle, axes, three-line tick
+    # labels and x label, two legend rows, environment footer.
+    fig.subplots_adjust(top=0.85, bottom=0.30, left=0.08, right=0.98)
     save_figure(fig, out_path)
 
 
@@ -307,11 +323,16 @@ def _environment_line(attrs):
     return "   |   ".join(bits)
 
 
-def _legend(ax, present, attrs, not_converged, n_unstable=0, limit=2.0):
+def _legend(fig, present, attrs, not_converged, n_unstable=0, limit=2.0):
     """
     Two legends, because a bar carries two independent things. Colour is the
     solver; shade is the stage. Combining them would need one entry per
     (solver, stage) pair, which is twelve entries saying four things.
+
+    Both are laid out horizontally in the band beneath the axes rather than in
+    its upper corners. In the corners they cost the top third of the axis --
+    the bars then occupy the bottom of the figure and the stage boundaries,
+    which are the point of the figure, become too small to read.
 
     Which bar of a pair is which precision is not a legend entry either: it is
     left and right, and a legend cannot show a position. It is said in the
@@ -324,9 +345,9 @@ def _legend(ax, present, attrs, not_converged, n_unstable=0, limit=2.0):
               label=style.SOLVER_STYLE[s][0]
                     + (" (no symbolic split)" if s in fused else ""))
         for s in present]
-    first = ax.legend(handles=solver_handles, fontsize=8, framealpha=0.9,
-                      loc="upper left", title="solver", title_fontsize=8)
-    ax.add_artist(first)
+    fig.legend(handles=solver_handles, fontsize=8, frameon=False,
+               loc="upper center", bbox_to_anchor=(0.5, 0.16),
+               ncol=len(solver_handles))
 
     # The stage shades are shown in grey rather than in one solver's hue: they
     # mean the same thing in all four colours, and drawing them in, say, blue
@@ -346,8 +367,9 @@ def _legend(ax, present, attrs, not_converged, n_unstable=0, limit=2.0):
     phase_handles.append(
         Line2D([0], [0], color="#222222", lw=0.9, marker="_", ms=3.0,
                label="repeat spread (min-max)"))
-    ax.legend(handles=phase_handles, fontsize=8, framealpha=0.9,
-              loc="upper right", title="stage", title_fontsize=8)
+    fig.legend(handles=phase_handles, fontsize=8, frameon=False,
+               loc="upper center", bbox_to_anchor=(0.5, 0.113),
+               ncol=len(phase_handles))
 
 
 def _summary_title(attrs, order, present):
@@ -401,9 +423,11 @@ def main():
                     help="outline a bar in red where its slowest repeat "
                          "exceeds its fastest by more than this ratio "
                          "(default: whatever the experiment recorded)")
-    ap.add_argument("--ymax", type=float, default=None, metavar="S",
-                    help="clip the time axis at this many seconds, so that "
-                         "one slow solver does not flatten the rest")
+    ap.add_argument("--ymax", type=float, default=None, metavar="MS",
+                    help="clip the time axis at this many milliseconds, so "
+                         "that one slow solver does not flatten the rest. The "
+                         "axis is always in ms; without this it is sized to "
+                         "the tallest bar plus 8%%")
     cli.add_output(ap, outdir_help="output directory (default: perf<NNNN>/ "
                                    "beside the performance file)")
     args = ap.parse_args()
