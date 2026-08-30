@@ -775,9 +775,29 @@ comparable.
 ### Fairness
 
 Every variant of one index is measured in one process, back to back, against
-the same `A` and `b`, after an untimed warm-up of any GPU solver involved. The
-reference solution is computed once per index and shared by every solver, so
-its cost is charged to none of them.
+the same `A` and `b`, after an untimed warm-up of that solver **at both
+precisions**. The reference solution is computed once per index and shared by
+every solver, so its cost is charged to none of them.
+
+The warm-up is not only for the GPU. The first call into a numerical library in
+a process pays costs no later call pays: OpenBLAS builds its thread pool on the
+first LAPACK call, SciPy resolves its lazy imports, cuDSS creates a CUDA context
+and JITs its kernels, and the allocator faults in pages it afterwards reuses.
+Left inside a measurement it all lands on whichever variant runs first — the
+first solver of the first index — whose bar is then not comparable with any
+other. Measured on a small block-tridiagonal system it inflated
+`factorization_s` from 0.4 ms to as much as 23 ms, and it took two calls to
+settle, which is why both precisions are warmed. It survives the median: an
+outlier is absorbed only when it is confined to one repeat, and thread-pool and
+allocator warm-up are not.
+
+The warm-up runs per `(index, solver)`, not once per process, so a later index
+with a different size or pattern is equally warm. It costs two solves against
+`2 * --repeats` measured ones.
+
+The min–max spread of the per-repeat totals is printed beside each median while
+the sweep runs, and stored as `total_s_min` / `total_s_max`. A spread of more
+than about 2x on a warmed solver means something is still not warm.
 
 Solvers are compared on wall-clock cost **as installed and configured on the
 machine the script runs on**. MUMPS and cuDSS are libraries with their own

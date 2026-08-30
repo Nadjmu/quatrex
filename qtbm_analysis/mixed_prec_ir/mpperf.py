@@ -59,9 +59,11 @@ mpir.py, where the comparison is meaningful.
 Fairness
 --------
 Every variant of one index is measured in one process, back to back, against
-the same A and b, after an untimed warm-up of any GPU solver. The reference
-solution is computed once per index and shared, so its cost is charged to no
-solver. --repeats runs of each variant are made and the median of each stage
+the same A and b, after an untimed warm-up of that solver at both precisions --
+see _warm_up, which exists so that the one-time cost of the first LAPACK, MUMPS
+or cuDSS call in the process is not charged to the first bar of the figure. The
+reference solution is computed once per index and shared, so its cost is
+charged to no solver. --repeats runs of each variant are made and the median of each stage
 reported; total_s is the sum of those three medians, so the bar equals the sum
 of its parts. total_s_min and total_s_max are the smallest and largest
 per-repeat totals, the spread the median hides.
@@ -127,7 +129,7 @@ from mpir import (
     experiment_names, idx_of_energy, load_condition_numbers,
     load_energy_metadata, load_system, new_experiment, resolve_experiment,
     solve_direct, solve_mixed_ir, solver_dtypes, unit_roundoff,
-    _inf_norm, _matrix_nbytes, _warm_up_gpu,
+    _inf_norm, _matrix_nbytes,
 )
 
 MIB = 1024.0 ** 2
@@ -206,6 +208,42 @@ def load_experiment(path, experiment=None):
 # dropped after every repeat rather than accumulated across a sweep.
 _HISTORY_KEYS = ("x_history", "d_history", "r_history", "history",
                  "true_err_history")
+
+
+def _warm_up(solver_name, A, b, low_dtype, inv_dtype):
+    """
+    One untimed factorization and solve at each precision, discarded.
+
+    The first call into a numerical library in a process pays costs no later
+    call pays: OpenBLAS builds its thread pool on the first LAPACK call, SciPy
+    resolves its lazy imports, MUMPS and cuDSS initialise their own state --
+    cuDSS additionally creates a CUDA context and JITs its kernels, about 1.2 s
+    and essentially independent of problem size -- and the allocator faults in
+    pages it afterwards reuses. Left to fall inside a measurement, all of it
+    lands on whichever variant runs first, which is the first solver of the
+    first index. Its bar is then not comparable with any other bar in the
+    figure, and the effect survives the median: it is one large outlier only
+    when it is confined to one repeat, and thread-pool and allocator warm-up
+    are not.
+
+    Both precisions are warmed, not just u_f: the two variants factor at
+    different ones, and a library's first call at each can differ -- cuDSS JITs
+    per dtype.
+
+    This is done per (index, solver) rather than once per process so that every
+    measurement is equally warm, including the first solver of a later index
+    whose matrix has a different size or pattern. It costs two solves against
+    2 * --repeats measured ones.
+
+    Failures are ignored. The warm-up affects measurement only; a solver that
+    cannot be built is reported by measure_variant through its own skip path.
+    """
+    for dtype in (low_dtype, HIGH_DTYPE):
+        try:
+            solve_direct(solver_name, A, b, None, dtype, inv_dtype)
+        except Exception:
+            pass
+    gc.collect()
 
 
 def _driver(variant, solver_name, A, b, low_dtype, inv_dtype, opts):
@@ -338,7 +376,12 @@ def measure_variant(variant, solver_name, A, b, low_dtype, inv_dtype, opts,
         f"   {row['outer_iters']} outer, {row['n_solves']} solves" + \
         ("" if converged else "   NOT CONVERGED")
     split = "" if row["phases_split"] else "   (no symbolic split)"
-    print(f"{total_s * 1e3:9.1f} ms   "
+    # The min-max spread of the per-repeat totals is printed beside the
+    # median so a repeat still paying a one-time cost is visible while the
+    # sweep runs, rather than only after the figure looks wrong. A spread of
+    # more than about 2x on a warmed solver means _warm_up missed something.
+    print(f"{total_s * 1e3:9.1f} ms  "
+          f"[{per_repeat_total.min() * 1e3:.1f}-{per_repeat_total.max() * 1e3:.1f}]   "
           f"sym {symbolic_s * 1e3:7.1f}  fact {factorization_s * 1e3:8.1f}  "
           f"solve {solve_s * 1e3:8.1f}   ferr {ferr_ref:.2e}{tag}{split}")
 
@@ -410,9 +453,10 @@ def measure_index(h5path, idx, solvers, low_dtype, inv_dtype, max_iter,
     rows = []
     for solver_name in solvers:
         print(f"  {cli.label(solver_name)}")
-        # The fixed device start-up cost is consumed before either variant of
-        # this solver is timed, so it is not charged to whichever runs first.
-        _warm_up_gpu(solver_name, A, b, None, low_dtype, inv_dtype)
+        # Every one-time library start-up cost is consumed before either
+        # variant of this solver is timed, so none of it is charged to
+        # whichever runs first. See _warm_up.
+        _warm_up(solver_name, A, b, low_dtype, inv_dtype)
         n_blocks = len(block_sizes_from_matrix(A)) \
             if solver_name.startswith("block-thomas") else -1
         for variant in VARIANTS:
@@ -577,7 +621,8 @@ def main():
     print(f"Problem : {h5path}")
     print(f"Solvers : {', '.join(args.solvers)}")
     print(f"Variants: {dtype_label(low_dtype)} + LU-IR, complex128 direct")
-    print(f"Runs    : {args.repeats} per variant, median of each stage\n")
+    print(f"Runs    : {args.repeats} per variant, median of each stage; "
+          f"one untimed warm-up solve per precision before each solver\n")
 
     all_rows, skipped = [], []
     for idx in indices:
