@@ -701,6 +701,21 @@ Every bar is `symbolic_s + factorization_s + solve_s = total_s`.
 | `factorization_s` | the rest of the factorization: the numerical phase, plus the cast of `A` into the factorization precision and, for cuDSS, the host-to-device transfer. The stage a lower `u_f` makes cheaper |
 | `solve_s` | every triangular solve plus every `complex128` residual `b - Ax`. One of each for `c128`; for `c64_ir`, one solve per outer step and one residual per iterate |
 
+`solve_s` is split into `triangular_s` and `residual_s`, recorded but never
+drawn: the bar totals the end-to-end cost of the variant, which is what makes
+the two bars of a pair comparable, and the split explains that total rather
+than restating it.
+
+The split is worth querying, because the residual is `b - Ax` and so costs the
+**same for every solver** at one index. Measured on si-bulk it is 78-95% of
+`solve_s`, about 1.1 ms per right-hand-side column per outer step for all three
+solvers alike -- cuDSS spends 9.5 ms of a 180 ms solve stage on the GPU and the
+rest on a host `complex128` matvec. Two things follow. The quantity `u_f`
+cannot reduce is the residual, not the symbolic phase as in Zounon et al.; and
+the `c64_ir` bars of different solvers are mostly the same shared cost, so the
+solver-dependent information is in the symbolic and factorization segments, not
+in the height of the bar.
+
 `factorization_s` is `factor_s` minus the symbolic phase, **not** the numerical
 phase the backend reports: the builder also casts `A` and, for cuDSS, moves it
 to the device, and that work is precision-dependent and belongs on the same

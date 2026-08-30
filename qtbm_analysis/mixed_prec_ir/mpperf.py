@@ -172,6 +172,8 @@ RUN_COLUMNS = [
     # call, so factor_s - symbolic_s - numeric_reported_s is the setup that
     # neither phase claimed and that factorization_s absorbs.
     "phases_split", "numeric_reported_s", "factor_s",
+    # the two halves of solve_s, recorded but not drawn; see _phases
+    "triangular_s", "residual_s",
     "total_s_min", "total_s_max",
     # what the timing is worth: a c64_ir bar that did not converge did not
     # deliver the answer c128 did, and its height is not a speedup
@@ -474,8 +476,24 @@ def _driver(variant, solver_name, A, b, low_dtype, inv_dtype, opts):
 
 def _phases(extra):
     """
-    (symbolic_s, factorization_s, solve_s, numeric_reported_s, factor_s) of
-    one repeat.
+    (symbolic_s, factorization_s, triangular_s, residual_s,
+    numeric_reported_s, factor_s) of one repeat.
+
+    The drawn solve stage is triangular_s + residual_s, summed by the caller
+    AFTER both have been reduced over the repeats. Reducing the sum instead
+    would leave the two halves not adding up to the whole, since neither a
+    median nor a minimum distributes over addition; every level of this
+    breakdown reduces the leaves and sums upward, which is the same rule
+    total_s follows.
+
+    The drawn stage is the whole refinement iteration -- every triangular solve and
+    every working-precision residual -- because that is what the figure draws:
+    the bar totals the end-to-end cost of the variant. triangular_s and
+    residual_s are the two halves of it, recorded but never drawn, because the
+    split is what explains the bar rather than what the bar says. The residual
+    is a plain b - Ax and is therefore the SAME cost for every solver at one
+    index; on si-bulk it is 78-95% of this stage, which is why the c64_ir bars
+    of three different solvers are nearly the same height.
 
     factorization_s is factor_s minus the symbolic phase, not the numerical
     phase the backend reports: the builder also casts A into the factorization
@@ -493,8 +511,8 @@ def _phases(extra):
     symbolic_s = float(breakdown[0]) if breakdown else float("nan")
     numeric_reported_s = float(breakdown[1]) if breakdown else float("nan")
     factorization_s = factor_s - (symbolic_s if breakdown else 0.0)
-    solve_s = float(extra["solve_s"]) + float(extra.get("residual_s", 0.0))
-    return (symbolic_s, factorization_s, solve_s, numeric_reported_s, factor_s)
+    return (symbolic_s, factorization_s, float(extra["solve_s"]),
+            float(extra.get("residual_s", 0.0)), numeric_reported_s, factor_s)
 
 
 def measure_variant(variant, solver_name, A, b, low_dtype, inv_dtype, opts,
@@ -529,9 +547,10 @@ def measure_variant(variant, solver_name, A, b, low_dtype, inv_dtype, opts,
     # than the reduction of the totals; total_s_min and total_s_max carry the
     # spread of the per-repeat totals whichever reducer is in use.
     stages = np.asarray(stages, dtype=float)
-    symbolic_s, factorization_s, solve_s, numeric_reported_s, factor_s = \
-        REDUCERS[reduce](stages, axis=0)
-    per_repeat_total = np.nansum(stages[:, :3], axis=1)
+    (symbolic_s, factorization_s, triangular_s, residual_s,
+     numeric_reported_s, factor_s) = REDUCERS[reduce](stages, axis=0)
+    solve_s = triangular_s + residual_s
+    per_repeat_total = np.nansum(stages[:, :4], axis=1)
     total_s = float(np.nansum([symbolic_s, factorization_s, solve_s]))
 
     monitor = extra.get("monitor")
@@ -569,6 +588,8 @@ def measure_variant(variant, solver_name, A, b, low_dtype, inv_dtype, opts,
         phases_split=int(math.isfinite(symbolic_s)),
         numeric_reported_s=float(numeric_reported_s),
         factor_s=float(factor_s),
+        triangular_s=float(triangular_s),
+        residual_s=float(residual_s),
         total_s_min=float(per_repeat_total.min()),
         total_s_max=float(per_repeat_total.max()),
         outer_iters=int(summary.get("outer_iters", 0)),
