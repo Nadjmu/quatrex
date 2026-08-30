@@ -593,8 +593,18 @@ def save_table(path, group, rows, columns=None, attrs=None):
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    columns = list(columns) if columns is not None else (
-        list(rows[0]) if rows else [])
+    if columns is not None:
+        columns = list(columns)
+    else:
+        # The union of every row's keys, in first-seen order -- not the first
+        # row's keys alone. Rows of one table need not be uniform: a driver
+        # that records an extra quantity only for the variants that have one
+        # (a solver-specific count, a diagnostic that does not apply to every
+        # row) would otherwise have that column silently dropped whenever the
+        # first row happened to lack it, with no error and no short read to
+        # notice it by. Rows missing a key take that column's null: NaN for a
+        # float, -1 for an integer, "" for a string.
+        columns = list(dict.fromkeys(k for r in rows for k in r))
 
     with h5py.File(path, "a") as f:
         g = _fresh_group(f, group)
