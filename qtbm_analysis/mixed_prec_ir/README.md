@@ -10,21 +10,21 @@ All scripts here take the canonical option names; see
 | Script | Scope |
 |---|---|
 | `mpir.py` | does refinement converge, and to what accuracy: LU-IR and GMRES-IR over any solver in `../solvers/`, at any precision that solver supports |
-| `mpcost.py` | what refinement costs: time and memory of four variants across several solvers at a fixed `complex64` |
+| `mpperf.py` | what refinement costs in runtime: the `complex64` + LU-IR solve against the `complex128` direct solve it replaces, across several solvers at a fixed `complex64` |
 | `sparse.py` | the earlier standalone study: fp32 SuperLU with fp64 refinement |
 | `dense.py` | the earlier standalone study: fp32 LAPACK with fp64 refinement |
 
 The two studies are separate scripts because they are separate measurements
 with incompatible requirements. `mpir.py` varies the precision and the inner
-solver over one solver family and asks about accuracy; `mpcost.py` holds the
+solver over one solver family and asks about accuracy; `mpperf.py` holds the
 precision fixed and varies the family, and its numbers are only comparable
 when every variant of one index is measured back to back in one process. They
 share the refinement loops, the solver registry and the stopping rule:
-`mpcost.py` imports them from `mpir.py` rather than reimplementing them, so
+`mpperf.py` imports them from `mpir.py` rather than reimplementing them, so
 both studies measure the same code.
 
 Each writes numbered experiments to its own file in the material's directory;
-see [section 6](#6-output) and [section 7](#7-mpcostpy). No figures are
+see [section 6](#6-output) and [section 7](#7-mpperfpy). No figures are
 produced here — they are drawn by
 [`../plotting/mixed_prec_ir/`](../plotting/mixed_prec_ir/).
 
@@ -659,18 +659,79 @@ python ../plotting/mixed_prec_ir/plot_mpir.py \
 
 ---
 
-## 7. `mpcost.py`
+## 7. `mpperf.py`
 
-The computational-cost study. `mpir.py` asks whether refinement converges and
-to what accuracy; `mpcost.py` asks what it costs, on the assumption that it
-does. It sweeps **solvers** rather than precisions and reports time and memory.
+The runtime study. `mpir.py` asks whether refinement converges and to what
+accuracy; `mpperf.py` asks what it costs, on the assumption that it does. It
+sweeps **solvers** rather than precisions.
 
 ```bash
-python mpcost.py <material.h5> --start 0 --end 200 --stride 20 \
-    --solvers mumps cudss block-thomas block-thomas-inv
-python mpcost.py <material.h5> --idx 84 254 --solvers superlu mumps --repeats 5
-python mpcost.py <material.h5> --list-experiments
+python mpperf.py <material.h5> --idx 84 254 601
+python mpperf.py <material.h5> --start 0 --end 800 --stride 200
+python mpperf.py <material.h5> --idx 84 --solvers block-thomas mumps --repeats 5
+python mpperf.py <material.h5> --list-experiments
 ```
+
+A handful of indices, not a sweep: each index is eight bars in the figure.
+
+### The two variants
+
+Measured for every `(index, solver)`:
+
+| `variant` | What it is |
+|---|---|
+| `c64_ir` | `complex64` factorization + LU-IR — the method |
+| `c128` | `complex128` direct solve, no refinement — what it replaces |
+
+A timing is only meaningful for a variant that reached the target accuracy.
+`c64_ir` stops on `mpir`'s rule — the forward error against the reference
+increased — and `converged` is that monitor's verdict; `c128` runs no loop, is
+the accuracy the study is measured against, and is recorded as converged with
+its `ferr_ref` beside it so a figure can check rather than assume. A `c64_ir`
+bar that did not converge is a cost that bought nothing, and the figure hatches
+it.
+
+### The three stages
+
+Every bar is `symbolic_s + factorization_s + solve_s = total_s`.
+
+| Column | What it contains |
+|---|---|
+| `symbolic_s` | the fill-reducing ordering and symbolic factorization, or for Block Thomas the detection and extraction of the blocks. No floating-point arithmetic, so it costs the same at both precisions and bounds the achievable speedup |
+| `factorization_s` | the rest of the factorization: the numerical phase, plus the cast of `A` into the factorization precision and, for cuDSS, the host-to-device transfer. The stage a lower `u_f` makes cheaper |
+| `solve_s` | every triangular solve plus every `complex128` residual `b - Ax`. One of each for `c128`; for `c64_ir`, one solve per outer step and one residual per iterate |
+
+`factorization_s` is `factor_s` minus the symbolic phase, **not** the numerical
+phase the backend reports: the builder also casts `A` and, for cuDSS, moves it
+to the device, and that work is precision-dependent and belongs on the same
+side of the split as the arithmetic. Attributing it this way is also what makes
+the three stages sum to the true cost of the variant rather than to slightly
+less than it. `numeric_reported_s` and `factor_s` are kept as columns so the
+difference is auditable.
+
+SuperLU (`scipy.splu`) and UMFPACK fuse the symbolic and numerical phases into
+one call and expose no split. `symbolic_s` is then `nan`, `phases_split` is 0,
+and the whole factorization sits in `factorization_s`; those bars have two
+segments and are not comparable stage by stage with the other solvers'.
+
+### What is not timed
+
+Nothing that exists only to diagnose convergence is inside a timed region.
+Each stage above is bracketed by its own `perf_counter` pair around the solver
+call, the matrix-vector product or the builder, so the forward errors the
+stopping rule watches, the backward errors `eta` and `omega`, the convergence
+factor `mu_hat` and the `phi_*` terms of Corollary 3.3 all fall *between* the
+brackets and are charged to nothing. `mpir.refinement_metrics`, which computes
+`rho` and the `phi_*` columns, is never called by this script at all.
+
+The one thing left out is the `O(n)` vector update `x + d`, which no timer
+brackets. It is the same work in both variants and orders of magnitude below a
+solve.
+
+The refinement loop is nonetheless run **with** a reference solution, through
+`--reference-solver`, so that it stops on the same rule and after the same
+number of outer steps as it would in `mpir.py`. Timing a loop that ran to
+`--max-iter` because it had nothing to stop on would measure the safety net.
 
 ### Precision
 
@@ -682,50 +743,27 @@ cuDSS would compare implementations rather than precisions. `--factor-dtype
 complex32` is rejected by the parser. Its *accuracy* behaviour is the subject
 of `mpir.py`, where the comparison is meaningful.
 
-UMFPACK is likewise excluded from `--solvers`: it has no single-precision
-build, so it cannot supply the `complex64` half of any ratio.
+UMFPACK is likewise absent from the default `--solvers`: it has no
+single-precision build, so it cannot supply the `c64_ir` half of any pair.
 
-### The four variants
+### Repeats
 
-Measured for every `(index, solver)`, the layout of Amestoy et al. (2023),
-table 2. Rows are keyed by `variant_key`, never by the human-readable label:
-
-| `variant_key` | What it is |
-|---|---|
-| `c128_direct` | the solver at `complex128`, no refinement — the baseline every ratio is taken against |
-| `c64_direct` | the solver at `complex64`, no refinement. Not a usable answer at these condition numbers; it is measured because the ratio of its factorization time to the baseline's is the factorization speedup, isolated from any refinement cost |
-| `luir` | `complex64` factorization + LU-IR |
-| `gmresir` | `complex64` factorization + GMRES-IR |
-
-A speedup is only meaningful for a variant that reached the target accuracy.
-The refinement variants stop on `mpir`'s criteria, condition 5 of which
-compares the forward error against the reference solution, so a converged run
-is one that reached the reference's accuracy. `converged` and `ferr_ref` sit
-beside every timing and a figure must gate on them. For the two unrefined
-variants there is no iteration to converge, so `converged` is set from what
-they are: the `complex128` solve defines the target accuracy, the `complex64`
-one does not reach it.
-
-### The three totals
-
-| Column | Meaning |
-|---|---|
-| `wall_s` | end to end around the driver call, including the harness's own setup: the refinement drivers hold `A` at the working precision and copy it to get there, which the two direct variants do not |
-| `total_s` | `factor_s + inner_s`, the algorithmic total. The stage breakdown sums to exactly this, and it is what the speedup and stacked-bar figures use |
-| `setup_s` | `wall_s - total_s`, the harness overhead just described, kept as a column so the difference between the two totals is visible rather than absorbed |
-
-`total_s` splits into `factor_symbolic_s`, `factor_numeric_s`, `solve_s`,
-`residual_s` and `other_s`, defined as in [section 6](#the-two-tables), each
-measured strictly inside the total.
+`--repeats` runs of each variant are made, default 5, and the **median of each
+stage** is reported. `total_s` is the sum of those three medians, so a bar
+equals the sum of its parts — it is therefore the median of each part rather
+than the median total. `total_s_min` and `total_s_max` carry the spread of the
+per-repeat totals that the median hides.
 
 ### Memory
 
-Three components that sum to `working_mb`: `factor_mb` (the stored
-factorization), `matrix_mb` (`A` at the precision that variant must hold it —
-`complex128` for the baseline *and for both refinement variants*, which form
-their residuals there, `complex64` only for `c64_direct`) and `krylov_mb` (the
-inner GMRES basis, `gmresir` only). The matrix not halving when the
-factorization does is why the working set does not halve.
+Recorded and not yet drawn: `factor_mb` (the stored factorization, from each
+solver's `factor_nbytes`), `matrix_mb` (`A` at `complex128`, which *both*
+variants hold — LU-IR forms its residual at the working precision, which is why
+the working set does not halve when the factorization does) and their sum
+`working_mb`. `factor_nbytes` returns 0 where a backend exposes no size — MUMPS
+where `INFOG(3)` is unreachable, cuDSS where the factorization info carries no
+`lu_nnz` — and `factor_mb_reported` is 0 there. A figure must drop such a row
+rather than draw it at zero.
 
 Process-level figures — peak Python heap, peak RSS — are deliberately absent,
 for the reason given in `mpir.py`: the Block Thomas factors are NumPy arrays
@@ -743,48 +781,43 @@ its cost is charged to none of them.
 
 Solvers are compared on wall-clock cost **as installed and configured on the
 machine the script runs on**. MUMPS and cuDSS are libraries with their own
-threading and, for cuDSS, their own device; the Block Thomas families are NumPy
-code calling LAPACK on dense blocks. A difference between two solvers here is a
-difference between those implementations on this machine, not a property of the
-algorithms in isolation.
+threading and, for cuDSS, their own device; Block Thomas is NumPy code calling
+LAPACK on dense blocks. A difference between two solvers here is a difference
+between those implementations on this machine, not a property of the algorithms
+in isolation. Running all four together requires a node with a GPU, and the
+comparison is then between one GPU solver and three CPU solvers.
 
 ### Output
 
 ```
-<outdir>/<material>/<material>_cost.h5
+<outdir>/<material>/<material>_perf.h5
 └── experiments/
     ├── 0001/          attrs: the whole run configuration
-    │   ├── runs       one row per (index, solver, variant)
-    │   └── speedups   one row per (index, solver), derived
+    │   └── runs       one row per (index, solver, variant)
     └── ...
 ```
 
 beside the convergence file `mpir.py` writes, with the same numbering, the same
 append-only rule and the same attribute convention (`mpir.new_experiment`).
 
-`speedups` is **derived** from `runs` and adds no measurement. It exists so
-that the definition of each ratio — which variant is the numerator, which the
-denominator, which total is used — is fixed once in `mpcost.speedup_rows`
-rather than reconstructed in each figure, where two figures could disagree.
-Every column of it is reproducible from `runs`. A ratio whose numerator or
-denominator is missing is `nan`, never a substituted value.
-
-`mpcost.load_experiment(path, experiment=None)` returns
-`(name, attrs, runs, speedups)`; `mpcost.cost_path(outdir, material)` gives the
-file path.
+`mpperf.load_experiment(path, experiment=None)` returns `(name, attrs, runs)`;
+`mpperf.perf_path(outdir, material)` gives the file path.
 
 ### Plotting
 
-[`../plotting/mixed_prec_ir/plot_mpir_cost.py`](../plotting/mixed_prec_ir/)
-draws four figures into `cost<NNNN>/` beside the cost file, matching the
-`exp<NNNN>/` that `plot_mpir.py` writes:
+[`../plotting/mixed_prec_ir/plot_mpperf.py`](../plotting/mixed_prec_ir/) draws
+one figure, `<material>_perf_summary.png`, into `perf<NNNN>/` beside the
+performance file, matching the `exp<NNNN>/` that `plot_mpir.py` writes.
 
-| Figure | After |
-|---|---|
-| `<material>_cost_speedup.png` | Zounon et al. (2022), figs 2–7 — speedup by solver, and across the sweep |
-| `<material>_cost_time_breakdown.png` | Zounon et al. figs 8–9 and Amestoy et al. fig 2 — normalized stacked time, with the solve count on each bar |
-| `<material>_cost_memory.png` | Amestoy et al. fig 3 — normalized stacked working set |
-| `<material>_cost_sweep.png` | the per-index detail behind the three aggregates |
+One group of bars per energy index, the groups ordered by `kappa_inf(A)` and
+evenly spaced regardless of it — bars of neighbouring indices would otherwise
+overlap wherever two condition numbers are close, which near a band edge is
+most of them. Within a group each solver contributes a pair of bars in its own
+`style.SOLVER_STYLE` colour, left `c64_ir` and right `c128`, each stacked into
+the three stages and shaded light to dark. Reading one pair is the whole point:
+the left bar shorter than the right is the case for mixed precision at that
+conditioning, and the left bar growing past the right as `kappa_inf` rises is
+refinement giving back what the low precision won.
 
 ---
 
@@ -808,9 +841,9 @@ draws four figures into `cost<NNNN>/` beside the cost file, matching the
   forward-error comparison; kept as a pointer for the thesis text.
 - M. Zounon, N. J. Higham, C. Lucas and F. Tisseur, Performance impact of
   precision reduction in sparse linear systems solvers, *PeerJ Comput. Sci.*
-  8:e778, 2022. The factorization speedup `mpcost.py` reports and the stage
-  breakdown that explains why it falls short of 2.
+  8:e778, 2022. The stage breakdown `mpperf.py` draws, and why the symbolic
+  phase is what keeps a sparse speedup short of 2.
 - P. Amestoy, A. Buttari, N. J. Higham, J.-Y. L'Excellent, T. Mary and
   B. Vieublé, Combining sparse approximate factorizations with mixed-precision
-  iterative refinement, *ACM TOMS* 49(1), 2023. The four-variant layout of
-  `mpcost.py` and the normalized time and memory breakdowns.
+  iterative refinement, *ACM TOMS* 49(1), 2023. The variant layout and the
+  time and memory breakdowns `mpperf.py` follows.

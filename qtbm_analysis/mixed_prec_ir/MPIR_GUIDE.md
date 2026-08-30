@@ -7,9 +7,9 @@ with the code; this document exists to be read start to finish once, rather
 than grepped.
 
 `mpir.py` answers whether refinement converges and to what accuracy. Its
-companion `mpcost.py` answers what it costs — time and memory, across solvers,
-at a fixed `complex64` — reusing these same refinement loops and writing its
-own file. See [README.md, section 7](README.md#7-mpcostpy).
+companion `mpperf.py` answers what it costs in runtime, across solvers, at a
+fixed `complex64` — reusing these same refinement loops and writing its own
+file. See [README.md, section 7](README.md#7-mpperfpy).
 
 ---
 
@@ -400,8 +400,9 @@ construction.
 factors is not a possible measurement, so `factor_mb` is left at 0 rather than
 guessed and `working_mb` is then a lower bound.
 
-These columns are what the companion cost study reads; see `mpcost.py` and
-[README.md, section 7](README.md#7-mpcostpy).
+The companion runtime study measures the same quantities itself rather than
+reading them from here; see `mpperf.py` and
+[README.md, section 7](README.md#7-mpperfpy).
 
 ### `iterations` — one row per (index, outer step), plus a terminal row
 

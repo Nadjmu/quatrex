@@ -425,9 +425,9 @@ def new_experiment(path, attrs):
     experiment group itself and not to the tables beneath it, so that a reader
     looks in one place for what a run was.
 
-    Separate from save_experiment so that mpcost.py, whose experiments hold a
-    different pair of tables, shares the numbering and the attribute
-    convention rather than reimplementing them.
+    Separate from save_experiment so that mpperf.py, whose experiments hold a
+    different table, shares the numbering and the attribute convention rather
+    than reimplementing them.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
