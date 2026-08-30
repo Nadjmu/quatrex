@@ -724,8 +724,9 @@ def print_summary(rows):
 
     print("\n" + "=" * 92)
     print(f"{'idx':>6} {'kappa_inf':>11} {'solver':<18} "
-          f"{'c64+LU-IR':>11} {'c128':>11} {'speedup':>9} {'outer':>6}  note")
-    print("-" * 92)
+          f"{'c64+LU-IR':>11} {'c128':>11} {'speedup':>9} {'outer':>6} "
+          f"{'resid':>6}  note")
+    print("-" * 99)
 
     def _kappa(variants):
         row = variants.get("c64_ir") or variants.get("c128")
@@ -743,10 +744,21 @@ def print_summary(rows):
         speedup = (t_ref / t_ir) if (ir and ref and t_ir > 0
                                      and ir["converged"]) else float("nan")
         note = "" if (ir and ir["converged"]) else "LU-IR did not converge"
+        # Share of the refinement iteration spent on the working-precision
+        # residual. It is the same b - Ax for every solver, so a column of
+        # similar percentages across solvers is the expected result, not a
+        # coincidence -- and a high one says the bar is dominated by a cost
+        # u_f cannot reduce. See the Reproducibility section of the README.
+        share = (100.0 * ir["residual_s"] / ir["solve_s"]
+                 if ir and ir.get("solve_s", 0) > 0 else float("nan"))
         print(f"{idx:>6} {kappa:>11.2e} {solver:<18} "
               f"{t_ir * 1e3:>9.1f}ms {t_ref * 1e3:>9.1f}ms "
-              f"{speedup:>9.2f} {ir['outer_iters'] if ir else 0:>6}  {note}")
-    print("=" * 92)
+              f"{speedup:>9.2f} {ir['outer_iters'] if ir else 0:>6} "
+              f"{share:>5.0f}%  {note}")
+    print("=" * 99)
+    print("resid = share of the c64+LU-IR refinement iteration spent forming "
+          "b - Ax at complex128,")
+    print("        a cost identical for every solver and unaffected by u_f.")
 
 
 def list_experiments(path):
