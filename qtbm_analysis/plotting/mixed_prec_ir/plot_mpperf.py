@@ -94,6 +94,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import to_rgb
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
 import cli
@@ -155,7 +156,7 @@ def _grouped(rows, solvers):
     return table, keep, dropped
 
 
-def plot_summary(rows, attrs, out_path, solvers, ymax=None):
+def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
     """
     Runtime against kappa_inf(A): one bar group per index, one bar pair per
     solver, three stacked stages per bar. See the module docstring.
@@ -192,12 +193,17 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None):
     # Milliseconds where every bar is under a second, seconds otherwise. A
     # time axis reading 0.014 costs the reader two decimal places for nothing;
     # the choice is made once for the whole figure so the bars stay comparable.
-    tallest = max(float(r["total_s"]) for i in order
-                  for s in table[i].values() for r in s.values()
+    # The whiskers reach total_s_max, which is above the median the bar is
+    # drawn to, so the scale is taken from whichever is higher -- otherwise a
+    # bar whose repeats spread widely has its whisker clipped off the top,
+    # hiding exactly the thing the whisker exists to show.
+    tallest = max(max(float(r["total_s"]), float(r["total_s_max"]))
+                  for i in order for s in table[i].values() for r in s.values()
                   if np.isfinite(r["total_s"]))
     unit, scale = ("ms", 1e3) if tallest < 1.0 else ("s", 1.0)
 
     not_converged = 0
+    n_unstable = 0
     for s_i, solver in enumerate(present):
         base = style.SOLVER_STYLE[solver][1]
         for v_i, variant in enumerate(VARIANTS):
@@ -215,6 +221,16 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None):
                 # recorded converged, so only a left bar is ever hatched.
                 hatch = None if int(row["converged"]) else "///"
                 not_converged += int(not int(row["converged"]))
+                # Outlined in red where the repeats disagreed by more than
+                # `limit`: contention only ever adds time, so such a bar
+                # measures the node rather than the solver. Drawn rather than
+                # dropped, because a gap would read as a solver that failed.
+                lo, hi = float(row["total_s_min"]), float(row["total_s_max"])
+                unstable = (np.isfinite(lo) and lo > 0
+                            and np.isfinite(hi) and hi / lo > limit)
+                n_unstable += int(unstable)
+                edge = "#D62728" if unstable else "black"
+                edge_w = 1.4 if unstable else 0.5
                 for phase in PHASES:
                     height = float(row[phase]) * scale
                     if not np.isfinite(height) or height <= 0:
@@ -222,9 +238,20 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None):
                     ax.bar(slot[g_i] + offset + bar_w / 2, height,
                            width=bar_w, bottom=bottom,
                            color=_shade(base, PHASE_STYLE[phase][1]),
-                           edgecolor="black", linewidth=0.5, hatch=hatch,
+                           edgecolor=edge, linewidth=edge_w, hatch=hatch,
                            zorder=3)
                     bottom += height
+
+                # The min-max range of the per-repeat totals, as a whisker on
+                # the bar. The bar is a median and says nothing about how the
+                # repeats agreed; on a contended node they can span two orders
+                # of magnitude, and a reader must be able to see that without
+                # opening the file.
+                if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+                    ax.plot([slot[g_i] + offset + bar_w / 2] * 2,
+                            [lo * scale, hi * scale],
+                            color="#222222", lw=0.9, zorder=4,
+                            marker="_", ms=3.0, mew=0.9)
 
     ax.set_xticks(slot)
     ax.set_xticklabels([f"{kappa[i]:.1e}\nE_{i}" for i in order], fontsize=8)
@@ -240,14 +267,41 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None):
     ax.grid(axis="y", alpha=0.25, lw=0.4, zorder=0)
     ax.set_axisbelow(True)
 
-    _legend(ax, present, attrs, not_converged)
+    if n_unstable:
+        print(f"  [WARNING] {n_unstable} bars are drawn from repeats "
+              f"disagreeing by more than {limit:g}x and are outlined in red. "
+              f"They measure the machine, not the solver.")
+
+    _legend(ax, present, attrs, not_converged, n_unstable, limit)
     fig.suptitle(_summary_title(attrs, order, present), fontsize=9)
-    fig.tight_layout()
+    # The machine, along the bottom: a wall-clock figure is a statement about
+    # one, and a reader cannot check comparability against a caption that is
+    # not there. Small and grey -- it is provenance, not a finding.
+    fig.text(0.5, 0.005, _environment_line(attrs), ha="center", fontsize=6.5,
+             color="#555555")
+    fig.tight_layout(rect=(0, 0.03, 1, 1))
     fig.subplots_adjust(top=0.86)
     save_figure(fig, out_path)
 
 
-def _legend(ax, present, attrs, not_converged):
+def _environment_line(attrs):
+    """One grey line naming the machine the timings belong to."""
+    threads = [f"{v.split('_')[0]}={attrs[f'env_{v}']}"
+               for v in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS")
+               if attrs.get(f"env_{v}")]
+    bits = [attrs.get("host", "?"),
+            f"{attrs.get('cpu_affinity', '?')}/{attrs.get('cpu_count', '?')} cores",
+            f"{attrs.get('blas_name', '?')} {attrs.get('blas_version', '')}".strip(),
+            ", ".join(threads) if threads else "NO THREAD CAP SET"]
+    if attrs.get("loadavg_1_start") is not None:
+        bits.append(f"load {float(attrs['loadavg_1_start']):.1f}"
+                    f"->{float(attrs.get('loadavg_1_end', float('nan'))):.1f}")
+    if attrs.get("timestamp"):
+        bits.append(str(attrs["timestamp"]))
+    return "   |   ".join(bits)
+
+
+def _legend(ax, present, attrs, not_converged, n_unstable=0, limit=2.0):
     """
     Two legends, because a bar carries two independent things. Colour is the
     solver; shade is the stage. Combining them would need one entry per
@@ -279,6 +333,13 @@ def _legend(ax, present, attrs, not_converged):
         phase_handles.append(
             Patch(facecolor="white", edgecolor="black", lw=0.5, hatch="///",
                   label="did not converge"))
+    if n_unstable:
+        phase_handles.append(
+            Patch(facecolor="white", edgecolor="#D62728", lw=1.4,
+                  label=f"repeats disagree > {limit:g}x"))
+    phase_handles.append(
+        Line2D([0], [0], color="#222222", lw=0.9, marker="_", ms=3.0,
+               label="repeat spread (min-max)"))
     ax.legend(handles=phase_handles, fontsize=8, framealpha=0.9,
               loc="upper right", title="stage", title_fontsize=8)
 
@@ -329,6 +390,10 @@ def main():
                     help="draw only these solvers, in this left-to-right "
                          "order (default: every solver the experiment holds, "
                          "in the order it recorded them)")
+    ap.add_argument("--stability-limit", type=float, default=None, metavar="R",
+                    help="outline a bar in red where its slowest repeat "
+                         "exceeds its fastest by more than this ratio "
+                         "(default: whatever the experiment recorded)")
     ap.add_argument("--ymax", type=float, default=None, metavar="S",
                     help="clip the time axis at this many seconds, so that "
                          "one slow solver does not flatten the rest")
@@ -358,7 +423,9 @@ def main():
                          f"add it to plotting/style.py SOLVER_STYLE")
 
     plot_summary(rows, attrs, outdir / f"{material}_perf_summary.png",
-                 solvers, ymax=args.ymax)
+                 solvers, ymax=args.ymax,
+                 limit=args.stability_limit
+                       or float(attrs.get("stability_limit", 2.0)))
 
 
 if __name__ == "__main__":

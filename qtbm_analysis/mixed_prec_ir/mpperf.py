@@ -111,10 +111,14 @@ Then
 import datetime
 import gc
 import math
+import os
+import platform
+import socket
 import sys
 from pathlib import Path
 
 import numpy as np
+import scipy
 
 sys.path.append(str((Path(__file__).parent / ".." / "solvers").resolve()))
 import cli
@@ -197,6 +201,191 @@ def load_experiment(path, experiment=None):
     attrs = experiment_attrs(path, name)
     runs, _ = load_table(path, f"{EXPERIMENTS_GROUP}/{name}/runs")
     return name, attrs, runs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Environment
+#
+# A wall-clock comparison is a statement about a machine, and every one of the
+# quantities below changes the answer. They are recorded on the experiment so
+# that a figure drawn a year later still says what it was measured on, and so
+# that two experiments can be checked for comparability rather than assumed
+# comparable.
+#
+# The one that dominates: OpenBLAS defaults to one thread per core. On a 72-core
+# node factoring dense blocks 128 to 352 wide, that was measured costing 68x --
+# a complex128 Block Thomas factorization of one si-bulk index took 254 ms with
+# the thread count capped and 17 s without. It is not a second-order effect and
+# a run that does not record it cannot be reproduced.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Read rather than set. mpperf never sets a thread count itself: OpenBLAS fixes
+# its pool size at the first call, so a value set from inside the process is
+# unreliable, and silently overriding what the user asked for would make the
+# recorded environment a lie. Cap it in the shell, as the README says.
+THREAD_VARS = ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS",
+               "GOTO_NUM_THREADS", "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
+
+
+def _blas_info():
+    """(name, version, build configuration) of the BLAS NumPy is linked against."""
+    try:
+        cfg = np.show_config(mode="dicts") or {}
+        blas = (cfg.get("Build Dependencies") or {}).get("blas") or {}
+        return (str(blas.get("name", "")), str(blas.get("version", "")),
+                str(blas.get("openblas configuration", "")))
+    except Exception:
+        return ("", "", "")
+
+
+def _threadpools():
+    """
+    What each loaded native threadpool says its size is, as 'api=n' strings, or
+    [] where threadpoolctl is not installed.
+
+    This is the only source that reports the size OpenBLAS actually chose, as
+    opposed to what the environment asked for. The two differ whenever no
+    variable is set, which is the case this exists to catch.
+    """
+    try:
+        import threadpoolctl
+    except ImportError:
+        return []
+    try:
+        return [f"{d.get('internal_api', '?')}={d.get('num_threads', '?')}"
+                for d in threadpoolctl.threadpool_info()]
+    except Exception:
+        return []
+
+
+def environment():
+    """
+    Everything a timing comparison depends on that cannot be recovered from the
+    result table afterwards.
+
+    `cpu_affinity` rather than `cpu_count`: under taskset the two differ, and it
+    is the affinity mask that bounds how many cores the run could actually use.
+    """
+    name, version, config = _blas_info()
+    env = dict(
+        host=socket.gethostname(),
+        platform=platform.platform(),
+        processor=platform.machine(),
+        cpu_count=int(os.cpu_count() or 0),
+        cpu_affinity=len(os.sched_getaffinity(0))
+                     if hasattr(os, "sched_getaffinity") else 0,
+        blas_name=name,
+        blas_version=version,
+        blas_config=config,
+        python_version=platform.python_version(),
+        numpy_version=np.__version__,
+        scipy_version=scipy.__version__,
+    )
+    for var in THREAD_VARS:
+        env[f"env_{var}"] = os.environ.get(var, "")
+    pools = _threadpools()
+    env["threadpools"] = ", ".join(pools) if pools else "(threadpoolctl absent)"
+    return env
+
+
+def loadavg(suffix):
+    """The 1/5/15-minute load averages, tagged with when they were taken."""
+    try:
+        one, five, fifteen = os.getloadavg()
+    except (OSError, AttributeError):
+        return {}
+    return {f"loadavg_1_{suffix}": float(one),
+            f"loadavg_5_{suffix}": float(five),
+            f"loadavg_15_{suffix}": float(fifteen)}
+
+
+def check_environment(env, load):
+    """
+    Print the environment, and warn where it is one a timing comparison should
+    not be made in. Returns the number of warnings, which main() reports again
+    at the end -- the header scrolls away in a long run and a silently
+    unusable measurement is the thing most likely to be misread.
+
+    Nothing is refused. The user may have a reason to measure on a busy node;
+    the requirement is that the run says so.
+    """
+    print(f"Machine : {env['host']}  {env['processor']}  "
+          f"{env['cpu_affinity']} of {env['cpu_count']} cores available")
+    print(f"BLAS    : {env['blas_name']} {env['blas_version']}")
+    threads = {v: env[f"env_{v}"] for v in THREAD_VARS if env[f"env_{v}"]}
+    print(f"Threads : "
+          + (", ".join(f"{k}={v}" for k, v in threads.items()) if threads
+             else "no thread variable set")
+          + f"   [{env['threadpools']}]")
+    if load:
+        print(f"Load    : {load.get('loadavg_1_start', float('nan')):.1f} "
+              f"(1 min), {load.get('loadavg_15_start', float('nan')):.1f} "
+              f"(15 min)")
+
+    warnings_ = []
+    # OpenBLAS with no cap takes one thread per core. Harmless on 8 cores,
+    # catastrophic on 72 with blocks this size; 16 is where it starts to hurt.
+    if not threads and env["cpu_affinity"] > 16:
+        warnings_.append(
+            f"no thread limit is set and {env['cpu_affinity']} cores are "
+            f"available, so OpenBLAS will use one thread per core. On blocks "
+            f"of a few hundred rows this has been measured 68x slower than a "
+            f"capped pool. Set OPENBLAS_NUM_THREADS (see the README).")
+    # Someone else's job makes every CPU number here a measurement of the node
+    # rather than of the solver. A quarter of the cores busy is generous.
+    busy = load.get("loadavg_1_start", 0.0)
+    if env["cpu_affinity"] and busy > 0.25 * env["cpu_affinity"]:
+        warnings_.append(
+            f"load average is {busy:.1f} on {env['cpu_affinity']} cores: the "
+            f"node is running other work, and CPU timings will measure that "
+            f"as much as the solver. The GPU solver is unaffected.")
+    for message in warnings_:
+        print(f"\n  [WARNING] {message}")
+    if warnings_:
+        print()
+    return len(warnings_)
+
+
+# The spread above which a row is not a measurement. Contention only ever adds
+# time, so a solver whose slowest repeat is more than this multiple of its
+# fastest was interrupted during at least one of them; cuDSS on an idle GPU
+# holds 1.014 across five indices, and a capped, quiet CPU run should be well
+# inside 1.5.
+STABILITY_LIMIT = 2.0
+
+
+def check_stability(rows, limit=STABILITY_LIMIT):
+    """
+    Report every row whose repeats disagree by more than `limit`, and return
+    how many there were.
+
+    This is the check that decides whether a run is usable. The median hides
+    the spread by construction -- that is what a median is for -- so without it
+    a bar drawn from five repeats that ranged over two orders of magnitude
+    looks exactly like a bar drawn from five that agreed.
+    """
+    bad = []
+    for row in rows:
+        lo, hi = row["total_s_min"], row["total_s_max"]
+        if lo > 0 and np.isfinite(lo) and np.isfinite(hi) and hi / lo > limit:
+            bad.append((hi / lo, row))
+    if not bad:
+        return 0
+    print(f"\n{'!' * 92}")
+    print(f"UNSTABLE: {len(bad)} of {len(rows)} measurements have repeats "
+          f"disagreeing by more than {limit:g}x.")
+    print("These are not measurements of the solver. Do not draw them.\n")
+    print(f"{'idx':>6} {'solver':<16} {'variant':<10} "
+          f"{'min':>10} {'median':>10} {'max':>10} {'ratio':>7}")
+    for ratio, row in sorted(bad, key=lambda p: -p[0]):
+        print(f"{int(row['idx']):>6} {row['solver']:<16} {row['variant']:<10} "
+              f"{row['total_s_min'] * 1e3:>9.1f}m {row['total_s'] * 1e3:>9.1f}m "
+              f"{row['total_s_max'] * 1e3:>9.1f}m {ratio:>7.1f}x")
+    print(f"\nUsual cause: another job on the node, or an uncapped OpenBLAS "
+          f"thread pool.\nSee the Reproducibility section of "
+          f"mixed_prec_ir/README.md.")
+    print("!" * 92)
+    return len(bad)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -581,6 +770,13 @@ def main():
                                f"<material>{PERF_SUFFIX}.h5, to which each run "
                                f"appends one numbered experiment "
                                f"(default: {cli.MIXED_PREC_DIR})")
+    ap.add_argument("--stability-limit", type=float,
+                    default=STABILITY_LIMIT, metavar="R",
+                    help=f"flag any measurement whose slowest repeat exceeds "
+                         f"its fastest by more than this ratio (default: "
+                         f"{STABILITY_LIMIT:g}). Contention only ever adds "
+                         f"time, so a large spread means the run was "
+                         f"interrupted, not that the solver is variable")
     ap.add_argument("--no-save", action="store_true",
                     help="print the report but append no experiment")
     ap.add_argument("--list-experiments", action="store_true",
@@ -618,11 +814,15 @@ def main():
     low_dtype = np.dtype(args.factor_dtype)
     inv_dtype = np.dtype(args.inv_dtype)
 
+    env = environment()
+    load = loadavg("start")
     print(f"Problem : {h5path}")
     print(f"Solvers : {', '.join(args.solvers)}")
     print(f"Variants: {dtype_label(low_dtype)} + LU-IR, complex128 direct")
     print(f"Runs    : {args.repeats} per variant, median of each stage; "
-          f"one untimed warm-up solve per precision before each solver\n")
+          f"one untimed warm-up solve per precision before each solver")
+    n_warnings = check_environment(env, load)
+    print()
 
     all_rows, skipped = [], []
     for idx in indices:
@@ -642,6 +842,11 @@ def main():
               f"{', '.join(str(i) for i, _ in skipped)}")
 
     print_summary(all_rows)
+    load.update(loadavg("end"))
+    n_unstable = check_stability(all_rows, args.stability_limit)
+    if n_warnings and not n_unstable:
+        print(f"\n[note] the run completed with {n_warnings} environment "
+              f"warning(s) above; the repeats were nonetheless stable.")
 
     if args.no_save or not all_rows:
         return
@@ -668,6 +873,10 @@ def main():
         indices=np.asarray(indices, dtype=np.int64),
         n_requested=len(indices),
         n_skipped=len(skipped),
+        stability_limit=float(args.stability_limit),
+        n_unstable=int(n_unstable),
+        **env,
+        **load,
         **material_metadata(h5path),
     )
     if skipped:
@@ -680,6 +889,10 @@ def main():
                columns=RUN_COLUMNS)
     print(f"\nwrote {out_path}:/{EXPERIMENTS_GROUP}/{name}")
     print(f"  runs  {len(all_rows)} rows (one per index, solver and variant)")
+    if n_unstable:
+        print(f"  {n_unstable} of {len(all_rows)} rows are unstable; the "
+              f"figure will mark them, but the run should be repeated on a "
+              f"quiet node with a capped thread pool.")
     print(f"  plot with: python ../plotting/mixed_prec_ir/plot_mpperf.py "
           f"{out_path} --experiment {int(name)}")
 

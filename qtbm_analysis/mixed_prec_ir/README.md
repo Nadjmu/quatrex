@@ -807,6 +807,50 @@ between those implementations on this machine, not a property of the algorithms
 in isolation. Running all four together requires a node with a GPU, and the
 comparison is then between one GPU solver and three CPU solvers.
 
+### Reproducibility
+
+A wall-clock comparison is a statement about a machine, so `mpperf.py` records
+the machine on every experiment: host, platform, `cpu_count` and
+`cpu_affinity` (they differ under `taskset`), the BLAS name, version and build
+configuration, every `*_NUM_THREADS` variable, what `threadpoolctl` reports the
+loaded pools actually chose, the NumPy/SciPy/Python versions, and the 1/5/15
+minute load averages both **before and after** the sweep. `plot_mpperf.py`
+prints the important part of it along the bottom of the figure.
+
+**Cap the BLAS thread pool.** This is not a second-order effect. OpenBLAS
+defaults to one thread per core; on a 72-core node factoring dense blocks 128
+to 352 wide, that was measured costing **68×** — a `complex128` Block Thomas
+factorization of one si-bulk index took 254 ms with the pool capped and 17 s
+without. Blocks of a few hundred rows are far too small to want 72 threads, and
+the barrier cost dwarfs the arithmetic.
+
+Which variable depends on how OpenBLAS was built. `numpy.show_config()` reports
+it; with `USE_OPENMP=0` it is a pthread build and `OPENBLAS_NUM_THREADS` is
+authoritative, `OMP_NUM_THREADS` only a fallback. `mpperf.py` **reads** these
+and never sets them: OpenBLAS fixes its pool size at the first call, so setting
+one from inside the process is unreliable, and silently overriding what was
+asked for would make the recorded environment a lie.
+
+**Do not measure on a busy node.** Other jobs make every CPU timing a
+measurement of the node. The GPU solver is unaffected, which is what makes the
+contamination easy to spot: cuDSS held 1.4% across five si-bulk indices while
+the two CPU solvers varied by 14× and 68× on *identically sized* matrices.
+
+Two checks run automatically:
+
+- **Before the sweep**, the environment is printed and warned about — no thread
+  cap with more than 16 cores available, or a load average above a quarter of
+  them. Nothing is refused; the requirement is that the run says so.
+- **After the sweep**, `check_stability` flags every row whose slowest repeat
+  exceeds its fastest by more than `--stability-limit` (default 2). Contention
+  only ever adds time, so a large spread means the run was interrupted, not
+  that the solver is variable. The count is stored as `n_unstable` and those
+  bars are outlined in red in the figure.
+
+The median cannot catch this on its own — hiding the spread is what a median is
+for. `total_s_min` and `total_s_max` are therefore stored per row and drawn as
+a whisker on every bar.
+
 ### Output
 
 ```
