@@ -285,8 +285,16 @@ MATERIALS = {
         example=EXAMPLES_DIR / "graphene/qtbm",
         inputs=EXAMPLES_DIR / "graphene/inputs",
         block_size=416,
-        valence_band_edge=0.499,
-        conduction_band_edge=0.500,
+        # The edges are the boundaries of the transmitting region, read off
+        # the exported right-hand sides: the last index with open channels
+        # below the gap is E_532 (+0.032 eV) and the first above it is E_1615
+        # (+1.115 eV). The values the export carries, 0.499 and 0.500, are
+        # what find_band_edges returns when it is handed mid_gap_energy=0.5,
+        # and they sit in the middle of the 1.08 eV window in which QTBM
+        # injects no modes at all. mid_gap_energy is left at 0.5, which is
+        # still inside the gap and so still a valid input to bandstructure.py.
+        valence_band_edge=0.032,
+        conduction_band_edge=1.115,
         grid=EnergyGrid(start=-0.5, end=1.500, resolution=0.001),
         mid_gap_energy=0.5,
     ),

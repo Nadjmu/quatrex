@@ -66,7 +66,7 @@ Usage
     python plot_forward_error.py \
         /scratch/yimili/error-analysis-block-thomas/carbon-nanotube.h5
     python plot_forward_error.py .../carbon-chain.h5 \
-        --solvers block-thomas superlu mumps --dtypes complex128
+        --solvers block-thomas superlu mumps cudss --dtypes complex128
 """
 
 import sys
@@ -93,7 +93,15 @@ DTYPE_ORDER = ("complex32", "complex64", "complex128")
 
 # Block Thomas (inv) is left out by default: its explicit-inversion instability
 # at the band edges dwarfs every other curve. --solvers puts it back.
-DEFAULT_EXCLUDE = ("block-thomas-inv", "block-thomas-inv-fp16")
+# The chapter compares one pivoting reference (SuperLU, GEPP) against Block
+# Thomas at each working precision, so everything else is off by default and
+# --solvers brings it back. UMFPACK: row scaling changes A_eff. MUMPS and
+# cuDSS: no factors exposed, so they cannot appear in the growth figures and
+# including them only here makes the figure sets disagree. block-thomas-inv:
+# its band-edge instability reaches omega ~ 1 at complex64 and buries the LU
+# variant. The rows stay in the analysis file either way.
+DEFAULT_EXCLUDE = ("block-thomas-inv", "block-thomas-inv-fp16", "umfpack",
+                   "mumps", "cudss")
 
 
 def read_records(h5path):

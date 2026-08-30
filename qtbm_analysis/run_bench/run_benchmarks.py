@@ -35,7 +35,8 @@ E_<idx>/M:
     E_<idx>/superlu/<dtype>/, E_<idx>/blockthomas/<dtype>/, ...
 
 This mutates the source file in place. Copy it first if the original must be
-preserved. No figures are produced here; see plotting/block-thomas/plot_speedup.py.
+preserved. No figures are produced here; the stored factors and solutions are
+read by block-thomas/growth_factor.py and block-thomas/forward_error.py.
 
 Usage
 -----
@@ -50,7 +51,8 @@ keep them independent: a crash or OOM kill in one no longer takes the others
 down with it, and does not corrupt their HDF5 files (a killed process can
 corrupt whichever file it was writing to when it died).
 
-    python ../plotting/block-thomas/plot_speedup.py /scratch/yimili/matrices2/hdf5/graphene.h5
+    python ../block-thomas/growth_factor.py \
+        /scratch/yimili/matrices2/hdf5/graphene.h5
 """
 
 import argparse
@@ -91,10 +93,11 @@ SOLVERS = tuple(s for s in DEFAULT_SOLVERS
                 if s not in {"gmres", "gmres-cupy", "cudss"})
 
 # Dropped by default: nothing. --exclude-solvers adds to this per invocation,
-# so one slow material can drop a solver (e.g. SuperLU) without affecting the
-# others; see main(). Dropping superlu entirely is safe with plot_speedup.py's
-# baseline made a plot-time choice (--baseline-solver/--baseline-dtype) rather
-# than a hard-coded requirement.
+# so one slow material can drop a solver without affecting the others; see
+# main(). Dropping superlu is not free, though: it is the a-priori-bounded GEPP
+# reference the growth figures are read against, and plot_growth_factor.py's
+# default solver set is block-thomas plus superlu. si-bulk was swept without it
+# in August and needed a second pass to fill it in.
 EXCLUDE = {}
 
 
@@ -202,11 +205,11 @@ def main():
     parser.add_argument("--exclude-solvers", nargs="+", choices=SOLVERS,
                         default=(), metavar="NAME",
                         help="drop these solvers for this invocation only, "
-                             "e.g. --exclude-solvers superlu for a material "
-                             "where it is impractically slow. Materials "
-                             "already benchmarked with the full solver set "
-                             "are unaffected; plot_speedup.py's baseline is "
-                             "chosen at plot time and need not be superlu.")
+                             "for a material where one is impractically slow. "
+                             "Materials already benchmarked with the full "
+                             "solver set are unaffected. Dropping superlu "
+                             "costs the growth figures their GEPP reference; "
+                             "see EXCLUDE.")
     cli.add_index_selection(parser, default_all=True)
     args = parser.parse_args()
     materials = [args.material] if args.material else MATERIAL_BS
@@ -229,7 +232,8 @@ def main():
         count = run_material(material, h5path, solvers=solvers, wanted=wanted)
         print(f"Finished {material}: appended solver results for {count} "
               f"indices into {h5path}")
-        print(f"Plot with: python ../plotting/block-thomas/plot_speedup.py {h5path}\n")
+        print(f"Analyse with: python ../block-thomas/growth_factor.py "
+              f"{h5path}\n")
 
     print("All materials processed.")
 

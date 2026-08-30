@@ -13,10 +13,10 @@ row per (index, solver, dtype). Only the backward-error columns are used here:
 
 This group, unlike ``growth_factor``, is populated for every solver that
 stores a solution -- MUMPS and cuDSS included, since backward error needs only
-x and b, never the factors. Every solver except block-thomas-inv is drawn by
-default (see DEFAULT_EXCLUDE): its explicit-inversion instability at the band
-edges reaches omega ~ 1 at complex64 and hides the LU variant beneath it.
---solvers restores it.
+x and b, never the factors. The figures nonetheless draw the same three the
+growth figures do, SuperLU and Block Thomas at each precision (see
+DEFAULT_EXCLUDE); --solvers brings any of the others back without recomputing
+anything.
 
 Energies for which the sweep holds no solution -- the band gap, where the
 right-hand side has no columns -- leave a hole in the index sequence; the
@@ -84,7 +84,15 @@ GROUP = "forward_error"
 # Block Thomas (inv) is left out by default: its explicit-inversion instability
 # at the band edges (omega -> O(1) at complex64) dwarfs every other curve and
 # hides the LU variant drawn beneath it. --solvers puts it back.
-DEFAULT_EXCLUDE = ("block-thomas-inv", "block-thomas-inv-fp16")
+# The chapter compares one pivoting reference (SuperLU, GEPP) against Block
+# Thomas at each working precision, so everything else is off by default and
+# --solvers brings it back. UMFPACK: row scaling changes A_eff. MUMPS and
+# cuDSS: no factors exposed, so they cannot appear in the growth figures and
+# including them only here makes the figure sets disagree. block-thomas-inv:
+# its band-edge instability reaches omega ~ 1 at complex64 and buries the LU
+# variant. The rows stay in the analysis file either way.
+DEFAULT_EXCLUDE = ("block-thomas-inv", "block-thomas-inv-fp16", "umfpack",
+                   "mumps", "cudss")
 
 # Unit roundoff u = 2^-(p+1) for a precision with p bits of mantissa.
 UNIT_ROUNDOFF = {

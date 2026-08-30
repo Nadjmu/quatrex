@@ -29,7 +29,7 @@ from `solvers/cli.py`, so the option names match every other script; see
 
 ```bash
 python run_benchmarks.py
-python ../plotting/block-thomas/plot_speedup.py /scratch/yimili/matrices2/hdf5/graphene.h5
+python ../block-thomas/growth_factor.py /scratch/yimili/matrices2/hdf5/graphene.h5
 ```
 
 Sweeps every material of `cli.MATERIALS` that declares a block size, appending
@@ -142,12 +142,12 @@ a factorization that is half precision throughout, so the gap against the
 
 `gpu_run_benchmarks.py` runs only the GPU solvers and appends them into the
 same material files. It does not rerun any CPU solver, so it may be executed on
-a GPU node without repeating the CPU sweep; `plotting/block-thomas/plot_speedup.py` reads
-the SuperLU baseline already present in the file.
+a GPU node without repeating the CPU sweep; `block-thomas/forward_error.py`
+picks the cuDSS rows up from the file afterwards.
 
 ```bash
 python gpu_run_benchmarks.py
-python ../plotting/block-thomas/plot_speedup.py <material>.h5 --solvers cudss --suffix _gpu
+python ../block-thomas/forward_error.py <material>.h5
 ```
 
 Both GPU drivers complete without error on a CPU-only machine: availability is

@@ -146,7 +146,12 @@ UNIT_ROUNDOFF = {
 # block-thomas-inv is left out because it shares the Schur recursion of
 # block-thomas exactly and only clutters the growth panels; --solvers adds
 # either back.
-DEFAULT_SOLVERS = ("block-thomas", "superlu")
+#
+# block-thomas-fp16 is included: growth_factor.py stores the complex32 rows
+# under that name rather than under block-thomas, so leaving it out empties the
+# complex32 panel of every figure this script draws while the rows sit unused
+# in the group.
+DEFAULT_SOLVERS = ("block-thomas", "block-thomas-fp16", "superlu")
 
 # Finest precision first: the multiplier profile is a property of the
 # factorization rather than of the arithmetic, so one precision suffices and
@@ -652,8 +657,7 @@ def main():
                                   "block-thomas-inv are excluded by default, "
                                   "the first for its row scaling, the second "
                                   "as a duplicate of the block-thomas Schur "
-                                  "recursion. Pass block-thomas-fp16 to draw "
-                                  "the half-precision variant)")
+                                  "recursion)")
     cli.add_dtypes(ap, choices=cli.COMPLEX_DTYPES, default=None,
                    help="restrict to these precisions "
                         "(default: all present in the file)")

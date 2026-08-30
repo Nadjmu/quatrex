@@ -17,7 +17,6 @@ one subfolder per analysis, holding the scripts that plot it.
 plotting/
 ├── style.py                  shared conventions; not executable; see below
 ├── block-thomas/
-│   ├── plot_speedup.py
 │   ├── plot_growth_factor.py
 │   ├── plot_forward_error.py
 │   ├── plot_backward_error.py
@@ -39,7 +38,6 @@ plotting/
 
 | Script | Input | Figures produced |
 |---|---|---|
-| `block-thomas/plot_speedup.py` | material file, timing datasets | `<material>_speedup.png` |
 | `block-thomas/plot_growth_factor.py` | analysis file, `growth_factor` | `<material>_growth_factor.png`, `<material>_schur_growth.png` |
 | `block-thomas/plot_forward_error.py` | analysis file, `forward_error` | `<material>_forward_error.png` |
 | `block-thomas/plot_backward_error.py` | analysis file, `forward_error` | `<material>_backward_error.png` |
@@ -61,7 +59,6 @@ default as follows.
 
 | Script | Default output directory |
 |---|---|
-| `block-thomas/plot_speedup.py` | `cli.BLOCK_THOMAS_DIR` |
 | `matrices2/plot_qtbm_spectra.py` | `cli.CONDITION_DIR` |
 | `matrices2/plot_rhs.py` | `cli.CONDITION_DIR` |
 | `materials/bandstructure.py` | `cli.MATERIALS_DIR/<material>` |
@@ -82,8 +79,8 @@ site.
 - **Colour and marker identify the solver**, keyed by the canonical solver name
   defined in `solvers/cli.py`: `block-thomas`, `gmres`, and so on — the same
   spelling every command line uses. A script that reads an HDF5 file converts
-  the stored group name with `cli.from_h5_group` first, and `plot_speedup.py`
-  goes the other way with `cli.h5_group` when it opens the file.
+  the stored group name with `cli.from_h5_group` first; `cli.h5_group` goes the
+  other way, for a script that opens the material file directly.
 - **Line style identifies the precision.** `complex32` is not a NumPy dtype; it
   is the storage label used for the half-precision embedded-real
   factorizations.
@@ -114,8 +111,8 @@ All scripts use the `Agg` backend and write PNG; none opens a window.
 ## Which producer feeds which figure
 
 ```
-run_bench/run_benchmarks.py      ─► matrices2/hdf5/<material>.h5            ─► block-thomas/plot_speedup.py
-run_bench/gpu_run_benchmarks.py  ─► the same file                           ─► block-thomas/plot_speedup.py --suffix _gpu
+run_bench/run_benchmarks.py      ─► matrices2/hdf5/<material>.h5            ─► block-thomas/growth_factor.py
+run_bench/gpu_run_benchmarks.py  ─► the same file                           ─► block-thomas/forward_error.py
 block-thomas/growth_factor.py    ─► error-analysis-block-thomas/            ─► block-thomas/plot_growth_factor.py
                                      <material>.h5 :/growth_factor
 block-thomas/forward_error.py    ─► the same file :/forward_error           ─► block-thomas/plot_forward_error.py
@@ -132,11 +129,6 @@ main3.py / main3_gpu.py          ─► matrices2/<material>/energies.npy, ...  
 make_hdf5.py                     ─► matrices2/hdf5/<material>.h5 :/E_*/rhs ─► matrices2/plot_rhs.py
 ```
 
-`block-thomas/plot_speedup.py` reads the material file itself, because the
-timings it needs are already stored there and no intermediate artefact is
-required. Its figure is written to the Block Thomas analysis directory, beside
-the stability and accuracy figures drawn from the same solver runs.
-
 The two `mixed_prec_ir/` scripts are the ones here that read a *numbered
 experiment* rather than a single fixed group: `mpir.py` and `mpcost.py` append one per
 invocation and never overwrites, so `--experiment` selects which run to draw
@@ -149,8 +141,6 @@ and defaults to the last. `--list` prints what a file holds. See
 
 ```bash
 cd block-thomas
-python plot_speedup.py        /scratch/yimili/matrices2/hdf5/graphene.h5
-python plot_speedup.py        .../graphene.h5 --solvers cudss --suffix _gpu
 python plot_growth_factor.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 python plot_forward_error.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 python plot_backward_error.py /scratch/yimili/error-analysis-block-thomas/graphene.h5
@@ -184,12 +174,6 @@ quantities it plots and how they are to be read.
 ---
 
 ## What the figures show
-
-**`block-thomas/plot_speedup.py`.** Factorization time and solve time relative
-to the SuperLU complex128 baseline, on a logarithmic axis with the unit line
-marked. Ratios are taken per energy index, so a missing index in one series
-cannot bias another. Shaded spans mark indices whose right-hand side has zero
-columns and which the benchmark driver therefore skipped.
 
 **`block-thomas/plot_growth_factor.py`.** Per norm: the growth ratios, the
 pivot growth factor `rho`, and the reconstruction residual. The tight ratio is

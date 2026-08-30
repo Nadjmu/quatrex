@@ -102,7 +102,6 @@ which every analysis of that material writes its own top-level group.
                     plotting/block-thomas/plot_forward_error.py
                     plotting/block-thomas/plot_backward_error.py
                     plotting/block-thomas/plot_fp16_accuracy.py
-                    plotting/block-thomas/plot_speedup.py
                     plotting/mixed_prec_ir/plot_mpir.py
                     plotting/mixed_prec_ir/plot_mpir_cost.py
                     plotting/non-normal/plot_non_normal.py
@@ -252,7 +251,6 @@ python non-normal.py /scratch/yimili/matrices2/hdf5/graphene.h5 --stride 20
 # Stage 5: figures, each written beside the data it was drawn from.
 # plotting/ mirrors the same category layout as the scratch directories.
 cd ../plotting/block-thomas
-python plot_speedup.py        /scratch/yimili/matrices2/hdf5/graphene.h5
 python plot_growth_factor.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 python plot_forward_error.py  /scratch/yimili/error-analysis-block-thomas/graphene.h5
 python plot_backward_error.py /scratch/yimili/error-analysis-block-thomas/graphene.h5
@@ -275,7 +273,6 @@ cd ../solvers && python test_pipeline.py
 | `growth_factor.py` | stage 3 complete | reads the stored factors |
 | `forward_error.py` | stage 3 complete, and `condition_est.py` for the bound columns | reads the stored solutions and backward errors |
 | `sweep_fp16.py` | stage 3 complete | reads `blockthomas/complex128/x` as its reference |
-| `plot_speedup.py` | stage 3 complete | reads the stored timings |
 | every other `plot_*.py` | its stage-4 group | reads that group only |
 
 `run_benchmarks.py` and `gpu_run_benchmarks.py` are the only scripts that
@@ -408,7 +405,7 @@ nowhere — so `--stride` is how a sweep is shortened, not a hard-coded `--end`.
 | `--dtype` | `--dtypes` | `growth_factor` |
 | `--h5path PATH` | positional `h5path` | `sweep_fp16`, `non-normal` |
 | `--material-name` | `--material` | `non-normal` |
-| `--out-root`, `--out`, `--plotdir` | `--outdir` | `non-normal`, `plot_speedup`, `make_hdf5`, `growth_factor` |
+| `--out-root`, `--out`, `--plotdir` | `--outdir` | `non-normal`, `make_hdf5`, `growth_factor` |
 | `--indices 0:401` | `--start 0 --end 401` | `non-normal` |
 | `--idx N` (single) | `--idx N [N ...]` | `growth_factor`, `mpir` |
 | `--maxiter` | `--max-iter` | `arnoldi_shift_invert_*` |

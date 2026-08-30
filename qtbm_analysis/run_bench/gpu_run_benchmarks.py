@@ -24,8 +24,8 @@ Output
 ------
 Results are appended into each material's own HDF5 file under
 E_<idx>/<solver>/<dtype>/, exactly as in the CPU driver. No figures are
-produced; see plotting/block-thomas/plot_speedup.py, which reads the stored timings and
-divides by the SuperLU complex128 baseline already in the file.
+produced here; the stored solutions and backward errors are read by
+block-thomas/forward_error.py.
 
 Usage
 -----
@@ -36,8 +36,8 @@ Run each material as its own process, as with run_benchmarks.py: a crash or
 OOM kill in one no longer takes the others down with it, and does not corrupt
 their HDF5 files.
 
-    python ../plotting/block-thomas/plot_speedup.py /scratch/yimili/matrices2/hdf5/graphene.h5 \
-        --solvers cudss gmres_cupy --suffix _gpu
+    python ../block-thomas/forward_error.py \
+        /scratch/yimili/matrices2/hdf5/graphene.h5
 """
 
 import argparse
@@ -107,8 +107,8 @@ def main():
         count = run_material(material, h5path)
         print(f"Finished {material}: appended {', '.join(GPU_SOLVERS)} results "
               f"for {count} indices into {h5path}")
-        print(f"Plot with: python ../plotting/block-thomas/plot_speedup.py {h5path} "
-              f"--solvers {' '.join(GPU_SOLVERS)} --suffix _gpu\n")
+        print(f"Analyse with: python ../block-thomas/forward_error.py "
+              f"{h5path}\n")
 
 
 if __name__ == "__main__":
