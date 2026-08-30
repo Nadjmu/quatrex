@@ -179,7 +179,7 @@ RUN_COLUMNS = [
     "stop_reason",
     # memory, recorded but not yet drawn
     "factor_mb", "factor_mb_reported", "matrix_mb", "working_mb",
-    "repeats", "reference_solver",
+    "repeats", "reduce", "reference_solver",
 ]
 
 
@@ -346,6 +346,22 @@ def check_environment(env, load):
     return len(warnings_)
 
 
+# How the repeats of one stage are reduced to the number drawn.
+#
+# median is the default because it is what a reader expects and what the study
+# was specified with. min is the defensible choice on a shared machine:
+# contention, page reclaim and scheduling only ever ADD time, never remove it,
+# so the fastest repeat is the observation least contaminated by the node and
+# the closest to the cost of the solver itself. It is the standard estimator
+# for exactly this reason (timeit.Timer.repeat documents the same argument).
+#
+# It is not a way to make a bad run look good: the stability check below reads
+# total_s_min and total_s_max whichever reducer is used, so a contaminated run
+# is still reported as one. min changes which number is drawn, not whether the
+# run is admitted.
+REDUCERS = {"median": np.median, "min": np.min}
+
+
 # The spread above which a row is not a measurement. Contention only ever adds
 # time, so a solver whose slowest repeat is more than this multiple of its
 # fastest was interrupted during at least one of them; cuDSS on an idle GPU
@@ -475,7 +491,7 @@ def _phases(extra):
 
 
 def measure_variant(variant, solver_name, A, b, low_dtype, inv_dtype, opts,
-                    repeats):
+                    repeats, reduce="median"):
     """
     One (solver, variant) measurement, as a partial row, or None where the
     variant could not run -- an absent package, no CUDA device, a partition the
@@ -501,13 +517,13 @@ def measure_variant(variant, solver_name, A, b, low_dtype, inv_dtype, opts,
         print(f"skipped ({type(e).__name__}: {e})")
         return None
 
-    # Each stage's median over the repeats, so total_s is the sum of exactly
-    # the three numbers drawn. It is therefore the median of each part rather
-    # than the median total; total_s_min and total_s_max carry the spread of
-    # the per-repeat totals.
+    # Each stage reduced over the repeats, so total_s is the sum of exactly the
+    # three numbers drawn. It is therefore the reduction of each part rather
+    # than the reduction of the totals; total_s_min and total_s_max carry the
+    # spread of the per-repeat totals whichever reducer is in use.
     stages = np.asarray(stages, dtype=float)
     symbolic_s, factorization_s, solve_s, numeric_reported_s, factor_s = \
-        np.median(stages, axis=0)
+        REDUCERS[reduce](stages, axis=0)
     per_repeat_total = np.nansum(stages[:, :3], axis=1)
     total_s = float(np.nansum([symbolic_s, factorization_s, solve_s]))
 
@@ -559,6 +575,7 @@ def measure_variant(variant, solver_name, A, b, low_dtype, inv_dtype, opts,
         matrix_mb=matrix_mb,
         working_mb=factor_mb + matrix_mb,
         repeats=int(repeats),
+        reduce=str(reduce),
     )
 
     tag = "" if monitor is None else \
@@ -580,7 +597,7 @@ def measure_variant(variant, solver_name, A, b, low_dtype, inv_dtype, opts,
 
 
 def measure_index(h5path, idx, solvers, low_dtype, inv_dtype, max_iter,
-                  repeats, reference_solver, ferr_tol):
+                  repeats, reference_solver, ferr_tol, reduce="median"):
     """
     Every (solver, variant) at one energy index, measured in one process
     against byte-identical inputs.
@@ -650,7 +667,7 @@ def measure_index(h5path, idx, solvers, low_dtype, inv_dtype, max_iter,
             if solver_name.startswith("block-thomas") else -1
         for variant in VARIANTS:
             row = measure_variant(variant, solver_name, A, b, low_dtype,
-                                  inv_dtype, opts, repeats)
+                                  inv_dtype, opts, repeats, reduce)
             if row is not None:
                 rows.append(dict(common, solver=solver_name,
                                  n_blocks=int(n_blocks), **row))
@@ -770,6 +787,14 @@ def main():
                                f"<material>{PERF_SUFFIX}.h5, to which each run "
                                f"appends one numbered experiment "
                                f"(default: {cli.MIXED_PREC_DIR})")
+    ap.add_argument("--reduce", choices=tuple(REDUCERS), default="median",
+                    help="how the repeats of each stage become the number "
+                         "drawn (default: median). 'min' is the better "
+                         "estimator on a shared machine: contention only ever "
+                         "adds time, so the fastest repeat is the least "
+                         "contaminated one. It does not suppress the "
+                         "stability check, which reads the full spread either "
+                         "way")
     ap.add_argument("--stability-limit", type=float,
                     default=STABILITY_LIMIT, metavar="R",
                     help=f"flag any measurement whose slowest repeat exceeds "
@@ -819,8 +844,9 @@ def main():
     print(f"Problem : {h5path}")
     print(f"Solvers : {', '.join(args.solvers)}")
     print(f"Variants: {dtype_label(low_dtype)} + LU-IR, complex128 direct")
-    print(f"Runs    : {args.repeats} per variant, median of each stage; "
-          f"one untimed warm-up solve per precision before each solver")
+    print(f"Runs    : {args.repeats} per variant, {args.reduce} of each "
+          f"stage; one untimed warm-up solve per precision before each "
+          f"solver")
     n_warnings = check_environment(env, load)
     print()
 
@@ -832,7 +858,7 @@ def main():
             all_rows.extend(measure_index(
                 h5path, idx, args.solvers, low_dtype, inv_dtype,
                 args.max_iter, args.repeats, args.reference_solver,
-                args.ferr_tol))
+                args.ferr_tol, args.reduce))
         except SystemExit as e:                  # a bad index, from load_system
             skipped.append((idx, str(e)))
             print(f"E_{idx}: skipped ({e})")
@@ -870,6 +896,7 @@ def main():
         ferr_tol=float(args.ferr_tol) if args.ferr_tol is not None else -1.0,
         reference_solver=args.reference_solver,
         repeats=int(args.repeats),
+        reduce=args.reduce,
         indices=np.asarray(indices, dtype=np.int64),
         n_requested=len(indices),
         n_skipped=len(skipped),

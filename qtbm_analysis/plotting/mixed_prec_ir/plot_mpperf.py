@@ -142,7 +142,7 @@ def _grouped(rows, solvers):
     Rows with no kappa_inf are dropped: the x axis is kappa_inf and there is
     nowhere to put a point that has none. The count is reported by the caller.
     """
-    table, kappa = {}, {}
+    table, kappa, n_rhs = {}, {}, {}
     for row in rows:
         if row["solver"] not in solvers:
             continue
@@ -150,10 +150,11 @@ def _grouped(rows, solvers):
         table.setdefault(idx, {}).setdefault(row["solver"], {})[
             row["variant"]] = row
         kappa.setdefault(idx, float(row["kappa_inf"]))
+        n_rhs.setdefault(idx, int(row["n_rhs"]))
     keep = {i: k for i, k in kappa.items() if np.isfinite(k) and k > 0}
     dropped = sorted(set(table) - set(keep))
     table = {i: table[i] for i in keep}
-    return table, keep, dropped
+    return table, keep, {i: n_rhs[i] for i in keep}, dropped
 
 
 def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
@@ -161,7 +162,7 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
     Runtime against kappa_inf(A): one bar group per index, one bar pair per
     solver, three stacked stages per bar. See the module docstring.
     """
-    table, kappa, dropped = _grouped(rows, solvers)
+    table, kappa, n_rhs, dropped = _grouped(rows, solvers)
     if not table:
         print("  [skip] summary: no row has a finite kappa_inf; run "
               "condition-est/condition_est.py first")
@@ -254,7 +255,12 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
                             marker="_", ms=3.0, mew=0.9)
 
     ax.set_xticks(slot)
-    ax.set_xticklabels([f"{kappa[i]:.1e}\nE_{i}" for i in order], fontsize=8)
+    # n_rhs is on the tick because it is a confounder sitting underneath the
+    # kappa axis: the solve stage scales with the number of right-hand sides,
+    # so a bar can be tall for a reason that has nothing to do with
+    # conditioning, and the reader has no other way to see it.
+    ax.set_xticklabels([f"{kappa[i]:.1e}\nE_{i}\n{n_rhs[i]} rhs"
+                        for i in order], fontsize=8)
     ax.set_xlabel(r"$\kappa_\infty(A)$")
     ax.set_ylabel(f"time [{unit}]")
     ax.set_xlim(-0.5, len(order) - 0.5)
@@ -354,7 +360,8 @@ def _summary_title(attrs, order, present):
         f"each pair: left = {low} factorization + "
         f"{attrs.get('inner_label', 'LU-IR')},   "
         f"right = complex128 direct solve\n"
-        f"median of {attrs.get('repeats', '?')} runs per bar;  "
+        f"{attrs.get('reduce', 'median')} of {attrs.get('repeats', '?')} "
+        f"runs per bar;  "
         f"stopping: forward error increased, max_iter="
         f"{attrs.get('max_iter', '?')};  "
         f"reference {attrs.get('reference_solver', '?')}"

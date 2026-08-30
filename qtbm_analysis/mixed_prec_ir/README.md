@@ -851,6 +851,24 @@ The median cannot catch this on its own — hiding the spread is what a median i
 for. `total_s_min` and `total_s_max` are therefore stored per row and drawn as
 a whisker on every bar.
 
+**`--reduce min` on a machine you do not own.** Contention, page reclaim and
+scheduling only ever *add* time, so the fastest of the repeats is the
+observation least contaminated by the node and the closest to the cost of the
+solver itself; `timeit.Timer.repeat` documents the same argument. It is the
+right choice where one solver is being disturbed and the others are not — on
+si-bulk, MUMPS's `complex128` factorization was measured at 142–157 ms
+minimum at every index across three separate experiments while its medians
+wandered between 154 and 607 ms, the disturbance falling on the one solver
+that allocates the largest contiguous workspace.
+
+`min` is not a way to make a bad run look good. The stability check reads
+`total_s_min` and `total_s_max` whichever reducer is used, so a contaminated
+run is still reported and its bars still outlined; `min` changes which number
+is drawn, not whether the run is admitted. The reducer is recorded in the
+experiment attributes and named in the figure title.
+
+`median` remains the default.
+
 ### Output
 
 ```
