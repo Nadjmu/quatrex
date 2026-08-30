@@ -306,6 +306,21 @@ Four honest caveats, all visible in the output rather than hidden:
   `u_s ‖E_i d_i‖/‖d_i‖`, the error along the direction the correction actually
   took, which is a lower estimate of the worst-case `u_s ‖E_i‖_∞` the
   Corollary bounds with.
+- **`phi_solve`'s reference correction is always a plain complex128 solve**,
+  even under `--reference-solver extended`. Reusing the extended reference's
+  own refinement loop there costs `O(n_rhs · outer_iters · nnz)` of
+  unvectorized clongdouble work per index — minutes on a QTBM block with
+  millions of nonzeros — for a term that never feeds the summary figure or the
+  convergence decision. `x_true` still gets the full extended refinement, so
+  only `phi_solve_hat`, `phi_hat` and `reference_correction_norm_inf` are
+  affected; `ferr_ref`, `outer_iters`, `converged`, `rho`, `mu_hat` and
+  `phi_cond_hat` are unchanged.
+
+  Sound for **LU-IR** (`u_s = u_f`, far above the reference's own
+  `cond(A,x) u`). For **GMRES-IR** `u_s = u`, the same precision the reference
+  carries, so `phi_solve_hat` becomes noise once `cond(A,x)` is large — the
+  regime GMRES-IR exists for. Don't quote it there from a run made this way;
+  `_ExtendedReference.fast_solve` documents the one-line restore.
 
 ---
 

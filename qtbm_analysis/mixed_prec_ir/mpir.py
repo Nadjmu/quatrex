@@ -1022,6 +1022,50 @@ class _ExtendedReference:
         self.residual = float("nan")
         return _solve_columns(self._solve_one, b)
 
+    def fast_solve(self, b):
+        """
+        One plain complex128 triangular solve against the same factorization,
+        skipping the extended-precision residual loop entirely.
+
+        Used for refinement_metrics' phi_solve term, and for nothing else.
+        x_true still comes from solve(), so no convergence quantity -- the
+        stopping rule, outer_iters, converged, ferr_best, and through x_true
+        also rho, mu_hat and phi_cond -- is affected by this method existing.
+
+        Why the cheaper solve is used at all: the loop in _solve_one is
+        dominated by _matvec_ext, an elementwise clongdouble product over the
+        CSR arrays with no BLAS path, run n_rhs * (max_steps + 1) times per
+        call. On a QTBM block (nnz in the millions, tens of right-hand sides)
+        that is seconds to minutes *per outer iteration*, and phi_solve is a
+        diagnostic that never reaches the summary figure or a convergence
+        verdict. Measured on a synthetic block-tridiagonal system with
+        nnz = 9.3e4 and 26 right-hand sides, this is about 160x faster, and
+        the correction it returns differs by ~1e-27.
+
+        What it costs, and it is not nothing
+        ------------------------------------
+        phi_solve compares the method's own correction against this one, so
+        the reference is only meaningful while it is clearly more accurate
+        than the correction under test. This solve carries cond(A,x) u, so
+        whether that holds depends on u_s, the precision the method's own
+        correction was formed in:
+
+            LU-IR      u_s = u_f (6e-8 at complex64, 5e-4 at complex32).
+                       cond(A,x) u stays well below that up to the condition
+                       numbers LU-IR survives at all, so phi_solve is sound.
+            GMRES-IR   u_s = u, the same working precision this solve's own
+                       error is measured in. Once cond(A,x) grows, the two
+                       become comparable and phi_solve_hat degrades into
+                       noise -- exactly in the high-kappa regime GMRES-IR
+                       exists for.
+
+        So a GMRES-IR phi_solve at large kappa_inf should not be quoted from
+        a run made this way. To restore the accurate term for one experiment,
+        drop the getattr in run_benchmarks that prefers this method and let
+        ref_solve call solve() again; nothing else needs to change.
+        """
+        return self._lu.solve(np.asarray(b, dtype=HIGH_DTYPE))
+
     def factor_nbytes(self):
         return 0
 
@@ -2268,9 +2312,17 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
         except (ImportError, TypeError, RuntimeError) as e:
             raise SystemExit(f"--reference-solver {reference_solver} failed: {e}")
 
+    # fast_solve exists only on _ExtendedReference, where .solve() would
+    # otherwise redo the whole extended-precision refinement loop for every
+    # retained residual -- see its docstring. Every other reference solver's
+    # own .solve() is already a single direct solve, so there is nothing to
+    # skip there.
+    _ref_solve_one = getattr(ref, "fast_solve", None) or (
+        ref.solve if ref is not None else None)
+
     def ref_solve(r):
         """Reference correction for a retained residual; see refinement_metrics."""
-        return ref.solve(np.asarray(r, dtype=HIGH_DTYPE)).astype(HIGH_DTYPE)
+        return _ref_solve_one(np.asarray(r, dtype=HIGH_DTYPE)).astype(HIGH_DTYPE)
 
     u_work = unit_roundoff(HIGH_DTYPE)
     # The convergence level, resolved here -- not left to RefinementMonitor's
