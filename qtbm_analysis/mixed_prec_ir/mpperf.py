@@ -243,9 +243,16 @@ def _threadpools():
     What each loaded native threadpool says its size is, as 'api=n' strings, or
     [] where threadpoolctl is not installed.
 
-    This is the only source that reports the size OpenBLAS actually chose, as
+    This is the only source that reports the size a library actually chose, as
     opposed to what the environment asked for. The two differ whenever no
     variable is set, which is the case this exists to catch.
+
+    Sampled twice: once in environment(), and again after the sweep. The first
+    sample sees only what is loaded at start-up, which is NumPy and SciPy --
+    python-mumps and nvmath dlopen their libraries, and any OpenMP runtime
+    they bring with them, when their first solver is built. A pool that only
+    appears in the second sample is one belonging to a solver, and it is the
+    one a start-up-only check would miss.
     """
     try:
         import threadpoolctl
@@ -869,6 +876,17 @@ def main():
 
     print_summary(all_rows)
     load.update(loadavg("end"))
+    # Sampled now that every solver library is loaded; see _threadpools.
+    pools_end = _threadpools()
+    env["threadpools_end"] = (", ".join(pools_end) if pools_end
+                              else "(threadpoolctl absent)")
+    if pools_end and env["threadpools_end"] != env["threadpools"]:
+        print(f"\n[note] thread pools at start: {env['threadpools']}")
+        print(f"       thread pools at end:   {env['threadpools_end']}")
+        print(f"       A pool appearing only at the end belongs to a solver "
+              f"library loaded during the run.")
+        print(f"       One sized well above the cap above is a solver "
+              f"ignoring it, and is worth chasing.")
     n_unstable = check_stability(all_rows, args.stability_limit)
     if n_warnings and not n_unstable:
         print(f"\n[note] the run completed with {n_warnings} environment "
