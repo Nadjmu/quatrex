@@ -55,6 +55,7 @@ sys.path.append(str((_HERE / ".." / ".." / "solvers").resolve()))
 
 import h5py
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 
 import cli
@@ -119,10 +120,28 @@ def plot(groups, idx, dtype_name, material, attrs, dynamic_range, out_path):
         group = groups[solver]
         for name in COLUMNS:
             mat = load_sparse_factor(group[name]).toarray()
-            panels[(solver, name)] = np.log10(np.abs(mat) + 1e-300)
+            # A structural zero is not a small value and must not be drawn at
+            # the bottom of the colour scale; it is masked and rendered as
+            # background instead. The previous form, log10(|x| + 1e-300), made
+            # that choice depend on the storage width: 1e-300 underflows to
+            # zero in the float32 that np.abs returns for a complex64 factor,
+            # so those panels produced -inf and came out on a white ground,
+            # while complex128 panels produced a finite -300 and came out on
+            # the dark end of viridis. Same figure, two backgrounds.
+            with np.errstate(divide="ignore"):
+                logmag = np.log10(np.abs(mat).astype(np.float64))
+            panels[(solver, name)] = np.ma.masked_invalid(logmag)
 
-    vmax = np.ceil(max(float(p.max()) for p in panels.values()))
+    populated = [float(p.max()) for p in panels.values() if p.count()]
+    if not populated:
+        raise SystemExit(f"idx {idx} {dtype_name}: every panel is empty")
+    vmax = np.ceil(max(populated))
     vmin = vmax - dynamic_range
+
+    # Masked entries (the structural zeros) take the background colour. Values
+    # that are merely below vmin keep clamping to the bottom of the colormap,
+    # so a small nonzero entry stays distinguishable from no entry at all.
+    cmap = matplotlib.colormaps["viridis"].with_extremes(bad="white")
 
     fig, axes = plt.subplots(len(rows), 3, figsize=(15, 5.2 * len(rows)),
                              squeeze=False)
@@ -133,12 +152,14 @@ def plot(groups, idx, dtype_name, material, attrs, dynamic_range, out_path):
         resid = float(group.attrs.get("resid_rel", np.nan))
         for c, name in enumerate(COLUMNS):
             ax = axes[r][c]
-            image = ax.matshow(panels[(solver, name)], cmap="viridis",
+            ax.set_facecolor("white")
+            image = ax.matshow(panels[(solver, name)], cmap=cmap,
                                vmin=vmin, vmax=vmax)
             ax.set_title(COLUMN_TITLE[name], fontsize=12, pad=10)
             for edge in blocks:
-                ax.axhline(edge - 0.5, color="white", lw=0.3, alpha=0.4)
-                ax.axvline(edge - 0.5, color="white", lw=0.3, alpha=0.4)
+                # Grey, not white: the background is white now.
+                ax.axhline(edge - 0.5, color="0.45", lw=0.3, alpha=0.6)
+                ax.axvline(edge - 0.5, color="0.45", lw=0.3, alpha=0.6)
         axes[r][0].set_ylabel(
             f"{cli.label(solver)}\n"
             r"$\|A_{\mathrm{eff}}-LU\|/\|A_{\mathrm{eff}}\|$ = "
