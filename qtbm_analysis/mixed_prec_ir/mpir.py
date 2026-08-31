@@ -292,6 +292,7 @@ import datetime
 import gc
 import itertools
 import math
+import os
 import platform
 import sys
 import time
@@ -3404,6 +3405,18 @@ def main():
         # file said which one had produced a given experiment. eps_ext is
         # recorded alongside it since the reference no longer depends on
         # np.longdouble at all and the two must not be confused.
+        # Thread counts, read and never set -- mpperf.py's convention, and for
+        # its reason: OpenBLAS fixes its pool size at the first call, so a
+        # value set from inside the process is unreliable, and overriding what
+        # the user asked for would make the recorded environment a lie. They
+        # matter here even though this is an accuracy study, not a timing one:
+        # uncapped on a 72-core node the factorizations thrash badly enough
+        # (68x, measured -- see mpperf.py) to make a run look hung, and a
+        # report that does not say whether they were capped cannot explain it.
+        **{f"env_{v}": os.environ.get(v, "") for v in
+           ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS",
+            "GOTO_NUM_THREADS", "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")},
+        cpu_count=int(os.cpu_count() or 0),
         host_machine=platform.machine(),
         host_platform=platform.platform(),
         host_processor=platform.processor() or "unknown",

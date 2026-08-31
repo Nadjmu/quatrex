@@ -373,7 +373,10 @@ _CONFIG_KEYS = (
 )
 _ENV_KEYS = ("host_machine", "host_platform", "host_processor",
              "python_version", "numpy_version", "scipy_version",
-             "longdouble_bits", "longdouble_eps")
+             "longdouble_bits", "longdouble_eps", "cpu_count",
+             "env_OPENBLAS_NUM_THREADS", "env_OMP_NUM_THREADS",
+             "env_MKL_NUM_THREADS", "env_GOTO_NUM_THREADS",
+             "env_NUMEXPR_NUM_THREADS", "env_VECLIB_MAXIMUM_THREADS")
 _MATERIAL_KEYS = ("material", "source", "timestamp", "command",
                   "valence_band_edge", "conduction_band_edge",
                   "grid_energy_min", "resolution")
@@ -479,6 +482,20 @@ def write_report(h5path, name, attrs, run_rows, iter_rows, out_path,
         L.extend(_kv_block(attrs, _ENV_KEYS))
     else:
         add("  (not recorded -- this experiment predates the host_* attributes)")
+    add("")
+    if any(str(attrs.get(f"env_{v}", "")) for v in
+           ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS")):
+        add("")
+        add("  Thread counts were capped for this run.")
+    elif "cpu_count" in attrs:
+        add("")
+        add(f"  WARNING: no thread cap was set, on a {_fmt(attrs['cpu_count'])}-core")
+        add("  machine. OpenBLAS then takes one thread per core, which on a large")
+        add("  node costs up to 68x on the dense block factorizations (measured;")
+        add("  see mpperf.py). Accuracy is unaffected, but wall-clock timings in")
+        add("  this report -- and how long the run appeared to take -- are not")
+        add("  comparable with a capped run. Cap it in the shell, never in the")
+        add("  process: OpenBLAS fixes its pool size at the first call.")
     add("")
     add("  np.longdouble is 80-bit x87 on x86-64 and IEEE binary128 on")
     add("  aarch64, which changes both the cost and, for experiments written")
