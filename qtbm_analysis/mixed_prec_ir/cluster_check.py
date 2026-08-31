@@ -16,11 +16,14 @@ import mpir
 
 
 def t(fn, k=1):
+    """Median of k timed calls after a warm-up, so one contended call cannot
+    set the number. Everything here was originally single-sample, which is
+    how a 0.37s factorization also measured 17.15s in the same session."""
     fn()
-    s = time.perf_counter()
+    ts = []
     for _ in range(k):
-        out = fn()
-    return (time.perf_counter() - s) / k, out
+        s = time.perf_counter(); out = fn(); ts.append(time.perf_counter() - s)
+    return float(np.median(ts)), out
 
 
 h5path, idx = sys.argv[1], int(sys.argv[2])
@@ -36,16 +39,24 @@ print(f"  row lengths : min={counts.min()} max={counts.max()} "
       f"mean={counts.mean():.0f}  distinct={len(np.unique(counts))}")
 print(f"  blocks      : {len(bs)}  sizes {min(bs)}..{max(bs)}")
 print(f"  longdouble  : eps={float(np.finfo(np.longdouble).eps):.2e}")
+import os
+thr = {k: os.environ.get(k, "unset") for k in
+       ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")}
+print(f"  threads     : " + "  ".join(f"{k.split('_')[0]}={v}" for k, v in thr.items())
+      + f"   cores={os.cpu_count()}")
+if all(v == "unset" for v in thr.values()):
+    print("  WARNING: no thread limit set. The factorizations below are BLAS-bound")
+    print("           and on a shared node their timings swing by 20-50x. Re-run as")
+    print("           OMP_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 python cluster_check.py ...")
+    print("           on a COMPUTE node before believing any factorization number.")
 print()
 
 print("[1] the factorization the reference refines from")
-s = time.perf_counter(); lu = spla.splu(A); t_su = time.perf_counter() - s
+t_su, lu = t(lambda: spla.splu(A), 3)
 print(f"    SuperLU      : {t_su:8.2f}s   fill = {(lu.L.nnz+lu.U.nnz)/A.nnz:6.1f}x A.nnz"
       f"   (L+U = {lu.L.nnz+lu.U.nnz:,})")
-s = time.perf_counter()
-bt = mpir.SOLVER_BUILDERS["block-thomas"](
-    A, np.complex128, bs, np.zeros((n, 1), dtype=np.complex128), np.float32)
-t_bt = time.perf_counter() - s
+t_bt, bt = t(lambda: mpir.SOLVER_BUILDERS["block-thomas"](
+    A, np.complex128, bs, np.zeros((n, 1), dtype=np.complex128), np.float32), 3)
 print(f"    Block Thomas : {t_bt:8.2f}s"
       f"   -> {t_su/max(t_bt,1e-9):.1f}x cheaper than SuperLU")
 x0 = np.ascontiguousarray(b[:, 0])
@@ -76,22 +87,18 @@ print(f"    -> double-double is {od/dd:.1f}x the speed of clongdouble, "
       f"and {dd/pl:.0f}x a plain matvec")
 print()
 
-print("[3] the whole reference, split into its actual parts")
-print("    (each twice, so run-to-run variance is visible rather than assumed)")
+print("[3] the whole reference, split into its actual parts (median of 3)")
+real_fac = mpir._reference_factorization
 for label, blocks in (("SuperLU     ", [n]), ("Block Thomas", bs)):
-    for rep in range(2):
-        s0 = time.perf_counter()
-        name, fac = mpir._reference_factorization(A, blocks)
-        t_fac = time.perf_counter() - s0
-
-        s0 = time.perf_counter()
-        r = mpir._ExtendedReference(A, blocks)
-        t_build = time.perf_counter() - s0
-
-        s0 = time.perf_counter(); x = r.solve(b); t_solve = time.perf_counter() - s0
-        # how much of the solve is the extended matvec vs the triangular solves
-        nmv = r.steps + nrhs                 # one residual per step, plus the first
-        print(f"    {label} #{rep+1}: factorize {t_fac:7.2f}s | "
-              f"precompute {t_build - t_fac:7.2f}s | solve {t_solve:7.2f}s "
-              f"= {t_build + t_solve:7.2f}s   [{name}, steps/col={r.steps//max(nrhs,1)}]")
-        del r, fac
+    t_fac, made = t(lambda: real_fac(A, blocks), 3)
+    # Hold the factorization fixed so what is timed next is only the
+    # double-double precompute, not a second factorization.
+    mpir._reference_factorization = lambda A_, b_, _m=made: _m
+    try:
+        t_pre, r = t(lambda: mpir._ExtendedReference(A, blocks), 3)
+    finally:
+        mpir._reference_factorization = real_fac
+    t_solve, _ = t(lambda: r.solve(b), 3)
+    print(f"    {label}: factorize {t_fac:7.2f}s | precompute {t_pre:7.2f}s | "
+          f"solve {t_solve:7.2f}s = {t_fac + t_pre + t_solve:7.2f}s"
+          f"   [{made[0]}, steps/col={r.steps//max(nrhs,1)}]")
