@@ -1215,37 +1215,41 @@ class _ExtendedReference:
         ih, il = _dd_add(b.imag, 0.0, -pih, -pil)
         return rh + 1j * ih, rl + 1j * il
 
-    def _solve_one(self, b):
-        b = np.asarray(b, dtype=HIGH_DTYPE)
-        xh, xl = self._lu.solve(b), None
-        # Stop as soon as another step cannot change the complex128 result.
-        #
-        # The correction just applied also measures the error it removed, so
-        # ||d||/||x|| estimates the error the previous iterate carried -- and
-        # for refinement whose inner solve is at the working precision, that
-        # same quantity is the contraction factor (both are of order
-        # kappa_inf(A) u). The error left after applying d is therefore about
-        # (||d||/||x||)^2, and once that is below u the next correction cannot
-        # move a complex128 result and need not be computed.
-        #
-        # Testing the square rather than ||d||/||x|| itself is what makes this
-        # exit after one step instead of two on these matrices: at
-        # kappa_inf = 2e4 the first correction is already 2e-12 relative, so
-        # the second step existed only to observe that the third was
-        # unnecessary. Verified against exact rational solutions below
-        # kappa_inf = 1e5; a genuinely near-singular index fails the test and
-        # keeps iterating, up to max_steps.
+    def solve(self, b):
+        """
+        x_true for every right-hand side, refined together.
+
+        The triangular solves are batched across columns and the residuals are
+        not: a solve of k columns costs one call either way, while the
+        double-double residual allocates several nnz-sized temporaries per
+        column and doing all of them at once would multiply that by k. Solving
+        column by column, as this used to, turned 2 calls into 2k and on
+        si-bulk's 26 right-hand sides that per-call overhead cost more than
+        the factorization it was refining from.
+
+        One consequence: the stopping test is now taken over the whole block
+        rather than per column, so every column takes as many steps as the
+        worst of them needs. That can only refine further than before, and an
+        extra step provably cannot move a result already below u.
+        """
+        self.steps = 0
+        self.residual = float("nan")
+        b2 = np.asarray(b, dtype=HIGH_DTYPE)
+        one_d = b2.ndim == 1
+        B = b2.reshape(-1, 1) if one_d else b2
+
+        xh, xl = self._lu.solve(B), None
         tol = math.sqrt(unit_roundoff(HIGH_DTYPE))
         for _ in range(self._max_steps):
-            r_h, r_l = self._residual_dd(b, xh, xl)
-            # The correction solve is a working-precision solve either way, so
-            # the residual is rounded to complex128 here; what mattered was
-            # computing it without the cancellation error of a complex128
-            # matvec, which is what the double-double product above avoids.
-            d = self._lu.solve(r_h + r_l)
-            # The iterate is carried as a double-double between steps: rounded
-            # back to complex128 every step it could never become more
-            # accurate than the solutions it exists to judge.
+            Rh = np.empty_like(B)
+            Rl = np.empty_like(B)
+            for j in range(B.shape[1]):
+                rh, rl = self._residual_dd(
+                    np.ascontiguousarray(B[:, j]),
+                    np.ascontiguousarray(xh[:, j]),
+                    None if xl is None else np.ascontiguousarray(xl[:, j]))
+                Rh[:, j], Rl[:, j] = rh, rl
+            d = self._lu.solve(Rh + Rl)
             nh, nl = _dd_add(xh.real, 0.0 if xl is None else xl.real,
                              d.real, 0.0)
             mh, ml = _dd_add(xh.imag, 0.0 if xl is None else xl.imag,
@@ -1255,24 +1259,13 @@ class _ExtendedReference:
             norm_x = float(np.max(np.abs(xh)))
             if norm_x and float(np.max(np.abs(d))) <= tol * norm_x:
                 break
-        # The backward-error diagnostic is computed at complex128, not in
-        # double-double: it is a sanity number on a solution that is itself
-        # returned at complex128, and an extended-precision residual here
-        # would be a third full pass over the matrix per right-hand side --
-        # the same cost as a refinement step -- for a digit nobody can use.
+
         x = np.asarray(xh + xl, dtype=HIGH_DTYPE)
         denom = self._normA_inf * float(np.max(np.abs(x))) \
-            + float(np.max(np.abs(b)))
+            + float(np.max(np.abs(B)))
         if denom:
-            r = b - self._csr @ x
-            self.residual = max(0.0 if np.isnan(self.residual) else self.residual,
-                                float(np.max(np.abs(r)) / denom))
-        return x
-
-    def solve(self, b):
-        self.steps = 0
-        self.residual = float("nan")
-        return _solve_columns(self._solve_one, b)
+            self.residual = float(np.max(np.abs(B - self._csr @ x)) / denom)
+        return x[:, 0] if one_d else x
 
     def fast_solve(self, b):
         """
@@ -1284,7 +1277,7 @@ class _ExtendedReference:
         stopping rule, outer_iters, converged, ferr_best, and through x_true
         also rho, mu_hat and phi_cond -- is affected by this method existing.
 
-        Why the cheaper solve is used at all: the loop in _solve_one is
+        Why the cheaper solve is used at all: the residual loop in solve() is
         dominated by _matvec_dd, an error-free-transformation product over
         the CSR arrays with no BLAS path, run n_rhs * (max_steps + 1) times
         per call. On a QTBM block (nnz in the millions, tens of right-hand sides)

@@ -101,4 +101,4 @@ for label, blocks in (("SuperLU     ", [n]), ("Block Thomas", bs)):
     t_solve, _ = t(lambda: r.solve(b), 3)
     print(f"    {label}: factorize {t_fac:7.2f}s | precompute {t_pre:7.2f}s | "
           f"solve {t_solve:7.2f}s = {t_fac + t_pre + t_solve:7.2f}s"
-          f"   [{made[0]}, steps/col={r.steps//max(nrhs,1)}]")
+          f"   [{made[0]}, steps={r.steps}]")
