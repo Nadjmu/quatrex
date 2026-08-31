@@ -1060,6 +1060,48 @@ def _dd_reduce_rows(rh, rl, ih, il):
 DEFAULT_REF_STEPS = 3
 
 
+def _reference_factorization(A, bs):
+    """
+    The complex128 factorization the reference refines from: Block Thomas
+    where the block structure is known, SuperLU otherwise.
+
+    Which factorization seeds the iteration does not change what it converges
+    to -- the extended-precision residual corrects whatever error it has -- so
+    this is a cost decision, and on these matrices it is a large one. A
+    general sparse LU has no reason to respect a block-tridiagonal ordering
+    and on QTBM systems it does not: on graphene at n = 2080 SuperLU's factors
+    fill in to nearly full triangles where Block Thomas stays block-banded,
+    and the reference then costs minutes per index rather than seconds.
+    Block Thomas is also the more accurate of the two here, which makes the
+    iteration's starting point better as well as cheaper.
+
+    The two share nothing but an interface, so a reference built this way is
+    still independent of the low-precision method under test: that method runs
+    at u_f, this at complex128, and the refinement's own backward error is
+    recorded in self.residual either way.
+    """
+    # bs is None on every path through main(), which leaves each solver to
+    # detect its own blocks; do the same here rather than give up on the
+    # structure because the caller did not happen to pass it.
+    if bs is None:
+        try:
+            bs = block_sizes_from_matrix(A)
+        except (TypeError, ValueError, RuntimeError):
+            bs = None
+    # One detected block means no structure worth exploiting -- Block Thomas
+    # would then be a dense factorization of the whole matrix, which is the
+    # thing being avoided.
+    if bs is not None and len(bs) > 1:
+        try:
+            return "block-thomas", SOLVER_BUILDERS["block-thomas"](
+                A, HIGH_DTYPE, bs, np.zeros((A.shape[0], 1), dtype=HIGH_DTYPE),
+                DEFAULT_INV_DTYPE)
+        except FACTORIZATION_FAILURES + (ImportError, TypeError, RuntimeError,
+                                         ValueError):
+            pass          # fall back rather than lose the reference entirely
+    return "superlu", spla.splu(A.tocsc().astype(HIGH_DTYPE))
+
+
 class _ExtendedReference:
     """
     x_true by iterative refinement with a double-double residual.
@@ -1104,7 +1146,7 @@ class _ExtendedReference:
     complex128 return type.
     """
 
-    def __init__(self, A, max_steps=DEFAULT_REF_STEPS):
+    def __init__(self, A, bs=None, max_steps=DEFAULT_REF_STEPS):
         self._csr = A.tocsr().astype(HIGH_DTYPE)
         re = np.ascontiguousarray(self._csr.data.real)
         im = np.ascontiguousarray(self._csr.data.imag)
@@ -1119,9 +1161,11 @@ class _ExtendedReference:
             self._blocks.append((rows, self._csr.indices[pos],
                                  a, *_split(a), bb, *_split(bb)))
         self._normA_inf = float(abs(self._csr).sum(axis=1).max())
-        self._lu = spla.splu(A.tocsc().astype(HIGH_DTYPE))
+        self.factorization, self._lu = _reference_factorization(A, bs)
         self._max_steps = int(max_steps)
-        # Diagnostics of the last solve, read by run_benchmarks for the report.
+        # Diagnostics of the last solve. Nothing reads them today --
+        # run_benchmarks computes its own complex128 ref_res -- but they are
+        # what a run would be debugged from if the reference misbehaved.
         self.steps = 0
         self.residual = float("nan")
 
@@ -1173,14 +1217,24 @@ class _ExtendedReference:
     def _solve_one(self, b):
         b = np.asarray(b, dtype=HIGH_DTYPE)
         xh, xl = self._lu.solve(b), None
-        # The result is returned at complex128, so a correction smaller than
-        # the working precision cannot change it and the next one would be
-        # smaller still: stop there rather than at EPS_EXT, which the
-        # complex128-rounded correction solve can never reach and which
-        # therefore made every call run the full max_steps. With a
-        # double-double residual one step already lands far below u, so this
-        # normally exits after two.
-        tol = unit_roundoff(HIGH_DTYPE)
+        # Stop as soon as another step cannot change the complex128 result.
+        #
+        # The correction just applied also measures the error it removed, so
+        # ||d||/||x|| estimates the error the previous iterate carried -- and
+        # for refinement whose inner solve is at the working precision, that
+        # same quantity is the contraction factor (both are of order
+        # kappa_inf(A) u). The error left after applying d is therefore about
+        # (||d||/||x||)^2, and once that is below u the next correction cannot
+        # move a complex128 result and need not be computed.
+        #
+        # Testing the square rather than ||d||/||x|| itself is what makes this
+        # exit after one step instead of two on these matrices: at
+        # kappa_inf = 2e4 the first correction is already 2e-12 relative, so
+        # the second step existed only to observe that the third was
+        # unnecessary. Verified against exact rational solutions below
+        # kappa_inf = 1e5; a genuinely near-singular index fails the test and
+        # keeps iterating, up to max_steps.
+        tol = math.sqrt(unit_roundoff(HIGH_DTYPE))
         for _ in range(self._max_steps):
             r_h, r_l = self._residual_dd(b, xh, xl)
             # The correction solve is a working-precision solve either way, so
@@ -1200,13 +1254,19 @@ class _ExtendedReference:
             norm_x = float(np.max(np.abs(xh)))
             if norm_x and float(np.max(np.abs(d))) <= tol * norm_x:
                 break
-        r_h, r_l = self._residual_dd(b, xh, xl)
-        denom = self._normA_inf * float(np.max(np.abs(xh))) \
+        # The backward-error diagnostic is computed at complex128, not in
+        # double-double: it is a sanity number on a solution that is itself
+        # returned at complex128, and an extended-precision residual here
+        # would be a third full pass over the matrix per right-hand side --
+        # the same cost as a refinement step -- for a digit nobody can use.
+        x = np.asarray(xh + xl, dtype=HIGH_DTYPE)
+        denom = self._normA_inf * float(np.max(np.abs(x))) \
             + float(np.max(np.abs(b)))
         if denom:
+            r = b - self._csr @ x
             self.residual = max(0.0 if np.isnan(self.residual) else self.residual,
-                                float(np.max(np.abs(r_h + r_l)) / denom))
-        return np.asarray(xh + xl, dtype=HIGH_DTYPE)
+                                float(np.max(np.abs(r)) / denom))
+        return x
 
     def solve(self, b):
         self.steps = 0
@@ -1276,7 +1336,7 @@ def build_reference(name, A, bs, b):
     solve(b) and free().
     """
     if name == EXTENDED_REFERENCE:
-        return _ExtendedReference(A)
+        return _ExtendedReference(A, bs)
     return SOLVER_BUILDERS[name](A, HIGH_DTYPE, bs, b, DEFAULT_INV_DTYPE)
 
 
@@ -2497,14 +2557,19 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
     # magnitude of it is measuring the reference, not the method.
     ref_floor = float("nan")
     if reference_solver is not None:
-        if reference_solver == EXTENDED_REFERENCE:
-            print(f"Reference: x_true = superlu complex128 + up to "
-                  f"{DEFAULT_REF_STEPS} refinement steps with a "
-                  f"double-double residual (eps_ext={EPS_EXT:.1e})", flush=True)
-        else:
+        if reference_solver != EXTENDED_REFERENCE:
             print(f"Reference: x_true = {reference_solver} complex128", flush=True)
         try:
             ref = build_reference(reference_solver, A, bs, b)
+            # Named after building rather than before: which factorization the
+            # extended reference picked is decided inside it, and asking twice
+            # would factorize twice.
+            if reference_solver == EXTENDED_REFERENCE:
+                print(f"Reference: x_true = "
+                      f"{getattr(ref, 'factorization', '?')} complex128 + up to "
+                      f"{DEFAULT_REF_STEPS} refinement steps with a "
+                      f"double-double residual (eps_ext={EPS_EXT:.1e})",
+                      flush=True)
             x_true = ref.solve(b_high).astype(HIGH_DTYPE)
             ref_res = np.linalg.norm(A_high @ x_true - b_high) / np.linalg.norm(b_high)
             _, ref_etas, _ = backward_errors(A_high, x_true, b_high, normA)

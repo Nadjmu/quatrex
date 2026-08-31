@@ -1,49 +1,85 @@
-"""Run on the cluster: is double-double actually faster than clongdouble there?
+"""Where does the reference solution actually spend its time on this machine?
 
     python cluster_check.py /scratch/yimili/matrices2/hdf5/graphene.h5 209
+
+Times each phase separately, and SuperLU against Block Thomas as the
+factorization the reference refines from. An earlier version of this script
+timed the two arithmetics end to end, which shared their setup cost and so
+mostly measured that instead.
 """
 import sys, time
 sys.path.insert(0, ".")
 sys.path.append("../solvers")
-import numpy as np, mpir
+import numpy as np
+import scipy.sparse.linalg as spla
+import mpir
+
+
+def t(fn, k=1):
+    fn()
+    s = time.perf_counter()
+    for _ in range(k):
+        out = fn()
+    return (time.perf_counter() - s) / k, out
+
 
 h5path, idx = sys.argv[1], int(sys.argv[2])
 A, b = mpir.load_system(h5path, idx)
 A = A.tocsc().astype(np.complex128)
 b = np.asarray(b, dtype=np.complex128)
-print(f"{h5path} E_{idx}: n={A.shape[0]} nnz={A.nnz} rhs={b.shape[1]}")
-print(f"np.longdouble eps = {float(np.finfo(np.longdouble).eps):.2e} "
-      f"({np.dtype(np.longdouble).itemsize*8}-bit)")
+n, nrhs = A.shape[0], b.shape[1]
+counts = np.diff(A.tocsr().indptr)
+bs = mpir.block_sizes_from_matrix(A)
+print(f"{h5path} E_{idx}")
+print(f"  n={n}  nnz={A.nnz}  rhs={nrhs}")
+print(f"  row lengths : min={counts.min()} max={counts.max()} "
+      f"mean={counts.mean():.0f}  distinct={len(np.unique(counts))}")
+print(f"  blocks      : {len(bs)}  sizes {min(bs)}..{max(bs)}")
+print(f"  longdouble  : eps={float(np.finfo(np.longdouble).eps):.2e}")
+print()
 
-t = time.perf_counter(); mpir._ExtendedReference(A).solve(b)
-t_dd = time.perf_counter() - t
-print(f"  double-double (new) : {t_dd:7.2f}s")
+print("[1] the factorization the reference refines from")
+s = time.perf_counter(); lu = spla.splu(A); t_su = time.perf_counter() - s
+print(f"    SuperLU      : {t_su:8.2f}s   fill = {(lu.L.nnz+lu.U.nnz)/A.nnz:6.1f}x A.nnz"
+      f"   (L+U = {lu.L.nnz+lu.U.nnz:,})")
+s = time.perf_counter()
+bt = mpir.SOLVER_BUILDERS["block-thomas"](
+    A, np.complex128, bs, np.zeros((n, 1), dtype=np.complex128), np.float32)
+t_bt = time.perf_counter() - s
+print(f"    Block Thomas : {t_bt:8.2f}s"
+      f"   -> {t_su/max(t_bt,1e-9):.1f}x cheaper than SuperLU")
+x0 = np.ascontiguousarray(b[:, 0])
+d1, _ = t(lambda: lu.solve(x0), 3)
+d2, _ = t(lambda: bt.solve(x0), 3)
+print(f"    one solve    : SuperLU {d1*1000:.1f} ms   Block Thomas {d2*1000:.1f} ms")
+print()
 
+print("[2] one extended-precision matvec (per refinement step, per rhs)")
+ref = mpir._ExtendedReference(A, bs)
+print(f"    row-length buckets in the double-double reduction: {len(ref._blocks)}")
+dd, _ = t(lambda: ref._matvec_dd(x0, None), 2)
 EXT = np.clongdouble
-class Old(mpir._ExtendedReference):
-    def _mv(self, x):
-        ip = self._csr.indptr
-        pr = self._csr.data.astype(EXT) * x.astype(EXT)[self._csr.indices]
-        out = np.zeros(self._csr.shape[0], dtype=EXT)
-        ne = np.flatnonzero(np.diff(ip) > 0)
-        out[ne] = np.add.reduceat(pr, ip[ne])
-        return out
-    def _solve_one(self, bb):
-        bb = np.asarray(bb, dtype=np.complex128)
-        x = self._lu.solve(bb)
-        tol = float(np.finfo(np.longdouble).eps) * 10
-        for _ in range(self._max_steps):
-            r = bb.astype(EXT) - self._mv(x)
-            d = self._lu.solve(np.asarray(r, dtype=np.complex128))
-            x = x.astype(EXT) + d.astype(EXT)
-            self.steps += 1
-            nx = float(np.max(np.abs(x)))
-            if nx and float(np.max(np.abs(d))) <= tol * nx:
-                break
-        return np.asarray(x, dtype=np.complex128)
+csr = ref._csr
+def mv_old():
+    ip = csr.indptr
+    pr = csr.data.astype(EXT) * x0.astype(EXT)[csr.indices]
+    out = np.zeros(csr.shape[0], dtype=EXT)
+    ne = np.flatnonzero(np.diff(ip) > 0)
+    out[ne] = np.add.reduceat(pr, ip[ne])
+    return out
+od, _ = t(mv_old, 2)
+pl, _ = t(lambda: csr @ x0, 3)
+print(f"    double-double (new) : {dd*1000:9.1f} ms")
+print(f"    clongdouble   (old) : {od*1000:9.1f} ms")
+print(f"    plain complex128    : {pl*1000:9.1f} ms   (the floor)")
+print(f"    -> double-double is {od/dd:.1f}x the speed of clongdouble, "
+      f"and {dd/pl:.0f}x a plain matvec")
+print()
 
-t = time.perf_counter(); Old(A).solve(b)
-t_old = time.perf_counter() - t
-print(f"  clongdouble (old)   : {t_old:7.2f}s")
-print(f"\n  double-double is {t_old/t_dd:.1f}x the speed of clongdouble HERE")
-print("  (>1 means the change is a win on this machine, <1 means it is a loss)")
+print("[3] the whole reference, both factorizations")
+for label, blocks in (("SuperLU     ", None), ("Block Thomas", bs)):
+    s = time.perf_counter(); r = mpir._ExtendedReference(A, blocks)
+    tb = time.perf_counter() - s
+    s = time.perf_counter(); x = r.solve(b); ts = time.perf_counter() - s
+    print(f"    {label}: build {tb:7.2f}s + solve {ts:7.2f}s = {tb+ts:7.2f}s"
+          f"   (steps/col={r.steps//max(nrhs,1)}, resid={r.residual:.1e})")
