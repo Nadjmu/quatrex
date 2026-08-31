@@ -917,21 +917,119 @@ def load_system(h5path, idx):
 #   plateau rather than the method's.
 #
 # _ExtendedReference removes that by refining the complex128 solution with the
-# residual accumulated in np.clongdouble, exactly as
+# residual accumulated in double-double, exactly as
 # block-thomas/forward_error.py does. See its class docstring for what the
 # gain actually is; it is not u^2.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Whatever np.longdouble is on this machine, which is not the same everywhere
-# and changes the reference by orders of magnitude: 80-bit x87 on x86-64
-# (eps = 1.1e-19), IEEE binary128 on aarch64 (eps = 1.9e-34), and plain float64
-# where the platform has no wider type, in which case the reference is no
-# better than a complex128 solve. The width is therefore never assumed: eps_ext
-# is printed with every run and reference_floor = kappa_inf * eps_ext is
-# recorded per index, so which of the three a result was produced on is visible
-# in the output rather than inferred from the machine name.
-EXT_DTYPE = np.clongdouble
-EPS_EXT = float(np.finfo(np.longdouble).eps)
+# The residual has to be computed in more than the working precision or
+# refinement cannot improve on the solve it starts from. np.clongdouble is the
+# obvious way to do that and is what this used to use, but its width is a
+# property of the machine rather than of the algorithm: 80-bit x87 on x86-64
+# (eps = 1.1e-19, done by the FPU) and IEEE binary128 on aarch64
+# (eps = 1.9e-34, which no common CPU implements -- numpy emulates every
+# operation in software). On an aarch64 node that made the O(nnz) matvec
+# below, called n_rhs * (steps + 1) times per index, run at software-emulation
+# speed: minutes per index on a QTBM block, buying twenty orders of magnitude
+# more accuracy than the measurement can use.
+#
+# Double-double replaces it. A value is an unevaluated pair of float64s,
+# hi + lo with |lo| <= ulp(hi)/2, giving a 106-bit significand. Every
+# operation below is plain float64 arithmetic, so it runs at hardware speed
+# and vectorises on every platform, and the reference no longer depends on
+# what np.longdouble happens to be -- the same run on x86-64 and on aarch64
+# now produces the same x_true.
+#
+# The error-free transformations are the standard ones: Dekker (1971) for the
+# exact product, Knuth (1969) for the exact sum. See Ogita, Rump and Oishi,
+# "Accurate sum and dot product", SIAM J. Sci. Comput. 26(6), 2005.
+EPS_EXT = 2.0 ** -106
+_DD_SPLITTER = 2.0 ** 27 + 1.0
+
+
+def _two_sum(a, b):
+    """(s, e) with s = fl(a + b) and a + b = s + e exactly."""
+    s = a + b
+    bb = s - a
+    return s, (a - (s - bb)) + (b - bb)
+
+
+def _two_prod(a, b):
+    """
+    (p, e) with p = fl(a * b) and a * b = p + e exactly.
+
+    Dekker's splitting rather than an FMA because numpy exposes no fused
+    multiply-add; the split halves have 26 significand bits each, so every
+    partial product below is exact in float64.
+    """
+    p = a * b
+    ca = _DD_SPLITTER * a
+    ah = ca - (ca - a)
+    al = a - ah
+    cb = _DD_SPLITTER * b
+    bh = cb - (cb - b)
+    bl = b - bh
+    return p, ((ah * bh - p) + ah * bl + al * bh) + al * bl
+
+
+def _dd_add(ah, al, bh, bl):
+    """(ah, al) + (bh, bl), double-double, renormalised."""
+    s, e = _two_sum(ah, bh)
+    e = e + (al + bl)
+    h = s + e
+    return h, e - (h - s)
+
+
+def _row_length_groups(indptr):
+    """
+    Rows bucketed by exact nonzero count, as (rows, positions) pairs.
+
+    positions is an (rows_in_bucket, row_length) array of offsets into the CSR
+    data array, so one bucket's nonzeros gather into a rectangular block that
+    can be reduced along its rows with no padding and no ragged bookkeeping.
+    A block-tridiagonal matrix has one distinct row length per block row, so
+    this is a handful of buckets however large the matrix is -- which is the
+    case this exists for. A matrix with many distinct row lengths degrades to
+    many buckets and a correspondingly slow Python loop; nothing here is wrong
+    in that case, it is just no longer the fast path.
+    """
+    counts = np.diff(indptr)
+    groups = []
+    for m in np.unique(counts):
+        if m == 0:
+            continue
+        rows = np.flatnonzero(counts == m)
+        groups.append((rows, indptr[rows][:, None] + np.arange(m)[None, :]))
+    return groups
+
+
+def _dd_reduce_rows(rh, rl, ih, il):
+    """
+    Sum each row of a rectangular complex double-double block.
+
+    Pairwise, so the reduction is log2(width) vectorised passes rather than
+    `width` of them -- the numpy call count then does not grow with how wide a
+    block row is, which is what keeps this ahead of the emulated-quad version
+    it replaces. Double-double addition is not associative, but its error
+    bound does not depend on the order, so pairing costs no accuracy.
+    """
+    m = rh.shape[1]
+    while m > 1:
+        half = m // 2
+        nrh, nrl = _dd_add(rh[:, :half], rl[:, :half],
+                           rh[:, half:2 * half], rl[:, half:2 * half])
+        nih, nil = _dd_add(ih[:, :half], il[:, :half],
+                           ih[:, half:2 * half], il[:, half:2 * half])
+        if m & 1:
+            # Odd width: fold the unpaired last column into the first result.
+            nrh[:, 0], nrl[:, 0] = _dd_add(nrh[:, 0], nrl[:, 0],
+                                           rh[:, m - 1], rl[:, m - 1])
+            nih[:, 0], nil[:, 0] = _dd_add(nih[:, 0], nil[:, 0],
+                                           ih[:, m - 1], il[:, m - 1])
+        rh, rl, ih, il = nrh, nrl, nih, nil
+        m = half
+    return rh[:, 0], rl[:, 0], ih[:, 0], il[:, 0]
+
 
 # Refinement steps taken to build the reference. Three is what
 # forward_error.py uses and is ample: the iteration contracts by roughly
@@ -942,80 +1040,124 @@ DEFAULT_REF_STEPS = 3
 
 class _ExtendedReference:
     """
-    x_true by iterative refinement with an extended-precision residual.
+    x_true by iterative refinement with a double-double residual.
 
     The initial solve and every correction use one SuperLU complex128
-    factorization; only the residual b - A x is accumulated in np.clongdouble.
-    SciPy has no sparse type in that precision, so the product is formed from
-    the CSR arrays directly: elementwise products in extended precision, summed
-    per row with np.add.reduceat.
+    factorization; only the residual b - A x is accumulated in double-double,
+    the pair-of-float64 format defined above. SciPy has no sparse type in that
+    format, so the product is formed from the CSR arrays directly: exact
+    products via _two_prod, summed per row by a pairwise double-double
+    reduction over rows of equal length.
 
     How much better this is, and why not more
     ----------------------------------------
     Refinement in a residual precision u_r converges to a relative error of
     order kappa_inf(A) u_r, so this reference improves on a plain complex128
-    solve by roughly eps_double / eps_ext. What that factor is depends on the
-    machine, and by a lot: about 2e3 where np.longdouble is 80-bit x87, and
-    about 1e18 where it is IEEE binary128. Measured against an exact rational
-    solution on the former, the improvement is 1.6e3 to 3.2e3.
+    solve by roughly eps_double / EPS_EXT, about 1e16. Unlike the
+    np.clongdouble version this replaced, that factor is now the same on every
+    machine: EPS_EXT is 2^-106 by construction rather than whatever the
+    platform's long double happens to be (1.1e-19 on x86-64, 1.9e-34 on
+    aarch64), so a reference computed on one node matches one computed on
+    another.
 
-    Either way it is enough for the purpose here, since the limiting accuracy
-    being measured is of order cond(A, x) u. It is not a reason to treat the
-    reference as exact: reference_floor = kappa_inf(A) eps_ext is recorded per
-    index so that a measured forward error within an order of magnitude of it
-    can be recognised as a measurement of the reference rather than of the
-    method.
+    It is still not a reason to treat the reference as exact:
+    reference_floor = kappa_inf(A) * EPS_EXT is recorded per index so that a
+    measured forward error within an order of magnitude of it can be
+    recognised as a measurement of the reference rather than of the method.
 
     The solution is returned at complex128. Storing it wider would not help:
-    what limits the measurement is the reference's error, about 1e-14 here, not
-    the 1e-16 of rounding it for storage, and returning complex128 keeps it
-    usable by every caller including the sparse products in
-    refinement_metrics.
+    what limits the measurement is the reference's own error, not the 1e-16 of
+    rounding it for storage, and returning complex128 keeps it usable by every
+    caller including the sparse products in refinement_metrics.
     """
 
     def __init__(self, A, max_steps=DEFAULT_REF_STEPS):
         self._csr = A.tocsr().astype(HIGH_DTYPE)
+        # Split once. The reduction works on real and imaginary parts
+        # separately, and re-deriving them per call was the single largest
+        # avoidable cost in the version this replaced.
+        self._re = np.ascontiguousarray(self._csr.data.real)
+        self._im = np.ascontiguousarray(self._csr.data.imag)
+        self._indices = self._csr.indices
+        self._groups = _row_length_groups(self._csr.indptr)
+        self._normA_inf = float(abs(self._csr).sum(axis=1).max())
         self._lu = spla.splu(A.tocsc().astype(HIGH_DTYPE))
         self._max_steps = int(max_steps)
         # Diagnostics of the last solve, read by run_benchmarks for the report.
         self.steps = 0
         self.residual = float("nan")
 
-    def _matvec_ext(self, x):
-        """A @ x accumulated in EXT_DTYPE, one column."""
-        indptr = self._csr.indptr
-        products = self._csr.data.astype(EXT_DTYPE) \
-            * x.astype(EXT_DTYPE)[self._csr.indices]
-        out = np.zeros(self._csr.shape[0], dtype=EXT_DTYPE)
-        if products.size:
-            # reduceat returns the element at the start offset for an empty
-            # row rather than zero, so empty rows are left at zero explicitly.
-            nonempty = np.flatnonzero(np.diff(indptr) > 0)
-            out[nonempty] = np.add.reduceat(products, indptr[nonempty])
-        return out
+    def _matvec_dd(self, xh, xl):
+        """
+        A @ (xh + xl) in double-double, one column, as (re_h, re_l, im_h, im_l).
+
+        xl is a correction of relative size ~1e-16, so A @ xl only has to be
+        right to working precision: it is one ordinary sparse matvec rather
+        than a second double-double one, which nearly halves the cost for no
+        loss that reaches the result.
+        """
+        n = self._csr.shape[0]
+        re_h, re_l = np.zeros(n), np.zeros(n)
+        im_h, im_l = np.zeros(n), np.zeros(n)
+        xr = np.ascontiguousarray(xh.real)
+        xi = np.ascontiguousarray(xh.imag)
+        for rows, pos in self._groups:
+            a, bb = self._re[pos], self._im[pos]
+            j = self._indices[pos]
+            c, d = xr[j], xi[j]
+            # (a + bi)(c + di) = (ac - bd) + (ad + bc)i, every product exact.
+            h1, l1 = _two_prod(a, c)
+            h2, l2 = _two_prod(bb, d)
+            h3, l3 = _two_prod(a, d)
+            h4, l4 = _two_prod(bb, c)
+            prh, prl = _dd_add(h1, l1, -h2, -l2)
+            pih, pil = _dd_add(h3, l3, h4, l4)
+            srh, srl, sih, sil = _dd_reduce_rows(prh, prl, pih, pil)
+            re_h[rows], re_l[rows] = srh, srl
+            im_h[rows], im_l[rows] = sih, sil
+        if xl is not None:
+            corr = self._csr @ xl
+            re_h, re_l = _dd_add(re_h, re_l, corr.real, 0.0)
+            im_h, im_l = _dd_add(im_h, im_l, corr.imag, 0.0)
+        return re_h, re_l, im_h, im_l
+
+    def _residual_dd(self, b, xh, xl):
+        """b - A @ (xh + xl) in double-double, as a pair of complex128."""
+        prh, prl, pih, pil = self._matvec_dd(xh, xl)
+        rh, rl = _dd_add(b.real, 0.0, -prh, -prl)
+        ih, il = _dd_add(b.imag, 0.0, -pih, -pil)
+        return rh + 1j * ih, rl + 1j * il
 
     def _solve_one(self, b):
         b = np.asarray(b, dtype=HIGH_DTYPE)
-        x = self._lu.solve(b)
+        xh, xl = self._lu.solve(b), None
         tol = EPS_EXT * 10
         for _ in range(self._max_steps):
-            r = b.astype(EXT_DTYPE) - self._matvec_ext(x)
-            d = self._lu.solve(np.asarray(r, dtype=HIGH_DTYPE))
-            # The iterate is carried in extended precision between steps:
-            # rounded back to complex128 every step it could never become more
+            r_h, r_l = self._residual_dd(b, xh, xl)
+            # The correction solve is a working-precision solve either way, so
+            # the residual is rounded to complex128 here; what mattered was
+            # computing it without the cancellation error of a complex128
+            # matvec, which is what the double-double product above avoids.
+            d = self._lu.solve(r_h + r_l)
+            # The iterate is carried as a double-double between steps: rounded
+            # back to complex128 every step it could never become more
             # accurate than the solutions it exists to judge.
-            x = x.astype(EXT_DTYPE) + d.astype(EXT_DTYPE)
+            nh, nl = _dd_add(xh.real, 0.0 if xl is None else xl.real,
+                             d.real, 0.0)
+            mh, ml = _dd_add(xh.imag, 0.0 if xl is None else xl.imag,
+                             d.imag, 0.0)
+            xh, xl = nh + 1j * mh, nl + 1j * ml
             self.steps += 1
-            norm_x = float(np.max(np.abs(x)))
+            norm_x = float(np.max(np.abs(xh)))
             if norm_x and float(np.max(np.abs(d))) <= tol * norm_x:
                 break
-        r = b.astype(EXT_DTYPE) - self._matvec_ext(x)
-        denom = (float(abs(self._csr).sum(axis=1).max()) * float(np.max(np.abs(x)))
-                 + float(np.max(np.abs(b))))
+        r_h, r_l = self._residual_dd(b, xh, xl)
+        denom = self._normA_inf * float(np.max(np.abs(xh))) \
+            + float(np.max(np.abs(b)))
         if denom:
             self.residual = max(0.0 if np.isnan(self.residual) else self.residual,
-                                float(np.max(np.abs(r)) / denom))
-        return np.asarray(x, dtype=HIGH_DTYPE)
+                                float(np.max(np.abs(r_h + r_l)) / denom))
+        return np.asarray(xh + xl, dtype=HIGH_DTYPE)
 
     def solve(self, b):
         self.steps = 0
@@ -1033,9 +1175,9 @@ class _ExtendedReference:
         also rho, mu_hat and phi_cond -- is affected by this method existing.
 
         Why the cheaper solve is used at all: the loop in _solve_one is
-        dominated by _matvec_ext, an elementwise clongdouble product over the
-        CSR arrays with no BLAS path, run n_rhs * (max_steps + 1) times per
-        call. On a QTBM block (nnz in the millions, tens of right-hand sides)
+        dominated by _matvec_dd, an error-free-transformation product over
+        the CSR arrays with no BLAS path, run n_rhs * (max_steps + 1) times
+        per call. On a QTBM block (nnz in the millions, tens of right-hand sides)
         that is seconds to minutes *per outer iteration*, and phi_solve is a
         diagnostic that never reaches the summary figure or a convergence
         verdict. Measured on a synthetic block-tridiagonal system with
@@ -2309,7 +2451,7 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
         if reference_solver == EXTENDED_REFERENCE:
             print(f"Reference: x_true = superlu complex128 + "
                   f"{DEFAULT_REF_STEPS} refinement steps with a "
-                  f"clongdouble residual (eps_ext={EPS_EXT:.1e})", flush=True)
+                  f"double-double residual (eps_ext={EPS_EXT:.1e})", flush=True)
         else:
             print(f"Reference: x_true = {reference_solver} complex128", flush=True)
         try:
@@ -2964,7 +3106,7 @@ def main():
                     help="compute x_true with this solver, and the reference "
                          "corrections phi_solve is measured against. Defaults "
                          f"to '{EXTENDED_REFERENCE}', which refines a "
-                         "complex128 solve with a clongdouble residual, about "
+                         "complex128 solve with a double-double residual, about "
                          "2e3 times more accurate than plain complex128 -- the "
                          "'true' solution every run should be measured "
                          "against. The other three named solvers run at plain "

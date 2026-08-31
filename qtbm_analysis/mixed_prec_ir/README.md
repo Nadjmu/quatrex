@@ -676,17 +676,26 @@ A handful of indices, not a sweep: each index is eight bars in the figure.
 
 ### The variants
 
-Selected with `--variants`, drawn left to right in the order given:
+`--inner` selects the refinement, **spelled and valued exactly as in
+`mpir.py`**, and the variants follow from it:
 
-| `variant` | What it is | Default |
+| `--inner` | variants measured | bars per solver |
 |---|---|---|
-| `c64_ir` | `complex64` factorization + LU-IR | yes |
-| `c64_gmres` | `complex64` factorization + GMRES-IR | no |
-| `c128` | `complex128` direct solve, no refinement — what they replace | yes |
+| `direct` (default) | `c64_ir`, `c128` | 2 |
+| `gmres` | `c64_gmres`, `c128` | 2 |
+| `both` | `c64_ir`, `c64_gmres`, `c128` | 3 |
 
-`c128` is the baseline every other variant is read against; a run without it
-produces no speedup. The figure reads the variant list from the experiment,
-so a two-bar and a three-bar run draw correctly from the same script.
+`mpir.py` runs one inner solver at a time and has no need for more; `mpperf`
+compares them, so it adds `both`. `--gmres-tol`, `--gmres-restart` and
+`--gmres-max-iter` are also the same names and the same defaults as
+`mpir.py`'s, so a cost run and a convergence run of the same configuration
+differ only in which script is called.
+
+`c128` is measured in every case: it is the baseline each variant is read
+against, and a run without it would report no speedup. The variant keys
+(`c64_ir`, `c64_gmres`, `c128`) are the on-disk names and never change; the
+figure reads the list from the experiment, so a two-bar and a three-bar run
+draw correctly from the same script.
 
 A timing is only meaningful for a variant that reached the target accuracy.
 `c64_ir` stops on `mpir`'s rule — the forward error against the reference

@@ -3,13 +3,17 @@
 Runtime of mixed-precision iterative refinement, across solvers.
 
 The companion of mpir.py. mpir.py asks whether refinement converges and to
-what accuracy; this script asks what it costs. Up to three variants are timed
-for every (index, solver), selected with --variants:
+what accuracy; this script asks what it costs. --inner selects the refinement,
+spelled and valued as in mpir.py, and the variants timed for every
+(index, solver) follow from it:
 
-    c64_ir      complex64 factorization + LU-IR          (default)
-    c64_gmres   complex64 factorization + GMRES-IR
-    c128        complex128 direct solve, no refinement   (what they replace,
-                and the baseline every pair is read against; default)
+    --inner direct   c64_ir      complex64 factorization + LU-IR   (default)
+    --inner gmres    c64_gmres   complex64 factorization + GMRES-IR
+    --inner both     both of the above, side by side
+
+    always           c128        complex128 direct solve, no refinement:
+                                 what they replace, and the baseline each is
+                                 read against
 
 and each is split into three stages that are drawn as one stacked bar:
 
@@ -125,8 +129,8 @@ Usage
     python mpperf.py .../graphene.h5 --idx 84 254 601
     python mpperf.py .../graphene.h5 --start 0 --end 800 --stride 200
     python mpperf.py .../graphene.h5 --idx 84 --solvers mumps block-thomas
-    python mpperf.py .../graphene.h5 --idx 84 \
-        --variants c64_ir c64_gmres c128
+    python mpperf.py .../graphene.h5 --idx 84 --inner gmres
+    python mpperf.py .../graphene.h5 --idx 84 --inner both
     python mpperf.py .../graphene.h5 --list-experiments
 
 Then
@@ -177,11 +181,12 @@ PHASES = ("symbolic_s", "factorization_s", "solve_s")
 
 # The bars of one solver's group, drawn left to right in this order: the
 # methods under test first, the complex128 baseline they are read against last.
-# --variants selects a subset; the experiment records which were used, and the
-# figure reads that rather than assuming a pair, so a two-bar and a three-bar
-# run draw correctly from the same script.
+# --inner selects which of them a run measures, through INNER_VARIANTS below;
+# the experiment records the result, and the figure reads that rather than
+# assuming a pair, so a two-bar and a three-bar run draw correctly from the
+# same script. These keys are the on-disk names and never change; the CLI spells
+# the choice the way mpir.py does.
 ALL_VARIANTS = ("c64_ir", "c64_gmres", "c128")
-DEFAULT_VARIANTS = ("c64_ir", "c128")
 
 VARIANT_LABEL = {
     "c64_ir":    "{low} + LU-IR",
@@ -191,6 +196,20 @@ VARIANT_LABEL = {
 
 # `inner` is the correction solve; `krylov` marks the variant that additionally
 # holds a Krylov basis, which is the third segment of the memory panel.
+# --inner, spelled and valued as in mpir.py so that one name means one thing
+# across the two studies: 'direct' is classic LU-IR, 'gmres' is GMRES-IR.
+# mpir.py runs one at a time and has no need for more; mpperf compares them, so
+# it adds 'both'. The complex128 baseline is in every case, since it is what
+# every ratio is taken against and a run without it reports no speedup.
+INNER_VARIANTS = {
+    "direct": ("c64_ir", "c128"),
+    "gmres":  ("c64_gmres", "c128"),
+    "both":   ("c64_ir", "c64_gmres", "c128"),
+}
+
+INNER_LABEL = {"direct": "LU-IR", "gmres": "GMRES-IR",
+               "both": "LU-IR + GMRES-IR"}
+
 # Inner GMRES settings, used only by the c64_gmres variant. The same defaults
 # mpir.py's parser carries, so a run of one study is comparable with a run of
 # the other unless a flag says otherwise.
@@ -926,14 +945,15 @@ def main():
                                f"<material>{PERF_SUFFIX}.h5, to which each run "
                                f"appends one numbered experiment "
                                f"(default: {cli.MIXED_PREC_DIR})")
-    ap.add_argument("--variants", nargs="+", choices=ALL_VARIANTS,
-                    default=list(DEFAULT_VARIANTS), metavar="NAME",
-                    help=f"which variants to time, drawn left to right in the "
-                         f"order given (default: "
-                         f"{' '.join(DEFAULT_VARIANTS)}). Choose from "
-                         f"{', '.join(ALL_VARIANTS)}; c128 is the baseline "
-                         f"every other variant is read against, so a run "
-                         f"without it produces no speedup")
+    ap.add_argument("--inner", choices=tuple(INNER_VARIANTS), default="direct",
+                    help="inner correction solve, named as in mpir.py: "
+                         "'direct' is classic LU-IR, a single low-precision "
+                         "triangular solve; 'gmres' is GMRES-IR, GMRES in "
+                         "complex128 preconditioned by the low-precision "
+                         "factorization; 'both' times the two side by side, "
+                         "which mpir.py has no need to do. The complex128 "
+                         "direct solve is measured in every case, as the "
+                         "baseline each is read against (default: direct)")
     ap.add_argument("--gmres-tol", type=float,
                     default=GMRES_DEFAULTS["gmres_tol"], metavar="TOL",
                     help=f"relative tolerance of the inner GMRES solve "
@@ -1001,6 +1021,7 @@ def main():
 
     low_dtype = np.dtype(args.factor_dtype)
     inv_dtype = np.dtype(args.inv_dtype)
+    variants = list(INNER_VARIANTS[args.inner])
     gmres = dict(gmres_tol=float(args.gmres_tol),
                  gmres_restart=int(args.gmres_restart),
                  gmres_max_iter=int(args.gmres_max_iter))
@@ -1011,7 +1032,7 @@ def main():
     print(f"Solvers : {', '.join(args.solvers)}")
     print(f"Variants: " + ",  ".join(
         VARIANT_LABEL[v].format(low=dtype_label(low_dtype))
-        for v in args.variants))
+        for v in variants))
     print(f"Runs    : {args.repeats} per variant, {args.reduce} of each "
           f"stage; one untimed warm-up solve per precision before each "
           f"solver")
@@ -1024,7 +1045,7 @@ def main():
             print("=" * 92)
         try:
             all_rows.extend(measure_index(
-                h5path, idx, args.solvers, args.variants, low_dtype,
+                h5path, idx, args.solvers, variants, low_dtype,
                 inv_dtype, args.max_iter, args.repeats,
                 args.reference_solver, args.ferr_tol, gmres=gmres,
                 reduce=args.reduce))
@@ -1036,7 +1057,7 @@ def main():
         print(f"\n{len(skipped)} of {len(indices)} indices skipped: "
               f"{', '.join(str(i) for i, _ in skipped)}")
 
-    print_summary(all_rows, args.variants)
+    print_summary(all_rows, variants)
     load.update(loadavg("end"))
     # Sampled now that every solver library is loaded; see _threadpools.
     pools_end = _threadpools()
@@ -1063,9 +1084,11 @@ def main():
         timestamp=datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         command=" ".join(sys.argv),
         solvers=list(args.solvers),
-        variants=list(args.variants),
+        inner=args.inner,
+        inner_label=INNER_LABEL[args.inner],
+        variants=list(variants),
         variant_labels=[VARIANT_LABEL[v].format(low=dtype_label(low_dtype))
-                        for v in args.variants],
+                        for v in variants],
         phases=list(PHASES),
         factor_dtype=args.factor_dtype,
         inv_dtype=args.inv_dtype,
