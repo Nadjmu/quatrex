@@ -259,7 +259,11 @@ def _draw_panel(ax, table, order, present, variants, phases, phase_style,
                                        else (None, "black", 0.5))
                 x, bottom = _bar_x(g_i, s_i, v_i, share, bar_w), 0.0
                 for phase in phases:
-                    height = float(row[phase]) * scale
+                    # .get, not [], because an experiment written before a
+                    # segment existed simply has no such column -- krylov_mb
+                    # and krylov_s arrived with GMRES-IR. An older file draws
+                    # the segments it does have rather than failing.
+                    height = float(row.get(phase, 0.0)) * scale
                     if not np.isfinite(height) or height <= 0:
                         continue      # a stage this backend does not expose
                     ax.bar(x, height, width=bar_w, bottom=bottom,
@@ -835,10 +839,14 @@ def _checks(rows):
         if abs(stages - r["total_s"]) > 1e-9:
             bad.append(f"{tag}: symbolic+factorization+solve = {stages:.9g} "
                        f"!= total_s = {r['total_s']:.9g}")
-        parts = r["triangular_s"] + r["residual_s"] + r.get("krylov_s", 0.0)
-        if abs(parts - r["solve_s"]) > 1e-9:
-            bad.append(f"{tag}: triangular+residual+krylov = {parts:.9g} "
-                       f"!= solve_s = {r['solve_s']:.9g}")
+        # Only checkable where the split was recorded: triangular_s and
+        # residual_s arrived after the first experiments, krylov_s later still.
+        if "triangular_s" in r and "residual_s" in r:
+            parts = (r["triangular_s"] + r["residual_s"]
+                     + r.get("krylov_s", 0.0))
+            if abs(parts - r["solve_s"]) > 1e-9:
+                bad.append(f"{tag}: triangular+residual+krylov = {parts:.9g} "
+                           f"!= solve_s = {r['solve_s']:.9g}")
         mem = r["factor_mb"] + r["matrix_mb"] + r.get("krylov_mb", 0.0)
         if abs(mem - r["working_mb"]) > 1e-9:
             bad.append(f"{tag}: factor+matrix+krylov = {mem:.9g} MiB "
@@ -982,8 +990,9 @@ def write_report(out_path, h5path, name, attrs, rows, limit):
                 w(f"      {solver:<14} {variant:<10} "
                   f"{r['total_s']*1e3:9.2f} {r['symbolic_s']*1e3:8.2f} "
                   f"{r['factorization_s']*1e3:8.2f} {r['solve_s']*1e3:8.2f} | "
-                  f"{r['triangular_s']*1e3:8.2f} {r['residual_s']*1e3:8.2f} "
-                  f"{r.get('krylov_s', 0.0)*1e3:8.2f} | "
+                  f"{_num(r.get('triangular_s', float('nan'))*1e3, '8.2f')} "
+                  f"{_num(r.get('residual_s', float('nan'))*1e3, '8.2f')} "
+                  f"{_num(r.get('krylov_s', 0.0)*1e3, '8.2f')} | "
                   f"{int(r['outer_iters']):>5} {int(r['n_solves']):>5} "
                   f"{(inner if inner >= 0 else 0):>6} {r['ferr_ref']:10.2e} "
                   f"{int(r['converged']):>3} {_num(sp, '8.2f')}")
@@ -1059,10 +1068,11 @@ def write_report(out_path, h5path, name, attrs, rows, limit):
                 sp = float("nan")
                 if ref is not None and r["total_s"] > 0 and int(r["converged"]):
                     sp = ref["total_s"] / r["total_s"]
-                share = (100.0 * r["residual_s"] / r["solve_s"]
+                resid = r.get("residual_s", float("nan"))
+                share = (100.0 * resid / r["solve_s"]
                          if r["solve_s"] > 0 else float("nan"))
                 cols = (int(r["outer_iters"]) + 1) * int(r["n_rhs"])
-                per_col = r["residual_s"] * 1e3 / cols if cols else float("nan")
+                per_col = resid * 1e3 / cols if cols else float("nan")
                 fac_ratio = f_ratio = k_ratio = float("nan")
                 measured = predicted = float("nan")
                 if (ref is not None and ref["matrix_mb"] > 0
