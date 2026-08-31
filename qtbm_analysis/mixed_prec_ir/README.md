@@ -644,6 +644,7 @@ mixed-precision-IR/carbon-nanotube/
 ├── carbon-nanotube.h5
 ├── exp0001/
 │   ├── carbon-nanotube_summary.png
+│   ├── carbon-nanotube_report.txt
 │   └── carbon-nanotube_E84.png
 └── exp0002/
     └── ...

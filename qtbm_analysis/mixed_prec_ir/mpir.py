@@ -292,6 +292,7 @@ import datetime
 import gc
 import itertools
 import math
+import platform
 import sys
 import time
 import warnings
@@ -299,6 +300,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+import scipy
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
@@ -2496,7 +2498,7 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
     ref_floor = float("nan")
     if reference_solver is not None:
         if reference_solver == EXTENDED_REFERENCE:
-            print(f"Reference: x_true = superlu complex128 + "
+            print(f"Reference: x_true = superlu complex128 + up to "
                   f"{DEFAULT_REF_STEPS} refinement steps with a "
                   f"double-double residual (eps_ext={EPS_EXT:.1e})", flush=True)
         else:
@@ -3330,6 +3332,23 @@ def main():
         n_skipped=len(skipped),
         criteria="stop when the forward error against the reference increases",
         convergence_factor="Carson and Higham 2018, Corollary 3.3",
+        # The machine the run happened on. Recorded because it has already
+        # changed a result once: np.longdouble is 80-bit x87 on x86-64 and
+        # IEEE binary128 on aarch64, which moved the reference's accuracy by
+        # fifteen orders of magnitude and its cost by more, and nothing in the
+        # file said which one had produced a given experiment. eps_ext is
+        # recorded alongside it since the reference no longer depends on
+        # np.longdouble at all and the two must not be confused.
+        host_machine=platform.machine(),
+        host_platform=platform.platform(),
+        host_processor=platform.processor() or "unknown",
+        python_version=platform.python_version(),
+        numpy_version=np.__version__,
+        scipy_version=scipy.__version__,
+        longdouble_bits=int(np.dtype(np.longdouble).itemsize * 8),
+        longdouble_eps=float(np.finfo(np.longdouble).eps),
+        eps_ext=float(EPS_EXT),
+        ref_steps_max=int(DEFAULT_REF_STEPS),
         **material_metadata(h5path),
     )
     if skipped:

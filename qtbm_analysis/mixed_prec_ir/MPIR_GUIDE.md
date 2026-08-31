@@ -461,8 +461,21 @@ Carson and Higham's numerical experiments. Figures are written into
 ├── <material>.h5
 └── exp0001/
     ├── <material>_summary.png
+    ├── <material>_report.txt
     └── <material>_E<idx>.png
 ```
+
+`<material>_report.txt` is the figures' companion: the configuration the
+experiment ran under, **the machine it ran on**, every column of every run row
+and the full per-step convergence history. A figure shows a trend; a result
+that looks wrong is settled by the numbers, and this is the file to read — or
+to hand to someone else — when one does. It is rewritten with the figures on
+every invocation.
+
+The host block matters more than it looks. `np.longdouble` is 80-bit x87 on
+x86-64 and IEEE binary128 on aarch64, and nothing in an analysis file used to
+say which had produced it — so `host_machine`, `longdouble_eps` and `eps_ext`
+are now recorded per experiment.
 
 ```bash
 python plot_mpir.py <material.h5> --list                    # what's in the file

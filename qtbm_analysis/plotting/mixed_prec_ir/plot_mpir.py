@@ -48,6 +48,13 @@ Output
 ------
     <outdir>/<material>_E<idx>.png     one per index, convergence history
     <outdir>/<material>_summary.png    the sweep, iterations vs kappa_inf
+    <outdir>/<material>_report.txt     everything behind the two figures, as text
+
+The report is the figures' companion rather than a log: the configuration the
+experiment ran under, the machine it ran on, every column of every run row and
+the full per-step convergence history. A figure shows a trend; a result that
+looks wrong is settled by the numbers, and this is the file to read, or to hand
+to someone else, when it does.
 
 The default output directory is exp<NNNN>/ beside the analysis file, i.e. one
 subdirectory per experiment inside the material's own directory:
@@ -56,6 +63,7 @@ subdirectory per experiment inside the material's own directory:
     ├── <material>.h5
     ├── exp0001/
     │   ├── <material>_summary.png
+    │   ├── <material>_report.txt
     │   └── <material>_E<idx>.png
     └── exp0002/
         └── ...
@@ -337,6 +345,244 @@ def _summary_title(attrs, refined):
     )
 
 
+
+# Columns of the runs table, grouped so the report reads in the order a
+# question about a run is usually asked: what was solved, how it was
+# conditioned, what refinement did, what it cost.
+_RUN_SECTIONS = (
+    ("system", ("idx", "energy", "n", "nnz", "n_rhs", "block_size", "n_blocks",
+                "solver", "factor_dtype", "inv_dtype", "inner", "is_refined")),
+    ("conditioning", ("kappa_2", "kappa_inf", "cond_skeel", "cond_skeel_x",
+                      "lu_ir_bound", "u_f", "u", "u_s")),
+    ("refinement", ("outer_iters", "converged", "ferr_best", "ferr_tol",
+                    "stop_reason", "gmres_total", "gmres_avg")),
+    ("accuracy", ("relres", "ferr_ref", "eta1", "eta2", "etainf", "omega",
+                  "reference_solver", "reference_nbe", "reference_floor")),
+    ("cost", ("wall_s", "factor_s", "factor_symbolic_s", "factor_numeric_s",
+              "inner_s", "solve_s", "residual_s", "other_s", "n_solves",
+              "factor_mb", "factor_mb_reported", "working_mb")),
+)
+
+# Attributes worth printing as configuration, in a deliberate order rather
+# than whatever order h5py hands them back.
+_CONFIG_KEYS = (
+    "solver", "factor_dtype", "inv_dtype", "inner", "inner_label",
+    "working_dtype", "residual_dtype", "working_u", "max_iter", "ferr_tol",
+    "gmres_tol", "gmres_restart", "gmres_max_iter", "reference_solver",
+    "ref_steps_max", "eps_ext", "repeats", "criteria", "convergence_factor",
+)
+_ENV_KEYS = ("host_machine", "host_platform", "host_processor",
+             "python_version", "numpy_version", "scipy_version",
+             "longdouble_bits", "longdouble_eps")
+_MATERIAL_KEYS = ("material", "source", "timestamp", "command",
+                  "valence_band_edge", "conduction_band_edge",
+                  "grid_energy_min", "resolution")
+
+
+def _fmt(v):
+    """One attribute or cell as text, without numpy's array decoration."""
+    if isinstance(v, bytes):
+        return v.decode("utf-8", "replace")
+    if isinstance(v, (np.bytes_, np.str_)):
+        return str(v)
+    if isinstance(v, (list, tuple, np.ndarray)):
+        items = [_fmt(x) for x in np.asarray(v).ravel()]
+        if len(items) > 24:
+            return " ".join(items[:24]) + f" ... (+{len(items) - 24} more)"
+        return " ".join(items)
+    if isinstance(v, (float, np.floating)):
+        f = float(v)
+        if not np.isfinite(f):
+            return str(f)
+        if f == 0 or 1e-4 <= abs(f) < 1e6:
+            return f"{f:.6g}"
+        return f"{f:.6e}"
+    if isinstance(v, (bool, np.bool_)):
+        return "yes" if v else "no"
+    return str(v)
+
+
+def _kv_block(attrs, keys, indent="  "):
+    """The given keys of attrs as aligned `name : value` lines."""
+    present = [k for k in keys if k in attrs]
+    if not present:
+        return [f"{indent}(none recorded)"]
+    w = max(len(k) for k in present)
+    return [f"{indent}{k:<{w}} : {_fmt(attrs[k])}" for k in present]
+
+
+def _table(rows, columns, indent="  "):
+    """Fixed-width table of the given columns, skipping ones no row carries."""
+    cols = [c for c in columns if any(c in r for r in rows)]
+    if not cols or not rows:
+        return [f"{indent}(no rows)"]
+    cells = [[_fmt(r.get(c, "")) for c in cols] for r in rows]
+    w = [max(len(c), *(len(row[i]) for row in cells)) for i, c in enumerate(cols)]
+    out = [indent + "  ".join(c.ljust(w[i]) for i, c in enumerate(cols)),
+           indent + "  ".join("-" * w[i] for i in range(len(cols)))]
+    out += [indent + "  ".join(row[i].ljust(w[i]) for i in range(len(cols)))
+            for row in cells]
+    return out
+
+
+def write_report(h5path, name, attrs, run_rows, iter_rows, out_path,
+                 y_max=None):
+    """
+    Everything behind the summary figure, as text, beside it.
+
+    The figure answers one question -- did refinement converge, and in how
+    many steps, against kappa_inf -- and deliberately shows nothing else. This
+    file is the rest: the configuration the experiment ran under, the machine
+    it ran on, every column of every run row, and the full per-step
+    convergence history. It exists to be read directly or handed to someone
+    debugging a result, where the numbers settle in seconds what a scatter
+    plot can only suggest.
+
+    Written on every invocation, next to the summary figure, and overwritten
+    with it: it describes one experiment of one analysis file, which never
+    changes once written, so a stale copy would only ever be confusing.
+    """
+    refined = sorted((r for r in run_rows if _role(r["variant"], attrs) == "refined"),
+                     key=lambda r: r["idx"])
+    kap = np.asarray([r.get("kappa_inf", np.nan) for r in refined], dtype=float)
+    itr = np.asarray([r.get("outer_iters", np.nan) for r in refined], dtype=float)
+    drawable = np.isfinite(kap) & np.isfinite(itr) & (kap > 0)
+    converged = [r for r in refined if r.get("converged")]
+
+    L = []
+    add = L.append
+    add("=" * 78)
+    add(f"mixed-precision iterative refinement -- experiment {name}")
+    add("=" * 78)
+    add("Written by plotting/mixed_prec_ir/plot_mpir.py beside the summary")
+    add("figure. Everything the figure does not show; see mixed_prec_ir/")
+    add("MPIR_GUIDE.md for what each column means.")
+    add("")
+
+    add("-" * 78)
+    add("1. PROVENANCE")
+    add("-" * 78)
+    prov = dict(attrs)
+    prov["analysis_file"], prov["experiment"] = str(h5path), name
+    L.extend(_kv_block(prov, ("analysis_file", "experiment") + _MATERIAL_KEYS))
+    add("")
+    add("  Re-running this experiment: the `command` line above is the exact")
+    add("  argv that produced it. mpir.py appends a new numbered experiment on")
+    add("  every invocation and never overwrites one, so re-running it adds a")
+    add("  new experiment rather than replacing this one.")
+    add("")
+
+    add("-" * 78)
+    add("2. MACHINE THE RUN HAPPENED ON")
+    add("-" * 78)
+    if any(k in attrs for k in _ENV_KEYS):
+        L.extend(_kv_block(attrs, _ENV_KEYS))
+    else:
+        add("  (not recorded -- this experiment predates the host_* attributes)")
+    add("")
+    add("  np.longdouble is 80-bit x87 on x86-64 and IEEE binary128 on")
+    add("  aarch64, which changes both the cost and, for experiments written")
+    add("  before the reference moved to double-double, the accuracy of the")
+    add("  reference solution. eps_ext in section 3 is what the reference")
+    add("  actually used and is the number that matters.")
+    add("")
+
+    add("-" * 78)
+    add("3. CONFIGURATION")
+    add("-" * 78)
+    L.extend(_kv_block(attrs, _CONFIG_KEYS))
+    add("")
+    add("  ferr_tol = -1 above means it was not set explicitly, so each index")
+    add("  used cond(A,x) u -- the per-index value is in the runs table below.")
+    add("")
+
+    add("-" * 78)
+    add("4. THE SWEEP")
+    add("-" * 78)
+    add(f"  indices requested   : {_fmt(attrs.get('n_requested', len(refined)))}")
+    add(f"  refined run rows    : {len(refined)}")
+    add(f"  drawn on the figure : {int(drawable.sum())}"
+        f"   (an index needs a finite kappa_inf from the condition-est file)")
+    add(f"  converged           : {len(converged)}/{len(refined)}")
+    if int((~drawable).sum()):
+        missing = [str(int(r['idx'])) for r, ok in zip(refined, drawable) if not ok]
+        add(f"  NOT drawn           : {' '.join(missing)}")
+    add(f"  summary y axis      : 0 .. "
+        f"{_fmt(y_max if y_max is not None else attrs.get('max_iter', '?'))}"
+        f"   ({'--y-max' if y_max is not None else 'the run max_iter'})")
+    skipped = attrs.get("skipped_idx", [])
+    if len(np.atleast_1d(skipped)):
+        add("")
+        add("  Indices skipped entirely by mpir.py (no run row at all):")
+        reasons = attrs.get("skipped_reason", [])
+        for i, idx in enumerate(np.atleast_1d(skipped)):
+            why = _fmt(reasons[i]) if i < len(np.atleast_1d(reasons)) else ""
+            add(f"    E_{_fmt(idx)}: {why}")
+        add("  A refined variant that failed to FACTORIZE is not here -- it is")
+        add("  a real row below with converged=no and outer_iters=0.")
+    add("")
+
+    add("-" * 78)
+    add("5. PER-INDEX SUMMARY  (the refined variant, i.e. the figure's points)")
+    add("-" * 78)
+    L.extend(_table(refined, ("idx", "energy", "kappa_inf", "cond_skeel_x",
+                              "ferr_tol", "outer_iters", "converged",
+                              "ferr_best", "gmres_avg", "stop_reason")))
+    add("")
+
+    add("-" * 78)
+    add("6. EVERY RUN ROW, EVERY COLUMN")
+    add("-" * 78)
+    by_idx = {}
+    for r in run_rows:
+        by_idx.setdefault(int(r["idx"]), []).append(r)
+    for idx in sorted(by_idx):
+        add(f"  E_{idx}")
+        for r in by_idx[idx]:
+            add(f"    variant: {_fmt(r.get('variant'))}")
+            for label, keys in _RUN_SECTIONS:
+                present = [k for k in keys if k in r]
+                if not present:
+                    continue
+                add(f"      {label}:")
+                w = max(len(k) for k in present)
+                for k in present:
+                    add(f"        {k:<{w}} : {_fmt(r[k])}")
+            add("")
+    add("")
+
+    add("-" * 78)
+    add("7. CONVERGENCE HISTORY, PER OUTER STEP")
+    add("-" * 78)
+    add("  ferr_ref is the forward error against the reference; the run stops")
+    add("  when it increases, and the returned solution is the step before the")
+    add("  increase. phi_* are the Corollary 3.3 terms and decide nothing.")
+    add("")
+    hist = {}
+    for r in iter_rows:
+        hist.setdefault(int(r["idx"]), []).append(r)
+    if not hist:
+        add("  (no iteration rows in this experiment)")
+    for idx in sorted(hist):
+        rows = sorted(hist[idx], key=lambda r: r.get("outer_iteration", 0))
+        add(f"  E_{idx}")
+        L.extend(_table(rows, ("outer_iteration", "relres", "ferr_ref",
+                               "etainf", "omega", "gmres_inner_iterations",
+                               "rho", "mu_hat", "phi_cond_hat",
+                               "phi_solve_hat", "phi_hat", "phi_cond_binding",
+                               "correction_norm_inf",
+                               "reference_correction_norm_inf", "note"),
+                        indent="    "))
+        add("")
+
+    add("=" * 78)
+    add("end of report")
+    add("=" * 78)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(L) + "\n")
+    print(f"wrote {out_path}")
+
 def list_experiments(h5path):
     """Print what a file holds, one line per experiment."""
     names = experiment_names(h5path)
@@ -397,6 +643,8 @@ def main():
 
     plot_summary(run_rows, attrs, outdir / f"{material}_summary.png",
                  y_max=args.y_max)
+    write_report(h5path, name, attrs, run_rows, iter_rows,
+                 outdir / f"{material}_report.txt", y_max=args.y_max)
 
     by_idx = {}
     for r in iter_rows:
