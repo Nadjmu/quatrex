@@ -76,13 +76,22 @@ print(f"    -> double-double is {od/dd:.1f}x the speed of clongdouble, "
       f"and {dd/pl:.0f}x a plain matvec")
 print()
 
-print("[3] the whole reference, both factorizations")
-# bs=None now means "detect the blocks", not "use SuperLU", so forcing the
-# SuperLU path takes a single-block partition -- which is exactly the case
-# _reference_factorization treats as having no structure worth exploiting.
+print("[3] the whole reference, split into its actual parts")
+print("    (each twice, so run-to-run variance is visible rather than assumed)")
 for label, blocks in (("SuperLU     ", [n]), ("Block Thomas", bs)):
-    s = time.perf_counter(); r = mpir._ExtendedReference(A, blocks)
-    tb = time.perf_counter() - s
-    s = time.perf_counter(); x = r.solve(b); ts = time.perf_counter() - s
-    print(f"    {label}: build {tb:7.2f}s + solve {ts:7.2f}s = {tb+ts:7.2f}s"
-          f"   (steps/col={r.steps//max(nrhs,1)}, resid={r.residual:.1e})")
+    for rep in range(2):
+        s0 = time.perf_counter()
+        name, fac = mpir._reference_factorization(A, blocks)
+        t_fac = time.perf_counter() - s0
+
+        s0 = time.perf_counter()
+        r = mpir._ExtendedReference(A, blocks)
+        t_build = time.perf_counter() - s0
+
+        s0 = time.perf_counter(); x = r.solve(b); t_solve = time.perf_counter() - s0
+        # how much of the solve is the extended matvec vs the triangular solves
+        nmv = r.steps + nrhs                 # one residual per step, plus the first
+        print(f"    {label} #{rep+1}: factorize {t_fac:7.2f}s | "
+              f"precompute {t_build - t_fac:7.2f}s | solve {t_solve:7.2f}s "
+              f"= {t_build + t_solve:7.2f}s   [{name}, steps/col={r.steps//max(nrhs,1)}]")
+        del r, fac
