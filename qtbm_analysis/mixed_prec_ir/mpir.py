@@ -1547,6 +1547,10 @@ def solve_mixed_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
         "inner_s": inner_s,
         "solve_s": solve_s,
         "residual_s": residual_s,
+        # No Krylov work: LU-IR's correction is one triangular solve. Reported
+        # as zero rather than omitted so that every driver returns the same
+        # stage keys and a cost study needs no per-variant special case.
+        "krylov_s": 0.0,
         "n_solves": n_solves,
         "factor_breakdown": _factor_breakdown(solver),
     }
@@ -1899,7 +1903,15 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
     # makes. What remains of inner_s after solve_s and residual_s is the rest
     # of GMRES: the products with A, the orthogonalization and the least
     # squares problem, all at the working precision.
-    stage = {"solve_s": 0.0, "n_solves": 0}
+    # gmres_s is the Krylov work alone: the products with A, the
+    # orthogonalization and the least squares problem. It is accumulated as the
+    # wall time of each _gmres_solve call MINUS the preconditioner time that
+    # call spent inside it, which precond_apply has already counted into
+    # solve_s. Measured this way rather than as inner_s - solve_s - residual_s,
+    # which would also sweep in the forward-error diagnostics the refinement
+    # loop computes between the timed regions; see mpperf's docstring on what
+    # is deliberately not timed.
+    stage = {"solve_s": 0.0, "n_solves": 0, "gmres_s": 0.0}
     residual_s = 0.0
 
     def precond_apply(v):
@@ -1951,8 +1963,11 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
             def _cb(_res, counter=counter):
                 counter[0] += 1
 
+            t_g, s_g = time.perf_counter(), stage["solve_s"]
             dj, info = _gmres_solve(A_op, r2[:, j], M_op, gmres_tol, gmres_restart,
                                     gmres_max_iter, callback=_cb)
+            stage["gmres_s"] += ((time.perf_counter() - t_g)
+                                 - (stage["solve_s"] - s_g))
             if info != 0:
                 warnings.warn(
                     f"GMRES-IR: inner GMRES did not fully converge for rhs "
@@ -1998,6 +2013,7 @@ def solve_gmres_ir(solver_name, A, b, bs, low_dtype, max_iter, x_true=None,
         "inner_s": inner_s,
         "solve_s": stage["solve_s"],
         "residual_s": residual_s,
+        "krylov_s": stage["gmres_s"],
         "n_solves": stage["n_solves"],
         "factor_breakdown": _factor_breakdown(solver),
     }
@@ -2033,8 +2049,8 @@ def solve_direct(solver_name, A, b, bs, dtype, inv_dtype=DEFAULT_INV_DTYPE):
     # variants so that a stage-breakdown figure can read every variant the
     # same way rather than special-casing the two unrefined ones.
     return x, {"mem_bytes": mem_bytes, "factor_s": factor_s, "inner_s": inner_s,
-              "solve_s": inner_s, "residual_s": 0.0, "n_solves": 1,
-              "factor_breakdown": factor_breakdown}
+              "solve_s": inner_s, "residual_s": 0.0, "krylov_s": 0.0,
+              "n_solves": 1, "factor_breakdown": factor_breakdown}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

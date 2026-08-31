@@ -3,11 +3,13 @@
 Runtime of mixed-precision iterative refinement, across solvers.
 
 The companion of mpir.py. mpir.py asks whether refinement converges and to
-what accuracy; this script asks what it costs. Two variants are timed for
-every (index, solver):
+what accuracy; this script asks what it costs. Up to three variants are timed
+for every (index, solver), selected with --variants:
 
-    c64_ir    complex64 factorization + LU-IR      (the method)
-    c128      complex128 direct solve, no refinement   (what it replaces)
+    c64_ir      complex64 factorization + LU-IR          (default)
+    c64_gmres   complex64 factorization + GMRES-IR
+    c128        complex128 direct solve, no refinement   (what they replace,
+                and the baseline every pair is read against; default)
 
 and each is split into three stages that are drawn as one stacked bar:
 
@@ -22,9 +24,15 @@ and each is split into three stages that are drawn as one stacked bar:
                       the cast of A into the factorization precision and, for
                       cuDSS, the host-to-device transfer. This is the stage a
                       lower u_f makes cheaper.
-    solve_s           every triangular solve plus every complex128 residual
-                      b - Ax. One of each for c128; for c64_ir, one solve per
-                      outer refinement step and one residual per iterate.
+    solve_s           the whole refinement iteration: every triangular solve,
+                      every complex128 residual b - Ax, and for GMRES-IR the
+                      Krylov work as well -- the products with A, the
+                      orthogonalization and the least squares problem. One
+                      solve and no residual for c128; for c64_ir one solve per
+                      outer step and one residual per iterate; for c64_gmres
+                      one preconditioner application per inner GMRES iteration.
+                      Recorded split into triangular_s, residual_s and
+                      krylov_s, which are never drawn; see _phases.
 
 The three sum to total_s, the bar height, which is the end-to-end algorithmic
 cost of the variant.
@@ -40,8 +48,13 @@ charged to nothing. The convergence diagnostics of mpir.refinement_metrics are
 not computed here at all -- this script never calls it.
 
 The one thing this does leave out is the O(n) vector update x + d, which is not
-bracketed by any timer. It is the same work in both variants and orders of
+bracketed by any timer. It is the same work in every variant and orders of
 magnitude below a solve.
+
+The Krylov stage is measured as the wall time of each inner GMRES call minus
+the preconditioner time inside it, so it is neither double counted against the
+triangular solves nor contaminated by the diagnostics between the timed
+regions.
 
 The refinement loop is nonetheless run with a reference solution, through
 --reference-solver, so that it stops on the same rule and after the same
@@ -63,9 +76,9 @@ the same A and b, after an untimed warm-up of that solver at both precisions --
 see _warm_up, which exists so that the one-time cost of the first LAPACK, MUMPS
 or cuDSS call in the process is not charged to the first bar of the figure. The
 reference solution is computed once per index and shared, so its cost is
-charged to no solver. --repeats runs of each variant are made and the median of each stage
-reported; total_s is the sum of those three medians, so the bar equals the sum
-of its parts. total_s_min and total_s_max are the smallest and largest
+charged to no solver. --repeats runs of each variant are made and the median
+of each stage reported; total_s is the sum of those three medians, so the bar
+equals the sum of its parts. total_s_min and total_s_max are the smallest and largest
 per-repeat totals, the spread the median hides.
 
 Solvers are compared as installed on the machine the script runs on. MUMPS and
@@ -85,11 +98,16 @@ summary figure:
                 not halve when the factorization does.
     factor_mb   the stored factorization, from each solver's factor_nbytes.
                 Exactly halves at complex64.
-    krylov_mb   the inner Krylov basis, GMRES-IR only; zero for both variants
-                measured today. factor_nbytes returns 0 where a backend exposes no size -- MUMPS
-where INFOG(3) is unreachable, cuDSS where the factorization info carries no
-lu_nnz -- and factor_mb_reported is 0 there. A figure must drop such a row
-rather than draw it at zero.
+    krylov_mb   the inner Krylov basis, (restart + 1) vectors of length n at
+                the working precision. GMRES-IR only; zero otherwise. SciPy's
+                gmres takes a single right-hand side, so only one basis is
+                resident at a time and this does not scale with n_rhs.
+
+factor_nbytes returns 0 where a backend exposes no size -- MUMPS where
+INFOG(3) is unreachable, cuDSS where the factorization info carries no lu_nnz
+-- and factor_mb_reported is 0 there. Such a row is a lower bound and the
+figure caps it with a dotted line rather than drawing it as a small
+factorization.
 
 Output
 ------
@@ -107,6 +125,8 @@ Usage
     python mpperf.py .../graphene.h5 --idx 84 254 601
     python mpperf.py .../graphene.h5 --start 0 --end 800 --stride 200
     python mpperf.py .../graphene.h5 --idx 84 --solvers mumps block-thomas
+    python mpperf.py .../graphene.h5 --idx 84 \
+        --variants c64_ir c64_gmres c128
     python mpperf.py .../graphene.h5 --list-experiments
 
 Then
@@ -139,8 +159,8 @@ from mpir import (
     build_reference, dtype_label, energy_of_idx, experiment_attrs,
     experiment_names, idx_of_energy, load_condition_numbers,
     load_energy_metadata, load_system, new_experiment, resolve_experiment,
-    solve_direct, solve_mixed_ir, solver_dtypes, unit_roundoff,
-    _inf_norm, _matrix_nbytes,
+    solve_direct, solve_gmres_ir, solve_mixed_ir, solver_dtypes,
+    unit_roundoff, _inf_norm, _krylov_nbytes, _matrix_nbytes,
 )
 
 MIB = 1024.0 ** 2
@@ -155,13 +175,31 @@ DEFAULT_PERF_SOLVERS = ("block-thomas", "mumps", "cudss", "superlu")
 # The stacked segments, in the order they are drawn from the axis upwards.
 PHASES = ("symbolic_s", "factorization_s", "solve_s")
 
-# The two bars of every pair. c64_ir is drawn on the left of c128 because it is
-# the method under test and c128 the baseline it is read against.
-VARIANTS = ("c64_ir", "c128")
+# The bars of one solver's group, drawn left to right in this order: the
+# methods under test first, the complex128 baseline they are read against last.
+# --variants selects a subset; the experiment records which were used, and the
+# figure reads that rather than assuming a pair, so a two-bar and a three-bar
+# run draw correctly from the same script.
+ALL_VARIANTS = ("c64_ir", "c64_gmres", "c128")
+DEFAULT_VARIANTS = ("c64_ir", "c128")
 
 VARIANT_LABEL = {
-    "c64_ir": "{low} + LU-IR",
-    "c128":   "complex128 direct",
+    "c64_ir":    "{low} + LU-IR",
+    "c64_gmres": "{low} + GMRES-IR",
+    "c128":      "complex128 direct",
+}
+
+# `inner` is the correction solve; `krylov` marks the variant that additionally
+# holds a Krylov basis, which is the third segment of the memory panel.
+# Inner GMRES settings, used only by the c64_gmres variant. The same defaults
+# mpir.py's parser carries, so a run of one study is comparable with a run of
+# the other unless a flag says otherwise.
+GMRES_DEFAULTS = dict(gmres_tol=1e-8, gmres_restart=30, gmres_max_iter=50)
+
+VARIANT_SPEC = {
+    "c64_ir":    dict(inner="direct", is_refined=1, krylov=False),
+    "c64_gmres": dict(inner="gmres",  is_refined=1, krylov=True),
+    "c128":      dict(inner="",       is_refined=0, krylov=False),
 }
 
 RUN_COLUMNS = [
@@ -180,12 +218,12 @@ RUN_COLUMNS = [
     # neither phase claimed and that factorization_s absorbs.
     "phases_split", "numeric_reported_s", "factor_s",
     # the two halves of solve_s, recorded but not drawn; see _phases
-    "triangular_s", "residual_s",
+    "triangular_s", "residual_s", "krylov_s",
     "total_s_min", "total_s_max",
     # what the timing is worth: a c64_ir bar that did not converge did not
     # deliver the answer c128 did, and its height is not a speedup
-    "outer_iters", "n_solves", "converged", "ferr_ref", "ferr_tol",
-    "stop_reason",
+    "outer_iters", "n_solves", "gmres_total", "inner", "converged",
+    "ferr_ref", "ferr_tol", "stop_reason",
     # memory, recorded but not yet drawn
     "factor_mb", "factor_mb_reported", "matrix_mb", "krylov_mb",
     "working_mb",
@@ -470,35 +508,51 @@ def _warm_up(solver_name, A, b, low_dtype, inv_dtype):
 
 def _driver(variant, solver_name, A, b, low_dtype, inv_dtype, opts):
     """
-    The zero-argument callable one repeat times. Both are mpir drivers, so the
-    cost study measures the same code the convergence study does.
+    The zero-argument callable one repeat times. Every one of them is an mpir
+    driver, so the cost study measures the same code the convergence study does.
     """
     if variant == "c128":
         return lambda: solve_direct(solver_name, A, b, None, HIGH_DTYPE,
                                     inv_dtype)
-    return lambda: solve_mixed_ir(
+    if variant == "c64_ir":
+        return lambda: solve_mixed_ir(
+            solver_name, A, b, None, low_dtype, opts["max_iter"],
+            x_true=opts["x_true"], normA=None, inv_dtype=inv_dtype,
+            ferr_tol=opts["ferr_tol"])
+    return lambda: solve_gmres_ir(
         solver_name, A, b, None, low_dtype, opts["max_iter"],
-        x_true=opts["x_true"], normA=None, inv_dtype=inv_dtype,
-        ferr_tol=opts["ferr_tol"])
+        x_true=opts["x_true"], gmres_tol=opts["gmres_tol"],
+        gmres_restart=opts["gmres_restart"],
+        gmres_max_iter=opts["gmres_max_iter"], normA=None,
+        inv_dtype=inv_dtype, ferr_tol=opts["ferr_tol"])
 
 
 def _phases(extra):
     """
-    (symbolic_s, factorization_s, triangular_s, residual_s,
+    (symbolic_s, factorization_s, triangular_s, residual_s, krylov_s,
     numeric_reported_s, factor_s) of one repeat.
 
-    The drawn solve stage is triangular_s + residual_s, summed by the caller
-    AFTER both have been reduced over the repeats. Reducing the sum instead
+    The drawn solve stage is triangular_s + residual_s + krylov_s, summed by
+    the caller AFTER all three have been reduced over the repeats. Reducing the sum instead
     would leave the two halves not adding up to the whole, since neither a
     median nor a minimum distributes over addition; every level of this
     breakdown reduces the leaves and sums upward, which is the same rule
     total_s follows.
 
-    The drawn stage is the whole refinement iteration -- every triangular solve and
-    every working-precision residual -- because that is what the figure draws:
-    the bar totals the end-to-end cost of the variant. triangular_s and
-    residual_s are the two halves of it, recorded but never drawn, because the
-    split is what explains the bar rather than what the bar says. The residual
+    krylov_s is the Krylov work of GMRES-IR -- the products with A, the
+    orthogonalization and the least squares problem -- and is zero for LU-IR
+    and for the direct variant. mpir measures it as the wall time of each inner
+    GMRES call MINUS the preconditioner time inside it, so it neither double
+    counts against triangular_s nor picks up the forward-error diagnostics that
+    sit between the timed regions. Without it a GMRES-IR bar would show only
+    its preconditioner applications and badly understate the method.
+
+    The drawn stage is the whole refinement iteration -- every triangular
+    solve, every working-precision residual and all the Krylov work -- because
+    that is what the figure draws: the bar totals the end-to-end cost of the
+    variant. triangular_s, residual_s and krylov_s are its parts, recorded but
+    never drawn, because the split is what explains the bar rather than what
+    the bar says. The residual
     is a plain b - Ax and is therefore the SAME cost for every solver at one
     index; on si-bulk it is 78-95% of this stage, which is why the c64_ir bars
     of three different solvers are nearly the same height.
@@ -520,7 +574,8 @@ def _phases(extra):
     numeric_reported_s = float(breakdown[1]) if breakdown else float("nan")
     factorization_s = factor_s - (symbolic_s if breakdown else 0.0)
     return (symbolic_s, factorization_s, float(extra["solve_s"]),
-            float(extra.get("residual_s", 0.0)), numeric_reported_s, factor_s)
+            float(extra.get("residual_s", 0.0)),
+            float(extra.get("krylov_s", 0.0)), numeric_reported_s, factor_s)
 
 
 def measure_variant(variant, solver_name, A, b, low_dtype, inv_dtype, opts,
@@ -555,14 +610,21 @@ def measure_variant(variant, solver_name, A, b, low_dtype, inv_dtype, opts,
     # than the reduction of the totals; total_s_min and total_s_max carry the
     # spread of the per-repeat totals whichever reducer is in use.
     stages = np.asarray(stages, dtype=float)
-    (symbolic_s, factorization_s, triangular_s, residual_s,
+    (symbolic_s, factorization_s, triangular_s, residual_s, krylov_s,
      numeric_reported_s, factor_s) = REDUCERS[reduce](stages, axis=0)
-    solve_s = triangular_s + residual_s
-    per_repeat_total = np.nansum(stages[:, :4], axis=1)
+    solve_s = triangular_s + residual_s + krylov_s
+    per_repeat_total = np.nansum(stages[:, :5], axis=1)
     total_s = float(np.nansum([symbolic_s, factorization_s, solve_s]))
 
     monitor = extra.get("monitor")
     summary = monitor.summary() if monitor is not None else {}
+    # Inner GMRES iterations, summed over every outer step and every rhs
+    # column: the count a cost comparison needs, since it is what multiplies
+    # the preconditioner applications. -1, not 0, where the variant runs no
+    # inner solver -- a real zero would mean GMRES converged without iterating.
+    gmres_history = extra.get("gmres_iters_history", [])
+    gmres_total = (int(sum(sum(g) for g in gmres_history))
+                   if gmres_history else -1)
 
     # The forward error against the shared reference, from the last repeat.
     # An O(n) vector norm computed here, outside every timed region.
@@ -587,11 +649,11 @@ def measure_variant(variant, solver_name, A, b, low_dtype, inv_dtype, opts,
     # working set does not halve when the factorization does.
     matrix_mb = _matrix_nbytes(A, HIGH_DTYPE) / MIB
     # The inner Krylov basis, held by a GMRES-IR variant only: (restart + 1)
-    # vectors of length n at the working precision. Zero for both variants
-    # measured today -- neither runs an inner Krylov solve -- and recorded
-    # anyway so that the memory figure's third segment is already defined when
-    # GMRES-IR is added, rather than the figure having to change shape then.
-    krylov_mb = 0.0
+    # vectors of length n at the working precision. SciPy's gmres takes a
+    # single right-hand side, so solve_gmres_ir loops over the columns and only
+    # one basis is resident at a time; the footprint does not scale with n_rhs.
+    krylov_mb = (_krylov_nbytes(A.shape[0], opts["gmres_restart"]) / MIB
+                 if VARIANT_SPEC[variant]["krylov"] else 0.0)
 
     row = dict(
         variant=variant,
@@ -604,9 +666,12 @@ def measure_variant(variant, solver_name, A, b, low_dtype, inv_dtype, opts,
         factor_s=float(factor_s),
         triangular_s=float(triangular_s),
         residual_s=float(residual_s),
+        krylov_s=float(krylov_s),
+        inner=VARIANT_SPEC[variant]["inner"],
         total_s_min=float(per_repeat_total.min()),
         total_s_max=float(per_repeat_total.max()),
         outer_iters=int(summary.get("outer_iters", 0)),
+        gmres_total=gmres_total,
         n_solves=int(extra.get("n_solves", 0)),
         converged=converged,
         ferr_ref=ferr_ref,
@@ -639,8 +704,9 @@ def measure_variant(variant, solver_name, A, b, low_dtype, inv_dtype, opts,
     return row
 
 
-def measure_index(h5path, idx, solvers, low_dtype, inv_dtype, max_iter,
-                  repeats, reference_solver, ferr_tol, reduce="median"):
+def measure_index(h5path, idx, solvers, variants, low_dtype, inv_dtype,
+                  max_iter, repeats, reference_solver, ferr_tol,
+                  gmres=None, reduce="median"):
     """
     Every (solver, variant) at one energy index, measured in one process
     against byte-identical inputs.
@@ -685,7 +751,8 @@ def measure_index(h5path, idx, solvers, low_dtype, inv_dtype, max_iter,
             ref.free()
         del ref
         gc.collect()
-    opts = dict(x_true=x_true, max_iter=max_iter, ferr_tol=ferr_level)
+    opts = dict(x_true=x_true, max_iter=max_iter, ferr_tol=ferr_level,
+                **(gmres or GMRES_DEFAULTS))
 
     common = dict(
         idx=int(idx), n=int(n), nnz=int(A.nnz), n_rhs=int(n_rhs),
@@ -708,7 +775,7 @@ def measure_index(h5path, idx, solvers, low_dtype, inv_dtype, max_iter,
         _warm_up(solver_name, A, b, low_dtype, inv_dtype)
         n_blocks = len(block_sizes_from_matrix(A)) \
             if solver_name.startswith("block-thomas") else -1
-        for variant in VARIANTS:
+        for variant in variants:
             row = measure_variant(variant, solver_name, A, b, low_dtype,
                                   inv_dtype, opts, repeats, reduce)
             if row is not None:
@@ -721,14 +788,20 @@ def measure_index(h5path, idx, solvers, low_dtype, inv_dtype, max_iter,
 # Report
 # ─────────────────────────────────────────────────────────────────────────────
 
-def print_summary(rows):
+def print_summary(rows, variants=None):
     """
-    One line per (index, solver): the two totals and the ratio between them.
+    One line per (index, solver, refined variant): its total, the complex128
+    baseline, and the ratio between them.
 
     The ratio is the speedup the figure shows as two bar heights, printed so a
     run can be read without drawing it. It is left blank where refinement did
     not converge, since a method that did not produce the answer has no
-    speedup over one that did.
+    speedup over one that did, and blank where c128 was not measured, since
+    there is then nothing to take a ratio against.
+
+    One line per refined variant rather than one per (index, solver): with both
+    LU-IR and GMRES-IR in a run there are two speedups to report against the
+    same baseline, and folding them onto one line would have to drop one.
     """
     grouped = {}
     for row in rows:
@@ -736,44 +809,55 @@ def print_summary(rows):
             row["variant"]] = row
     if not grouped:
         return
+    variants = list(variants) if variants else sorted(
+        {v for g in grouped.values() for v in g}, key=ALL_VARIANTS.index)
+    refined = [v for v in variants if VARIANT_SPEC[v]["is_refined"]]
+    if not refined:
+        return
 
-    print("\n" + "=" * 92)
-    print(f"{'idx':>6} {'kappa_inf':>11} {'solver':<18} "
-          f"{'c64+LU-IR':>11} {'c128':>11} {'speedup':>9} {'outer':>6} "
-          f"{'resid':>6}  note")
-    print("-" * 99)
-
-    def _kappa(variants):
-        row = variants.get("c64_ir") or variants.get("c128")
+    def _kappa(group):
+        row = next(iter(group.values()))
         kappa = row["kappa_inf"]
         # nan sorts unpredictably; indices with no condition number, which the
         # figure drops, go last here rather than into the middle of the table.
         return kappa if np.isfinite(kappa) else float("inf")
 
-    for (idx, solver), variants in sorted(
+    width = 104
+    print("\n" + "=" * width)
+    print(f"{'idx':>6} {'kappa_inf':>11} {'solver':<16} {'variant':<10} "
+          f"{'refined':>10} {'c128':>10} {'speedup':>9} {'outer':>6} "
+          f"{'inner':>6} {'resid':>6}  note")
+    print("-" * width)
+    for (idx, solver), group in sorted(
             grouped.items(), key=lambda kv: (_kappa(kv[1]), kv[0][1])):
-        ir, ref = variants.get("c64_ir"), variants.get("c128")
-        kappa = (ir or ref)["kappa_inf"]
-        t_ir = ir["total_s"] if ir else float("nan")
+        ref = group.get("c128")
         t_ref = ref["total_s"] if ref else float("nan")
-        speedup = (t_ref / t_ir) if (ir and ref and t_ir > 0
-                                     and ir["converged"]) else float("nan")
-        note = "" if (ir and ir["converged"]) else "LU-IR did not converge"
-        # Share of the refinement iteration spent on the working-precision
-        # residual. It is the same b - Ax for every solver, so a column of
-        # similar percentages across solvers is the expected result, not a
-        # coincidence -- and a high one says the bar is dominated by a cost
-        # u_f cannot reduce. See the Reproducibility section of the README.
-        share = (100.0 * ir["residual_s"] / ir["solve_s"]
-                 if ir and ir.get("solve_s", 0) > 0 else float("nan"))
-        print(f"{idx:>6} {kappa:>11.2e} {solver:<18} "
-              f"{t_ir * 1e3:>9.1f}ms {t_ref * 1e3:>9.1f}ms "
-              f"{speedup:>9.2f} {ir['outer_iters'] if ir else 0:>6} "
-              f"{share:>5.0f}%  {note}")
-    print("=" * 99)
-    print("resid = share of the c64+LU-IR refinement iteration spent forming "
-          "b - Ax at complex128,")
-    print("        a cost identical for every solver and unaffected by u_f.")
+        for variant in refined:
+            row = group.get(variant)
+            if row is None:
+                continue
+            t = row["total_s"]
+            speedup = (t_ref / t) if (ref and t > 0 and row["converged"]) \
+                else float("nan")
+            note = "" if row["converged"] else "did not converge"
+            # Share of the refinement iteration spent on the working-precision
+            # residual. It is the same b - Ax for every solver, so a column of
+            # similar percentages across solvers is the expected result, not a
+            # coincidence -- and a high one says the bar is dominated by a cost
+            # u_f cannot reduce. See the Reproducibility section of the README.
+            share = (100.0 * row["residual_s"] / row["solve_s"]
+                     if row.get("solve_s", 0) > 0 else float("nan"))
+            inner = row.get("gmres_total", -1)
+            print(f"{idx:>6} {row['kappa_inf']:>11.2e} {solver:<16} "
+                  f"{variant:<10} {t * 1e3:>8.1f}ms {t_ref * 1e3:>8.1f}ms "
+                  f"{speedup:>9.2f} {row['outer_iters']:>6} "
+                  f"{(inner if inner >= 0 else 0):>6} {share:>5.0f}%  {note}")
+    print("=" * width)
+    print("inner = total inner GMRES iterations over every outer step and rhs "
+          "column (0 for LU-IR).")
+    print("resid = share of the refinement iteration spent forming b - Ax at "
+          "complex128, a cost")
+    print("        identical for every solver and unaffected by u_f.")
 
 
 def list_experiments(path):
@@ -842,6 +926,30 @@ def main():
                                f"<material>{PERF_SUFFIX}.h5, to which each run "
                                f"appends one numbered experiment "
                                f"(default: {cli.MIXED_PREC_DIR})")
+    ap.add_argument("--variants", nargs="+", choices=ALL_VARIANTS,
+                    default=list(DEFAULT_VARIANTS), metavar="NAME",
+                    help=f"which variants to time, drawn left to right in the "
+                         f"order given (default: "
+                         f"{' '.join(DEFAULT_VARIANTS)}). Choose from "
+                         f"{', '.join(ALL_VARIANTS)}; c128 is the baseline "
+                         f"every other variant is read against, so a run "
+                         f"without it produces no speedup")
+    ap.add_argument("--gmres-tol", type=float,
+                    default=GMRES_DEFAULTS["gmres_tol"], metavar="TOL",
+                    help=f"relative tolerance of the inner GMRES solve "
+                         f"(c64_gmres only; default: "
+                         f"{GMRES_DEFAULTS['gmres_tol']:.0e})")
+    ap.add_argument("--gmres-restart", type=int,
+                    default=GMRES_DEFAULTS["gmres_restart"], metavar="M",
+                    help=f"inner GMRES restart parameter (c64_gmres only; "
+                         f"default: {GMRES_DEFAULTS['gmres_restart']}). It "
+                         f"also sets the Krylov basis size the memory panel "
+                         f"draws: (M + 1) vectors of length n")
+    ap.add_argument("--gmres-max-iter", type=int,
+                    default=GMRES_DEFAULTS["gmres_max_iter"], metavar="N",
+                    help=f"maximum inner GMRES iterations per outer step "
+                         f"(c64_gmres only; default: "
+                         f"{GMRES_DEFAULTS['gmres_max_iter']})")
     ap.add_argument("--reduce", choices=tuple(REDUCERS), default="median",
                     help="how the repeats of each stage become the number "
                          "drawn (default: median). 'min' is the better "
@@ -893,12 +1001,17 @@ def main():
 
     low_dtype = np.dtype(args.factor_dtype)
     inv_dtype = np.dtype(args.inv_dtype)
+    gmres = dict(gmres_tol=float(args.gmres_tol),
+                 gmres_restart=int(args.gmres_restart),
+                 gmres_max_iter=int(args.gmres_max_iter))
 
     env = environment()
     load = loadavg("start")
     print(f"Problem : {h5path}")
     print(f"Solvers : {', '.join(args.solvers)}")
-    print(f"Variants: {dtype_label(low_dtype)} + LU-IR, complex128 direct")
+    print(f"Variants: " + ",  ".join(
+        VARIANT_LABEL[v].format(low=dtype_label(low_dtype))
+        for v in args.variants))
     print(f"Runs    : {args.repeats} per variant, {args.reduce} of each "
           f"stage; one untimed warm-up solve per precision before each "
           f"solver")
@@ -911,9 +1024,10 @@ def main():
             print("=" * 92)
         try:
             all_rows.extend(measure_index(
-                h5path, idx, args.solvers, low_dtype, inv_dtype,
-                args.max_iter, args.repeats, args.reference_solver,
-                args.ferr_tol, args.reduce))
+                h5path, idx, args.solvers, args.variants, low_dtype,
+                inv_dtype, args.max_iter, args.repeats,
+                args.reference_solver, args.ferr_tol, gmres=gmres,
+                reduce=args.reduce))
         except SystemExit as e:                  # a bad index, from load_system
             skipped.append((idx, str(e)))
             print(f"E_{idx}: skipped ({e})")
@@ -922,7 +1036,7 @@ def main():
         print(f"\n{len(skipped)} of {len(indices)} indices skipped: "
               f"{', '.join(str(i) for i, _ in skipped)}")
 
-    print_summary(all_rows)
+    print_summary(all_rows, args.variants)
     load.update(loadavg("end"))
     # Sampled now that every solver library is loaded; see _threadpools.
     pools_end = _threadpools()
@@ -949,13 +1063,14 @@ def main():
         timestamp=datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         command=" ".join(sys.argv),
         solvers=list(args.solvers),
-        variants=list(VARIANTS),
+        variants=list(args.variants),
+        variant_labels=[VARIANT_LABEL[v].format(low=dtype_label(low_dtype))
+                        for v in args.variants],
         phases=list(PHASES),
         factor_dtype=args.factor_dtype,
         inv_dtype=args.inv_dtype,
         working_dtype=np.dtype(HIGH_DTYPE).name,
-        inner="direct",
-        inner_label="LU-IR",
+        **gmres,
         working_u=unit_roundoff(HIGH_DTYPE),
         u_f=unit_roundoff(low_dtype),
         max_iter=int(args.max_iter),

@@ -127,7 +127,8 @@ from matplotlib.patches import Patch
 
 import cli
 from factor_io import table_rows
-from mpperf import PHASES, VARIANTS, experiment_names, load_experiment
+from mpperf import (ALL_VARIANTS, PHASES, VARIANT_LABEL, experiment_names,
+                    load_experiment)
 import style
 from style import save_figure
 
@@ -198,10 +199,16 @@ def _grouped(rows, solvers):
     return table, keep, {i: n_rhs[i] for i in keep}, dropped
 
 
-def _bar_geometry(present):
-    """(share of a slot per solver, width of one bar) for `present` solvers."""
+def _bar_geometry(present, variants):
+    """
+    (share of a slot per solver, width of one bar).
+
+    Taken from the variants the EXPERIMENT recorded, not from a constant here:
+    a two-variant and a three-variant run must both lay out correctly, and a
+    figure that assumed a pair would silently overlap the third bar.
+    """
     share = GROUP_WIDTH / len(present)
-    return share, share * (1.0 - PAIR_GAP) / len(VARIANTS)
+    return share, share * (1.0 - PAIR_GAP) / len(variants)
 
 
 def _bar_x(slot_i, s_i, v_i, share, bar_w):
@@ -210,8 +217,8 @@ def _bar_x(slot_i, s_i, v_i, share, bar_w):
             + v_i * bar_w + bar_w / 2)
 
 
-def _draw_panel(ax, table, order, present, phases, phase_style, scale,
-                marks=None):
+def _draw_panel(ax, table, order, present, variants, phases, phase_style,
+                scale, marks=None):
     """
     One stacked-bar panel: a slot per index, a pair per solver, the segments
     of `phases` stacked bottom to top in the solver's own colour.
@@ -228,11 +235,11 @@ def _draw_panel(ax, table, order, present, phases, phase_style, scale,
 
     Returns the tallest bar total, for the caller to scale the axis by.
     """
-    share, bar_w = _bar_geometry(present)
+    share, bar_w = _bar_geometry(present, variants)
     tallest = 0.0
     for s_i, solver in enumerate(present):
         base = style.SOLVER_STYLE[solver][1]
-        for v_i, variant in enumerate(VARIANTS):
+        for v_i, variant in enumerate(variants):
             for g_i, idx in enumerate(order):
                 row = table[idx].get(solver, {}).get(variant)
                 if row is None:
@@ -284,6 +291,15 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
         print("  [skip] summary: none of the requested solvers has a row")
         return
 
+    # The variants this experiment actually holds, in its own recorded order.
+    # Older files predate the attribute, so fall back to whatever the rows
+    # carry, ordered canonically.
+    variants = [v for v in list(attrs.get("variants", []))
+                if any(v in sv for i in order for sv in table[i].values())]
+    if not variants:
+        variants = sorted({v for i in order for sv in table[i].values()
+                           for v in sv}, key=ALL_VARIANTS.index)
+
     fig, (ax_t, ax_m) = plt.subplots(
         2, 1, sharex=True, figsize=(2.0 + 1.9 * len(order), 9.2),
         gridspec_kw=dict(height_ratios=(1.0, 0.8)))
@@ -306,8 +322,8 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
         return hatch, ("#D62728" if unstable else "black"), \
             (1.4 if unstable else 0.5)
 
-    tallest = _draw_panel(ax_t, table, order, present, PHASES, PHASE_STYLE,
-                          scale, marks=_time_marks)
+    tallest = _draw_panel(ax_t, table, order, present, variants, PHASES,
+                          PHASE_STYLE, scale, marks=_time_marks)
     # The scale is set by the tallest BAR, not the tallest whisker. One
     # disturbed repeat can be an order of magnitude above every median, and
     # sizing the axis to it flattens every real bar into the bottom tenth of
@@ -317,7 +333,7 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
     # outlined in red and the run reported as unstable, so nothing is hidden.
     top_ms = 1.08 * tallest if ymax is None else float(ymax)
     ax_t.set_ylim(top=top_ms)
-    _draw_whiskers(ax_t, table, order, present, scale, top_ms)
+    _draw_whiskers(ax_t, table, order, present, variants, scale, top_ms)
     ax_t.set_ylabel("time [ms]")
 
     # ---- memory -----------------------------------------------------------
@@ -328,11 +344,12 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
     def _memory_marks(row):
         return (None if int(row["converged"]) else "///"), "black", 0.5
 
-    tallest_mb = _draw_panel(ax_m, table, order, present, MEMORY_PHASES,
-                             MEMORY_STYLE, 1.0, marks=_memory_marks)
+    tallest_mb = _draw_panel(ax_m, table, order, present, variants,
+                             MEMORY_PHASES, MEMORY_STYLE, 1.0,
+                             marks=_memory_marks)
     ax_m.set_ylim(top=1.08 * tallest_mb)
     ax_m.set_ylabel("memory [MiB]")
-    n_unreported = _mark_unreported(ax_m, table, order, present)
+    n_unreported = _mark_unreported(ax_m, table, order, present, variants)
 
     # ---- shared x ---------------------------------------------------------
     ax_m.set_xticks(slot)
@@ -361,7 +378,7 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
                     for r in sv.values())]
     _legend(fig, present, attrs, counters["not_converged"],
             counters["n_unstable"], limit, n_unreported, drawn)
-    fig.suptitle(_summary_title(attrs, order, present), fontsize=9)
+    fig.suptitle(_summary_title(attrs, order, present, variants), fontsize=9)
     # The machine, along the bottom: a wall-clock figure is a statement about
     # one, and a reader cannot check comparability against a caption that is
     # not there. Small and grey -- it is provenance, not a finding.
@@ -376,7 +393,7 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
     save_figure(fig, out_path)
 
 
-def _draw_whiskers(ax, table, order, present, scale, top):
+def _draw_whiskers(ax, table, order, present, variants, scale, top):
     """
     The min-max range of the per-repeat totals, as a whisker on each time bar.
 
@@ -387,9 +404,9 @@ def _draw_whiskers(ax, table, order, present, scale, top):
     caret, so a truncated spread reads as truncated rather than as a spread
     that happens to end at the axis.
     """
-    share, bar_w = _bar_geometry(present)
+    share, bar_w = _bar_geometry(present, variants)
     for s_i, solver in enumerate(present):
-        for v_i, variant in enumerate(VARIANTS):
+        for v_i, variant in enumerate(variants):
             for g_i, idx in enumerate(order):
                 row = table[idx].get(solver, {}).get(variant)
                 if row is None:
@@ -405,7 +422,7 @@ def _draw_whiskers(ax, table, order, present, scale, top):
                             clip_on=False, zorder=5)
 
 
-def _mark_unreported(ax, table, order, present):
+def _mark_unreported(ax, table, order, present, variants):
     """
     Dot the top of every memory bar whose backend exposed no factor size.
 
@@ -419,10 +436,10 @@ def _mark_unreported(ax, table, order, present):
 
     Returns how many bars were marked.
     """
-    share, bar_w = _bar_geometry(present)
+    share, bar_w = _bar_geometry(present, variants)
     marked = 0
     for s_i, solver in enumerate(present):
-        for v_i, variant in enumerate(VARIANTS):
+        for v_i, variant in enumerate(variants):
             for g_i, idx in enumerate(order):
                 row = table[idx].get(solver, {}).get(variant)
                 if row is None or int(row.get("factor_mb_reported", 1)):
@@ -526,22 +543,210 @@ def _legend(fig, present, attrs, not_converged, n_unstable=0, limit=2.0,
                  ha="left", va="center")
 
 
-def _summary_title(attrs, order, present):
-    """Three lines: what ran, what a pair of bars is, and how it was measured."""
+def _summary_title(attrs, order, present, variants):
+    """Three lines: what ran, what a group of bars is, and how it was measured."""
     low = attrs.get("factor_dtype", "?")
+    recorded = list(attrs.get("variant_labels", []))
+    stored = list(attrs.get("variants", []))
+    # Prefer the labels the experiment recorded, restricted and ordered to the
+    # variants actually drawn; fall back to building them from the keys, for a
+    # file written before variant_labels existed.
+    if recorded and len(recorded) == len(stored):
+        by_key = dict(zip(stored, recorded))
+        labels = [by_key.get(v, v) for v in variants]
+    else:
+        labels = [VARIANT_LABEL.get(v, v).format(low=low) for v in variants]
+    order_word = {2: "each pair", 3: "each triple"}.get(
+        len(variants), f"each group of {len(variants)}")
     return (
-        f"{attrs.get('material', '?')}   runtime of "
-        f"{attrs.get('inner_label', 'LU-IR')} against $\\kappa_\\infty(A)$   "
+        f"{attrs.get('material', '?')}   runtime and memory of "
+        f"mixed-precision refinement against $\\kappa_\\infty(A)$   "
         f"({len(order)} indices, {len(present)} solvers)\n"
-        f"each pair: left = {low} factorization + "
-        f"{attrs.get('inner_label', 'LU-IR')},   "
-        f"right = complex128 direct solve\n"
+        f"{order_word}, left to right:   " + ",   ".join(labels) + "\n"
         f"{attrs.get('reduce', 'median')} of {attrs.get('repeats', '?')} "
         f"runs per bar;  "
         f"stopping: forward error increased, max_iter="
         f"{attrs.get('max_iter', '?')};  "
         f"reference {attrs.get('reference_solver', '?')}"
     )
+
+
+# Line style per refined variant, so a figure carrying both LU-IR and GMRES-IR
+# separates them without spending a second hue: colour stays the solver, as it
+# is everywhere else in this project.
+VARIANT_LINE = {
+    "c64_ir":    ("-",  "o", "LU-IR"),
+    "c64_gmres": ("--", "s", "GMRES-IR"),
+}
+
+# Attributes that must agree before two experiments may be pooled into one
+# figure. Every one of them changes the numbers: a run on another machine, at
+# another thread cap, or reduced differently is not comparable, and pooling
+# them silently would produce a curve assembled from incompatible parts.
+POOL_KEYS = ("host", "blas_name", "env_OPENBLAS_NUM_THREADS",
+             "env_OMP_NUM_THREADS", "reduce", "factor_dtype",
+             "reference_solver")
+
+
+def _pool(h5path, wanted):
+    """
+    (rows, attrs, names) pooled over several experiments of one file.
+
+    Each row is tagged with the experiment it came from. The experiments are
+    checked for comparability first and any disagreement is reported in full:
+    the whole point of pooling is to put measurements on one axis, and two
+    measurements from differently configured runs do not belong on one.
+    """
+    names = experiment_names(h5path)
+    if not names:
+        raise SystemExit(f"{h5path} holds no experiments; run mpperf.py first")
+    if wanted:
+        chosen = [f"{int(w):04d}" if str(w).isdigit() else str(w)
+                  for w in wanted]
+        missing = [c for c in chosen if c not in names]
+        if missing:
+            raise SystemExit(f"{h5path} has no experiment "
+                             f"{', '.join(missing)}; it holds "
+                             f"{', '.join(names)}")
+    else:
+        chosen = names
+
+    rows, per_attrs = [], {}
+    for name in chosen:
+        _, attrs, cols = load_experiment(h5path, name)
+        per_attrs[name] = attrs
+        for row in table_rows(cols):
+            row["_experiment"] = name
+            rows.append(row)
+
+    if len(chosen) > 1:
+        differing = {k for k in POOL_KEYS
+                     if len({str(per_attrs[n].get(k, "")) for n in chosen}) > 1}
+        if differing:
+            print(f"\n  [WARNING] pooling {len(chosen)} experiments that do "
+                  f"not agree on: {', '.join(sorted(differing))}")
+            for name in chosen:
+                a = per_attrs[name]
+                print(f"      {name}  " + "  ".join(
+                    f"{k}={a.get(k, '?')}" for k in sorted(differing)))
+            print(f"      These runs are not comparable. Restrict the figure "
+                  f"with --experiments.\n")
+    return rows, per_attrs[chosen[-1]], chosen
+
+
+def plot_nrhs(h5path, out_path, wanted=None, solvers=None, limit=2.0):
+    """
+    Speedup over the complex128 direct solve against the number of right-hand
+    sides, pooled over every experiment of the file.
+
+    This is the figure the cost study's own data asks for. The summary figure
+    is organised by kappa_inf, which is the right axis for the CONVERGENCE
+    study -- iteration count genuinely tracks conditioning -- but cost does not
+    track it: on si-bulk the speedups were flat across two and a half orders of
+    magnitude of kappa_inf and monotone in n_rhs instead. The reason is
+    structural. What refinement saves is half a factorization, which is fixed;
+    what it costs is (k+1) solves and residuals, every one of which scales with
+    the number of right-hand sides. So there is a crossover in n_rhs, and this
+    figure is where to read it off.
+
+    One series per (solver, refined variant): colour is the solver, as
+    everywhere else in this project, and line style separates LU-IR from
+    GMRES-IR. Every index is drawn as its own point, since several indices can
+    share an n_rhs and their spread is worth seeing; the line joins the median
+    of each (series, n_rhs) group.
+
+    A point whose refinement did not converge is drawn hollow -- it bought no
+    answer, so its speedup is not one. A point from a row whose repeats
+    disagreed by more than `limit` is drawn with a red edge, the same mark the
+    summary figure uses.
+    """
+    rows, attrs, chosen = _pool(h5path, wanted)
+    solvers = solvers or list(attrs.get("solvers", [])) or sorted(
+        {r["solver"] for r in rows})
+
+    # Keyed by (solver, variant) -> n_rhs -> list of (speedup, converged,
+    # unstable). The baseline is the c128 row of the SAME (experiment, index,
+    # solver), never a different one: a ratio across experiments would compare
+    # two machines' worth of noise.
+    baseline, series = {}, {}
+    for row in rows:
+        if row["variant"] == "c128":
+            baseline[(row["_experiment"], int(row["idx"]), row["solver"])] = \
+                float(row["total_s"])
+    for row in rows:
+        variant = row["variant"]
+        if variant == "c128" or row["solver"] not in solvers:
+            continue
+        ref = baseline.get((row["_experiment"], int(row["idx"]),
+                            row["solver"]))
+        t = float(row["total_s"])
+        if ref is None or not (t > 0) or not np.isfinite(ref):
+            continue
+        lo, hi = float(row["total_s_min"]), float(row["total_s_max"])
+        series.setdefault((row["solver"], variant), {}).setdefault(
+            int(row["n_rhs"]), []).append(
+                (ref / t, bool(int(row["converged"])),
+                 bool(np.isfinite(lo) and lo > 0 and np.isfinite(hi)
+                      and hi / lo > limit)))
+    if not series:
+        print("  [skip] n_rhs figure: no refined variant has a complex128 "
+              "baseline at the same index to be read against")
+        return
+
+    fig, ax = plt.subplots(1, 1, figsize=(8.4, 5.6))
+    ax.axhline(1.0, color="black", lw=1.0, ls="-", zorder=2)
+    ax.text(0.995, 1.0, " break-even", transform=ax.get_yaxis_transform(),
+            va="bottom", ha="right", fontsize=7.5, color="#333333")
+
+    every_n = sorted({n for byn in series.values() for n in byn})
+    for (solver, variant), byn in sorted(series.items()):
+        colour = style.SOLVER_STYLE[solver][1]
+        ls, marker, _ = VARIANT_LINE.get(variant, ("-", "o", variant))
+        xs = sorted(byn)
+        ax.plot(xs, [float(np.median([p[0] for p in byn[n]])) for n in xs],
+                color=colour, ls=ls, lw=1.4, marker=marker, ms=6,
+                markeredgecolor="white", markeredgewidth=0.6, zorder=4)
+        # Every index as its own point, behind the median line.
+        for n in xs:
+            for speedup, converged, unstable in byn[n]:
+                ax.plot([n], [speedup], marker=marker, ms=4.5, ls="none",
+                        markerfacecolor=colour if converged else "none",
+                        markeredgecolor="#D62728" if unstable else colour,
+                        markeredgewidth=1.3 if unstable else 0.8, zorder=3)
+
+    ax.set_xscale("log")
+    ax.set_xticks(every_n)
+    ax.set_xticklabels([str(n) for n in every_n])
+    ax.minorticks_off()
+    ax.set_xlabel("right-hand sides per energy")
+    ax.set_ylabel(r"speedup over complex128 direct solve")
+    ax.grid(alpha=0.25, lw=0.4, which="major")
+    ax.set_axisbelow(True)
+
+    handles = [Line2D([0], [0], color=style.SOLVER_STYLE[s][1], lw=1.4,
+                      label=style.SOLVER_STYLE[s][0])
+               for s in solvers if any(k[0] == s for k in series)]
+    handles += [Line2D([0], [0], color="#555555", lw=1.4,
+                       ls=VARIANT_LINE.get(v, ("-", "o", v))[0],
+                       marker=VARIANT_LINE.get(v, ("-", "o", v))[1], ms=6,
+                       label=VARIANT_LINE.get(v, ("-", "o", v))[2])
+                for v in sorted({k[1] for k in series}, key=ALL_VARIANTS.index)]
+    handles += [Line2D([0], [0], color="#555555", ls="none", marker="o", ms=5,
+                       markerfacecolor="none", label="did not converge")]
+    ax.legend(handles=handles, fontsize=8, framealpha=0.9, loc="best", ncol=2)
+
+    fig.suptitle(
+        f"{attrs.get('material', '?')}   speedup against the number of "
+        f"right-hand sides   (experiments {', '.join(chosen)})\n"
+        f"line = median over indices at that n_rhs;  points = individual "
+        f"indices;  above 1 = mixed precision is faster", fontsize=9)
+    fig.text(0.5, 0.015, _environment_line(attrs), ha="center", fontsize=6.5,
+             color="#555555")
+    # Explicit, not tight_layout: the environment footer is a figure-level
+    # text that tight_layout does not reserve space for, and its rect fights
+    # the two-line suptitle.
+    fig.subplots_adjust(top=0.86, bottom=0.13, left=0.10, right=0.97)
+    save_figure(fig, out_path)
 
 
 def list_experiments(h5path):
@@ -573,6 +778,18 @@ def main():
                     help="draw only these solvers, in this left-to-right "
                          "order (default: every solver the experiment holds, "
                          "in the order it recorded them)")
+    ap.add_argument("--nrhs", action="store_true",
+                    help="draw the speedup-against-n_rhs figure instead of the "
+                         "summary, pooling every experiment in the file (or "
+                         "those named by --experiments). This is the axis the "
+                         "cost data actually varies along; kappa_inf is the "
+                         "right axis for the convergence study, not this one")
+    ap.add_argument("--experiments", nargs="+", default=None, metavar="N",
+                    help="which experiments the --nrhs figure pools "
+                         "(default: every experiment in the file). They are "
+                         "checked for comparability and any disagreement on "
+                         "machine, thread cap, reducer or precision is "
+                         "reported")
     ap.add_argument("--stability-limit", type=float, default=None, metavar="R",
                     help="outline a bar in red where its slowest repeat "
                          "exceeds its fastest by more than this ratio "
@@ -589,6 +806,17 @@ def main():
     h5path = Path(args.h5path)
     if args.list_only:
         list_experiments(h5path)
+        return
+
+    if args.nrhs:
+        # Pooled over experiments, so it belongs beside the file rather than
+        # in any one experiment's directory.
+        _, attrs, _ = load_experiment(h5path, args.experiment)
+        material = args.material or attrs.get("material") or h5path.stem
+        outdir = Path(args.outdir) if args.outdir else h5path.parent
+        plot_nrhs(h5path, outdir / f"{material}_perf_nrhs.png",
+                  wanted=args.experiments, solvers=args.solvers,
+                  limit=args.stability_limit or 2.0)
         return
 
     name, attrs, runs = load_experiment(h5path, args.experiment)

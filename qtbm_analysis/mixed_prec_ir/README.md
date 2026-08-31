@@ -674,14 +674,19 @@ python mpperf.py <material.h5> --list-experiments
 
 A handful of indices, not a sweep: each index is eight bars in the figure.
 
-### The two variants
+### The variants
 
-Measured for every `(index, solver)`:
+Selected with `--variants`, drawn left to right in the order given:
 
-| `variant` | What it is |
-|---|---|
-| `c64_ir` | `complex64` factorization + LU-IR — the method |
-| `c128` | `complex128` direct solve, no refinement — what it replaces |
+| `variant` | What it is | Default |
+|---|---|---|
+| `c64_ir` | `complex64` factorization + LU-IR | yes |
+| `c64_gmres` | `complex64` factorization + GMRES-IR | no |
+| `c128` | `complex128` direct solve, no refinement — what they replace | yes |
+
+`c128` is the baseline every other variant is read against; a run without it
+produces no speedup. The figure reads the variant list from the experiment,
+so a two-bar and a three-bar run draw correctly from the same script.
 
 A timing is only meaningful for a variant that reached the target accuracy.
 `c64_ir` stops on `mpir`'s rule — the forward error against the reference
@@ -699,10 +704,10 @@ Every bar is `symbolic_s + factorization_s + solve_s = total_s`.
 |---|---|
 | `symbolic_s` | the fill-reducing ordering and symbolic factorization, or for Block Thomas the detection and extraction of the blocks. No floating-point arithmetic, so it costs the same at both precisions and bounds the achievable speedup |
 | `factorization_s` | the rest of the factorization: the numerical phase, plus the cast of `A` into the factorization precision and, for cuDSS, the host-to-device transfer. The stage a lower `u_f` makes cheaper |
-| `solve_s` | every triangular solve plus every `complex128` residual `b - Ax`. One of each for `c128`; for `c64_ir`, one solve per outer step and one residual per iterate |
+| `solve_s` | the whole refinement iteration: every triangular solve, every `complex128` residual `b - Ax`, and for GMRES-IR the Krylov work too — the products with `A`, the orthogonalization and the least squares problem |
 
-`solve_s` is split into `triangular_s` and `residual_s`, recorded but never
-drawn: the bar totals the end-to-end cost of the variant, which is what makes
+`solve_s` is split into `triangular_s`, `residual_s` and `krylov_s`, recorded
+but never drawn: the bar totals the end-to-end cost of the variant, which is what makes
 the two bars of a pair comparable, and the split explains that total rather
 than restating it.
 
@@ -923,13 +928,50 @@ append-only rule and the same attribute convention (`mpir.new_experiment`).
 `mpperf.load_experiment(path, experiment=None)` returns `(name, attrs, runs)`;
 `mpperf.perf_path(outdir, material)` gives the file path.
 
+### The Krylov stage
+
+GMRES-IR's Arnoldi work lands in mpir's `inner_s` but in neither `solve_s` nor
+`residual_s`, and `inner_s` also contains the forward-error diagnostics the
+stopping rule computes. Timing it as `inner_s - solve_s - residual_s` would
+therefore charge GMRES-IR for the diagnostics this study exists to exclude.
+
+`mpir.solve_gmres_ir` instead measures it directly, as the wall time of each
+inner GMRES call **minus** the preconditioner time inside that call, which
+`precond_apply` has already counted into `solve_s`. The result is neither
+double counted against the triangular solves nor contaminated. Without it a
+GMRES-IR bar would show only its preconditioner applications and badly
+understate the method.
+
+`gmres_total` records the inner iterations summed over every outer step and
+every right-hand-side column, since that is the count multiplying the
+preconditioner applications. It is `-1`, not `0`, for a variant that runs no
+inner solver: a real zero would mean GMRES converged without iterating.
+
 ### Plotting
 
 [`../plotting/mixed_prec_ir/plot_mpperf.py`](../plotting/mixed_prec_ir/) draws
 one figure, `<material>_perf_summary.png`, into `perf<NNNN>/` beside the
 performance file, matching the `exp<NNNN>/` that `plot_mpir.py` writes.
 
-One group of bars per energy index, the groups ordered by `kappa_inf(A)` and
+**`--nrhs` draws the second figure**, `<material>_perf_nrhs.png`: speedup over
+the `complex128` direct solve against the number of right-hand sides, pooled
+over every experiment in the file. This is the axis the cost data actually
+varies along. `kappa_inf` is the right axis for the *convergence* study, where
+iteration count genuinely tracks conditioning, but cost does not track it — on
+si-bulk the speedups were flat across two and a half orders of magnitude of
+`kappa_inf` and monotone in `n_rhs`. The reason is structural: refinement saves
+half a factorization, which is fixed, and costs `(k+1)` solves and residuals,
+every one of which scales with `n_rhs`. Colour is the solver and line style the
+variant; each index is its own point and the line joins the median at each
+`n_rhs`.
+
+Pooled experiments are checked for comparability first — machine, BLAS, thread
+caps, reducer, precision and reference solver — and any disagreement is
+reported in full, since a curve assembled from differently configured runs is
+not a curve. `--experiments` restricts the pool.
+
+The summary figure itself: one group of bars per energy index, the groups
+ordered by `kappa_inf(A)` and
 evenly spaced regardless of it — bars of neighbouring indices would otherwise
 overlap wherever two condition numbers are close, which near a band edge is
 most of them. Within a group each solver contributes a pair of bars in its own
