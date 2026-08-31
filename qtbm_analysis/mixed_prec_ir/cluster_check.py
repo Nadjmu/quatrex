@@ -77,7 +77,10 @@ print(f"    -> double-double is {od/dd:.1f}x the speed of clongdouble, "
 print()
 
 print("[3] the whole reference, both factorizations")
-for label, blocks in (("SuperLU     ", None), ("Block Thomas", bs)):
+# bs=None now means "detect the blocks", not "use SuperLU", so forcing the
+# SuperLU path takes a single-block partition -- which is exactly the case
+# _reference_factorization treats as having no structure worth exploiting.
+for label, blocks in (("SuperLU     ", [n]), ("Block Thomas", bs)):
     s = time.perf_counter(); r = mpir._ExtendedReference(A, blocks)
     tb = time.perf_counter() - s
     s = time.perf_counter(); x = r.solve(b); ts = time.perf_counter() - s
