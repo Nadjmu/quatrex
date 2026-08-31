@@ -11,14 +11,21 @@ grid_energy_min / resolution attributes copied from the material file.
 Only rows with valid == True are considered; energy(i) = grid_energy_min +
 resolution * i.
 
+The number of right-hand sides at each index is read from the material file
+itself, at E_<idx>/rhs, since condition_est.py does not store it. The material
+file's path is taken from the condition group's own `source` attribute, so no
+second path needs to be given on the command line. Where the material file
+cannot be opened -- moved, or the attribute absent from an older analysis file
+-- nrhs is printed as "n/a" for every row rather than the listing failing.
+
 Output
 ------
 Buckets widen by a factor of 10 above --first-edge, e.g. 0-100, 100-1e3,
 1e3-1e4, 1e4-1e5, ..., covering the observed kappa_inf range -- kappa_inf is
 the bucketing variable, matching the LU-IR bound, which is stated in the
 infinity norm (see mixed_prec_ir/README.md); kappa_2 is listed alongside it.
-For each bucket, the index, energy and both
-condition numbers of every row falling in it, in index order, unless
+For each bucket, the index, energy, both condition numbers and the number of
+right-hand sides of every row falling in it, in index order, unless
 --max-per-bin caps it.
 
 The listing is written to --out as well as printed, so a full (uncapped)
@@ -55,6 +62,40 @@ def bin_edges(first_edge, upper):
     while edges[-1] < upper:
         edges.append(edges[-1] * 10.0)
     return edges
+
+
+def rhs_counts(source_path, indices):
+    """
+    {index: number of right-hand side columns at E_<index>/rhs}, read from the
+    material file at `source_path`.
+
+    Only each dataset's shape is read, not its data, so this stays cheap even
+    over a sweep of thousands of indices. An index with no rhs dataset, or an
+    empty one, counts as 0; a 1-D dataset counts as 1, on the same convention
+    condition_est.py's load_rhs() uses. Returns an empty dict, rather than
+    raising, when `source_path` cannot be opened -- the caller then reports
+    "n/a" for every row instead of failing the whole listing over one missing
+    or moved file.
+    """
+    if not source_path:
+        return {}
+    path = Path(source_path)
+    if not path.exists():
+        print(f"[warning] material file not found, nrhs will show as n/a: "
+              f"{path}")
+        return {}
+
+    counts = {}
+    with h5py.File(path, "r") as f:
+        for idx in indices:
+            dataset = f.get(f"E_{int(idx)}/rhs")
+            if dataset is None:
+                counts[int(idx)] = 0
+            elif dataset.ndim == 2:
+                counts[int(idx)] = int(dataset.shape[1])
+            else:
+                counts[int(idx)] = 1 if dataset.shape[-1] > 0 else 0
+    return counts
 
 
 def main():
@@ -95,6 +136,7 @@ def main():
         resolution = g.attrs.get("resolution")
         valence = g.attrs.get("valence_band_edge")
         conduction = g.attrs.get("conduction_band_edge")
+        source = g.attrs.get("source")
 
     def energy_of(idx):
         if grid_energy_min is None or resolution is None:
@@ -122,6 +164,8 @@ def main():
         order = np.argsort(indices)
         indices, cond_2, cond_inf = indices[order], cond_2[order], cond_inf[order]
 
+        nrhs = rhs_counts(source, indices)
+
         edges = bin_edges(args.first_edge, cond_inf.max())
         for lo, hi in zip(edges[:-1], edges[1:]):
             in_bin = np.flatnonzero((cond_inf >= lo) & (cond_inf < hi))
@@ -134,8 +178,9 @@ def main():
                 idx = int(indices[i])
                 e = energy_of(idx)
                 e_str = f"{e:.4f} eV" if e is not None else "unknown"
+                n = nrhs.get(idx, "n/a")
                 emit(f"  idx={idx:<6} E={e_str:<14} kappa_inf={cond_inf[i]:.3e}  "
-                     f"kappa_2={cond_2[i]:.3e}")
+                     f"kappa_2={cond_2[i]:.3e}  nrhs={n}")
     finally:
         out_fh.close()
 

@@ -76,10 +76,17 @@ solver and three CPU solvers.
 
 Memory
 ------
-Recorded but not yet drawn: factor_mb, the stored factorization from each
-solver's factor_nbytes, matrix_mb, A at the precision the variant holds it
-(complex128 for both, since LU-IR forms its residual there), and their sum
-working_mb. factor_nbytes returns 0 where a backend exposes no size -- MUMPS
+Three components that sum to working_mb, drawn as the lower panel of the
+summary figure:
+
+    matrix_mb   A at the precision the variant must hold it -- complex128 for
+                both, since LU-IR forms its residual at the working precision.
+                It does not shrink with u_f, which is why the working set does
+                not halve when the factorization does.
+    factor_mb   the stored factorization, from each solver's factor_nbytes.
+                Exactly halves at complex64.
+    krylov_mb   the inner Krylov basis, GMRES-IR only; zero for both variants
+                measured today. factor_nbytes returns 0 where a backend exposes no size -- MUMPS
 where INFOG(3) is unreachable, cuDSS where the factorization info carries no
 lu_nnz -- and factor_mb_reported is 0 there. A figure must drop such a row
 rather than draw it at zero.
@@ -180,7 +187,8 @@ RUN_COLUMNS = [
     "outer_iters", "n_solves", "converged", "ferr_ref", "ferr_tol",
     "stop_reason",
     # memory, recorded but not yet drawn
-    "factor_mb", "factor_mb_reported", "matrix_mb", "working_mb",
+    "factor_mb", "factor_mb_reported", "matrix_mb", "krylov_mb",
+    "working_mb",
     "repeats", "reduce", "reference_solver",
 ]
 
@@ -578,6 +586,12 @@ def measure_variant(variant, solver_name, A, b, low_dtype, inv_dtype, opts,
     # precision and so holds A there however low u_f is. This is why the
     # working set does not halve when the factorization does.
     matrix_mb = _matrix_nbytes(A, HIGH_DTYPE) / MIB
+    # The inner Krylov basis, held by a GMRES-IR variant only: (restart + 1)
+    # vectors of length n at the working precision. Zero for both variants
+    # measured today -- neither runs an inner Krylov solve -- and recorded
+    # anyway so that the memory figure's third segment is already defined when
+    # GMRES-IR is added, rather than the figure having to change shape then.
+    krylov_mb = 0.0
 
     row = dict(
         variant=variant,
@@ -601,7 +615,8 @@ def measure_variant(variant, solver_name, A, b, low_dtype, inv_dtype, opts,
         factor_mb=factor_mb,
         factor_mb_reported=int(bool(mem_bytes)),
         matrix_mb=matrix_mb,
-        working_mb=factor_mb + matrix_mb,
+        krylov_mb=krylov_mb,
+        working_mb=factor_mb + matrix_mb + krylov_mb,
         repeats=int(repeats),
         reduce=str(reduce),
     )

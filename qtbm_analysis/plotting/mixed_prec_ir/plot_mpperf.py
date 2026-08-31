@@ -24,33 +24,62 @@ and for what is deliberately outside every timed region.
 
 The figure
 ----------
-One group of bars per energy index, the groups ordered by kappa_inf(A) and
-evenly spaced regardless of it: bars of neighbouring indices would otherwise
-overlap wherever two condition numbers are close, which near a band edge is
-most of them. The kappa_inf each group stands at is its tick label.
+Two panels sharing one x axis: runtime above, memory below. One group of bars
+per energy index, the groups ordered by kappa_inf(A) and evenly spaced
+regardless of it -- bars of neighbouring indices would otherwise overlap
+wherever two condition numbers are close, which near a band edge is most of
+them. The kappa_inf each group stands at is its tick label, with the index and
+its number of right-hand sides beneath.
 
 Within a group each solver contributes a pair of bars in its own colour, the
 colour that solver carries in every other figure of this project
 (style.SOLVER_STYLE). The left bar of a pair is the complex64 factorization
 with LU-IR, the right one the complex128 direct solve it is meant to replace.
+Both panels use the same geometry, so the same bar in the same place means the
+same (index, solver, variant) above and below, and the two can be read against
+each other.
+
 Reading a pair is the whole point of the figure: the left bar shorter than the
 right is the case for mixed precision at that conditioning, and the left bar
 growing past the right as kappa_inf rises is refinement giving back what the
 low precision won.
 
-Each bar is stacked into its three stages, separated by black lines and shaded
-from light to dark within the solver's colour: symbolic, factorization, solve.
+Each bar is stacked into three segments, separated by black lines and shaded
+from light to dark within the solver's colour. The order is the same argument
+in both panels -- what the problem costs before any precision choice, what u_f
+halves, and what refinement adds on top:
+
+    time      symbolic + factorization + solve
+    memory    matrix + factors + Krylov basis
+
 The symbolic stage costs the same at both precisions -- it performs no
 floating-point arithmetic -- so it is the part of the left bar that a lower
 precision cannot shrink, and a pair whose bars differ little is usually a pair
 whose symbolic stage dominates. SuperLU fuses the symbolic phase into the
-numerical one and reports no split, so its bars have two segments rather than
-three; they are marked in the legend and are not comparable stage by stage
-with the other three.
+numerical one and reports no split, so its time bars have two segments rather
+than three; they are marked in the legend and are not comparable stage by
+stage with the others.
 
-A left bar is hatched where refinement did not reach the target accuracy. Its
-height is then not a cost that bought anything, and no speedup should be read
-from that pair.
+The memory panel is the same argument in space. The matrix band is A at the
+working precision, which BOTH variants must hold -- LU-IR forms its residual
+there -- so it is identical in the two bars of a pair and does not shrink with
+u_f. The factors band halves exactly. The working set therefore falls by less
+than half: with f = factor/matrix, the ratio is 2(f+1)/(f+2), which is 2 only
+in the limit where the factorization dominates. The Krylov band is the inner
+GMRES basis, drawn only once a GMRES-IR variant is measured; it is absent from
+the legend until then.
+
+A left bar is hatched, in both panels, where refinement did not reach the
+target accuracy. Its height is then not a cost that bought anything, and no
+speedup should be read from that pair.
+
+The time panel additionally carries a min-max whisker per bar and a red
+outline where the repeats disagreed by more than --stability-limit; the memory
+panel carries neither, since memory is computed from the matrix dimensions and
+the backend's factor count rather than timed, and has no repeats to disagree.
+A memory bar whose backend exposed no factor size shows the matrix alone and
+is capped with a dotted red line: it is a lower bound, not a small
+factorization.
 
 Output
 ------
@@ -67,10 +96,9 @@ convention plot_mpir.py uses for the convergence figures:
     └── perf0001/
         └── <material>_perf_summary.png
 
-Memory is recorded by mpperf.py -- factor_mb, matrix_mb, working_mb -- and is
-not drawn yet. MUMPS and cuDSS do not always report a factor size, so a memory
-panel would be blank for them at exactly the rows the time panel is fullest;
-factor_mb_reported marks which rows carry a real measurement.
+MUMPS and cuDSS do not always report a factor size; factor_mb_reported marks
+which rows carry a real measurement, and those that do not are drawn as the
+matrix alone with a dotted cap.
 
 Usage
 -----
@@ -111,6 +139,19 @@ PHASE_STYLE = {
     "symbolic_s":      ("symbolic",      0.60),
     "factorization_s": ("factorization", 0.00),
     "solve_s":         ("solve",        -0.35),
+}
+
+# The memory panel, stacked the same way and shaded on the same scale, so a
+# reader learns the light-to-dark convention once. The order is the same
+# argument in both panels: what the problem costs before any precision choice
+# (the matrix / the symbolic phase), what u_f halves (the factorization), and
+# what refinement adds on top (the Krylov basis / the iteration).
+MEMORY_PHASES = ("matrix_mb", "factor_mb", "krylov_mb")
+
+MEMORY_STYLE = {
+    "matrix_mb": ("matrix (A at u)", 0.60),
+    "factor_mb": ("factors",         0.00),
+    "krylov_mb": ("Krylov basis",   -0.35),
 }
 
 # Geometry of one group. The group occupies GROUP_WIDTH of a unit-wide slot;
@@ -157,10 +198,67 @@ def _grouped(rows, solvers):
     return table, keep, {i: n_rhs[i] for i in keep}, dropped
 
 
+def _bar_geometry(present):
+    """(share of a slot per solver, width of one bar) for `present` solvers."""
+    share = GROUP_WIDTH / len(present)
+    return share, share * (1.0 - PAIR_GAP) / len(VARIANTS)
+
+
+def _bar_x(slot_i, s_i, v_i, share, bar_w):
+    """Centre of one bar: its slot, its solver's share, its variant's half."""
+    return (slot_i - GROUP_WIDTH / 2 + s_i * share + share * PAIR_GAP / 2
+            + v_i * bar_w + bar_w / 2)
+
+
+def _draw_panel(ax, table, order, present, phases, phase_style, scale,
+                marks=None):
+    """
+    One stacked-bar panel: a slot per index, a pair per solver, the segments
+    of `phases` stacked bottom to top in the solver's own colour.
+
+    Both panels of the figure are drawn by this, so the two are guaranteed to
+    share their geometry -- the same bar in the same place means the same
+    (index, solver, variant) above and below, which is the only reason the
+    panels can be read against each other.
+
+    `marks` is the per-bar decoration the time panel needs and the memory
+    panel does not: a callable returning (hatch, edge colour, edge width) for
+    one row, or None for the plain black outline. Memory is computed, not
+    timed, so it has no repeats to disagree and nothing to outline in red.
+
+    Returns the tallest bar total, for the caller to scale the axis by.
+    """
+    share, bar_w = _bar_geometry(present)
+    tallest = 0.0
+    for s_i, solver in enumerate(present):
+        base = style.SOLVER_STYLE[solver][1]
+        for v_i, variant in enumerate(VARIANTS):
+            for g_i, idx in enumerate(order):
+                row = table[idx].get(solver, {}).get(variant)
+                if row is None:
+                    continue
+                hatch, edge, edge_w = (marks(row) if marks
+                                       else (None, "black", 0.5))
+                x, bottom = _bar_x(g_i, s_i, v_i, share, bar_w), 0.0
+                for phase in phases:
+                    height = float(row[phase]) * scale
+                    if not np.isfinite(height) or height <= 0:
+                        continue      # a stage this backend does not expose
+                    ax.bar(x, height, width=bar_w, bottom=bottom,
+                           color=_shade(base, phase_style[phase][1]),
+                           edgecolor=edge, linewidth=edge_w, hatch=hatch,
+                           zorder=3)
+                    bottom += height
+                tallest = max(tallest, bottom)
+    ax.grid(axis="y", alpha=0.25, lw=0.4, zorder=0)
+    ax.set_axisbelow(True)
+    return tallest
+
+
 def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
     """
-    Runtime against kappa_inf(A): one bar group per index, one bar pair per
-    solver, three stacked stages per bar. See the module docstring.
+    Two panels sharing one x axis: runtime above, memory below, against
+    kappa_inf(A). See the module docstring.
     """
     table, kappa, n_rhs, dropped = _grouped(rows, solvers)
     if not table:
@@ -180,130 +278,161 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
     # Only the solvers that actually produced a row are laid out, so a cuDSS
     # run made on a machine without a GPU leaves no empty quarter of every
     # group. The order is the one given, which fixes the position of a solver
-    # across every group.
-    present = [s for s in solvers
-               if any(s in table[i] for i in order)]
+    # across every group and, because both panels use it, aligns them.
+    present = [s for s in solvers if any(s in table[i] for i in order)]
     if not present:
         print("  [skip] summary: none of the requested solvers has a row")
         return
-    share = GROUP_WIDTH / len(present)
-    bar_w = share * (1.0 - PAIR_GAP) / len(VARIANTS)
 
-    fig, ax = plt.subplots(1, 1, figsize=(2.0 + 1.9 * len(order), 6.4))
+    fig, (ax_t, ax_m) = plt.subplots(
+        2, 1, sharex=True, figsize=(2.0 + 1.9 * len(order), 9.2),
+        gridspec_kw=dict(height_ratios=(1.0, 0.8)))
 
+    # ---- time -------------------------------------------------------------
     # Milliseconds throughout. These solves run in tens to hundreds of them,
     # and a fixed unit keeps two figures comparable at a glance where an
     # automatic one would silently change the axis between them.
-    unit, scale = "ms", 1e3
+    scale = 1e3
+    counters = dict(not_converged=0, n_unstable=0)
 
+    def _time_marks(row):
+        """Hatch a bar that did not converge; outline an unstable one in red."""
+        hatch = None if int(row["converged"]) else "///"
+        counters["not_converged"] += int(not int(row["converged"]))
+        lo, hi = float(row["total_s_min"]), float(row["total_s_max"])
+        unstable = (np.isfinite(lo) and lo > 0 and np.isfinite(hi)
+                    and hi / lo > limit)
+        counters["n_unstable"] += int(unstable)
+        return hatch, ("#D62728" if unstable else "black"), \
+            (1.4 if unstable else 0.5)
+
+    tallest = _draw_panel(ax_t, table, order, present, PHASES, PHASE_STYLE,
+                          scale, marks=_time_marks)
     # The scale is set by the tallest BAR, not the tallest whisker. One
     # disturbed repeat can be an order of magnitude above every median, and
     # sizing the axis to it flattens every real bar into the bottom tenth of
-    # the figure -- which is exactly what the whisker is there to tell you
+    # the panel -- which is exactly what the whisker is there to tell you
     # about, at the cost of the data it is annotating. Whiskers that exceed
     # the top are clipped and marked with a caret instead; the bar is also
     # outlined in red and the run reported as unstable, so nothing is hidden.
-    tallest = max(float(r["total_s"]) for i in order
-                  for s in table[i].values() for r in s.values()
-                  if np.isfinite(r["total_s"]))
-    top_s = 1.08 * tallest if ymax is None else float(ymax) / scale
+    top_ms = 1.08 * tallest if ymax is None else float(ymax)
+    ax_t.set_ylim(top=top_ms)
+    _draw_whiskers(ax_t, table, order, present, scale, top_ms)
+    ax_t.set_ylabel("time [ms]")
 
-    not_converged = 0
-    n_unstable = 0
-    overflow = []          # x of every whisker running off the top
-    for s_i, solver in enumerate(present):
-        base = style.SOLVER_STYLE[solver][1]
-        for v_i, variant in enumerate(VARIANTS):
-            # Left edge of this bar inside its slot: the solver's share, then
-            # the variant's half of it, centred on the slot.
-            offset = (-GROUP_WIDTH / 2 + s_i * share
-                      + share * PAIR_GAP / 2 + v_i * bar_w)
-            for g_i, idx in enumerate(order):
-                row = table[idx].get(solver, {}).get(variant)
-                if row is None:
-                    continue
-                bottom = 0.0
-                # Hatched where refinement did not reach the target accuracy:
-                # the bar is then a cost that bought nothing. c128 is always
-                # recorded converged, so only a left bar is ever hatched.
-                hatch = None if int(row["converged"]) else "///"
-                not_converged += int(not int(row["converged"]))
-                # Outlined in red where the repeats disagreed by more than
-                # `limit`: contention only ever adds time, so such a bar
-                # measures the node rather than the solver. Drawn rather than
-                # dropped, because a gap would read as a solver that failed.
-                lo, hi = float(row["total_s_min"]), float(row["total_s_max"])
-                unstable = (np.isfinite(lo) and lo > 0
-                            and np.isfinite(hi) and hi / lo > limit)
-                n_unstable += int(unstable)
-                edge = "#D62728" if unstable else "black"
-                edge_w = 1.4 if unstable else 0.5
-                for phase in PHASES:
-                    height = float(row[phase]) * scale
-                    if not np.isfinite(height) or height <= 0:
-                        continue          # a stage the backend does not split
-                    ax.bar(slot[g_i] + offset + bar_w / 2, height,
-                           width=bar_w, bottom=bottom,
-                           color=_shade(base, PHASE_STYLE[phase][1]),
-                           edgecolor=edge, linewidth=edge_w, hatch=hatch,
-                           zorder=3)
-                    bottom += height
+    # ---- memory -----------------------------------------------------------
+    # No whiskers and no red outlines: memory here is computed from the matrix
+    # dimensions and the backend's own factor count, not timed, so it has no
+    # repeats that could disagree. The convergence hatch still applies -- a
+    # variant that did not reach the answer occupied the memory anyway.
+    def _memory_marks(row):
+        return (None if int(row["converged"]) else "///"), "black", 0.5
 
-                # The min-max range of the per-repeat totals, as a whisker on
-                # the bar. The bar is a median and says nothing about how the
-                # repeats agreed; on a contended node they can span two orders
-                # of magnitude, and a reader must be able to see that without
-                # opening the file.
-                if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
-                    x = slot[g_i] + offset + bar_w / 2
-                    ax.plot([x] * 2, [lo * scale, hi * scale],
-                            color="#222222", lw=0.9, zorder=4,
-                            marker="_", ms=3.0, mew=0.9)
-                    if hi > top_s:
-                        overflow.append(x)
+    tallest_mb = _draw_panel(ax_m, table, order, present, MEMORY_PHASES,
+                             MEMORY_STYLE, 1.0, marks=_memory_marks)
+    ax_m.set_ylim(top=1.08 * tallest_mb)
+    ax_m.set_ylabel("memory [MiB]")
+    n_unreported = _mark_unreported(ax_m, table, order, present)
 
-    ax.set_xticks(slot)
+    # ---- shared x ---------------------------------------------------------
+    ax_m.set_xticks(slot)
     # n_rhs is on the tick because it is a confounder sitting underneath the
     # kappa axis: the solve stage scales with the number of right-hand sides,
     # so a bar can be tall for a reason that has nothing to do with
     # conditioning, and the reader has no other way to see it.
-    ax.set_xticklabels([f"{kappa[i]:.1e}\nE_{i}\n{n_rhs[i]} rhs"
-                        for i in order], fontsize=8)
-    ax.set_xlabel(r"$\kappa_\infty(A)$")
-    ax.set_ylabel(f"time [{unit}]")
-    ax.set_xlim(-0.5, len(order) - 0.5)
-    # 8% headroom only. The legends live below the axes rather than in its
-    # upper corners precisely so the bars can use the full height.
-    ax.set_ylim(top=top_s * scale)
-    if ymax is not None:
-        ax.set_ylim(top=float(ymax))
+    ax_m.set_xticklabels([f"{kappa[i]:.1e}\nE_{i}\n{n_rhs[i]} rhs"
+                          for i in order], fontsize=8)
+    ax_m.set_xlabel(r"$\kappa_\infty(A)$")
+    ax_m.set_xlim(-0.5, len(order) - 0.5)
 
-    # Carets where a whisker was clipped, so a truncated spread is visible as
-    # truncated rather than as a whisker that happens to end at the axis.
-    for x in overflow:
-        ax.plot([x], [ax.get_ylim()[1]], marker="^", ms=4.0,
-                color="#D62728", clip_on=False, zorder=5)
-    ax.grid(axis="y", alpha=0.25, lw=0.4, zorder=0)
-    ax.set_axisbelow(True)
+    if counters["n_unstable"]:
+        print(f"  [WARNING] {counters['n_unstable']} bars are drawn from "
+              f"repeats disagreeing by more than {limit:g}x and are outlined "
+              f"in red. They measure the machine, not the solver.")
+    if n_unreported:
+        print(f"  [note] {n_unreported} memory bars show the matrix only: "
+              f"the backend exposed no factor size, so those bars are a lower "
+              f"bound and are marked with a dotted top.")
 
-    if n_unstable:
-        print(f"  [WARNING] {n_unstable} bars are drawn from repeats "
-              f"disagreeing by more than {limit:g}x and are outlined in red. "
-              f"They measure the machine, not the solver.")
-
-    _legend(fig, present, attrs, not_converged, n_unstable, limit)
+    # Which memory segments any row actually has, for the legend.
+    drawn = [p for p in MEMORY_PHASES
+             if any(float(r.get(p, 0.0)) > 0
+                    for i in order for sv in table[i].values()
+                    for r in sv.values())]
+    _legend(fig, present, attrs, counters["not_converged"],
+            counters["n_unstable"], limit, n_unreported, drawn)
     fig.suptitle(_summary_title(attrs, order, present), fontsize=9)
     # The machine, along the bottom: a wall-clock figure is a statement about
     # one, and a reader cannot check comparability against a caption that is
     # not there. Small and grey -- it is provenance, not a finding.
-    fig.text(0.5, 0.025, _environment_line(attrs), ha="center", fontsize=6.5,
+    fig.text(0.5, 0.018, _environment_line(attrs), ha="center", fontsize=6.5,
              color="#555555")
-    # Explicit, not tight_layout: the two legends are figure-level artists in
+    # Explicit, not tight_layout: the three legends are figure-level artists in
     # the band below the axes, and tight_layout does not reserve space for
-    # them. The bands are, from the top: suptitle, axes, three-line tick
-    # labels and x label, two legend rows, environment footer.
-    fig.subplots_adjust(top=0.85, bottom=0.30, left=0.08, right=0.98)
+    # them. The bands are, from the top: suptitle, the two panels, three-line
+    # tick labels and x label, three legend rows, environment footer.
+    fig.subplots_adjust(top=0.90, bottom=0.24, left=0.075, right=0.98,
+                        hspace=0.10)
     save_figure(fig, out_path)
+
+
+def _draw_whiskers(ax, table, order, present, scale, top):
+    """
+    The min-max range of the per-repeat totals, as a whisker on each time bar.
+
+    The bar is one reduced number and says nothing about how the repeats
+    agreed; on a contended node they can span two orders of magnitude, and a
+    reader must be able to see that without opening the file. A whisker
+    running past the top of the panel is clipped and its bar marked with a
+    caret, so a truncated spread reads as truncated rather than as a spread
+    that happens to end at the axis.
+    """
+    share, bar_w = _bar_geometry(present)
+    for s_i, solver in enumerate(present):
+        for v_i, variant in enumerate(VARIANTS):
+            for g_i, idx in enumerate(order):
+                row = table[idx].get(solver, {}).get(variant)
+                if row is None:
+                    continue
+                lo, hi = float(row["total_s_min"]), float(row["total_s_max"])
+                if not (np.isfinite(lo) and np.isfinite(hi) and hi > lo):
+                    continue
+                x = _bar_x(g_i, s_i, v_i, share, bar_w)
+                ax.plot([x] * 2, [lo * scale, hi * scale], color="#222222",
+                        lw=0.9, zorder=4, marker="_", ms=3.0, mew=0.9)
+                if hi * scale > top:
+                    ax.plot([x], [top], marker="^", ms=4.0, color="#D62728",
+                            clip_on=False, zorder=5)
+
+
+def _mark_unreported(ax, table, order, present):
+    """
+    Dot the top of every memory bar whose backend exposed no factor size.
+
+    factor_nbytes returns 0 rather than raising where a backend has no way to
+    report it -- MUMPS where INFOG(3) is unreachable, cuDSS where the
+    factorization info carries no lu_nnz. Zero bytes of factors is not a
+    possible measurement, so such a bar shows the matrix alone and is a lower
+    bound on the true footprint. It is drawn rather than dropped, since a gap
+    would read as a solver that used no memory, and marked rather than left
+    plain, since an unmarked short bar would read as a small factorization.
+
+    Returns how many bars were marked.
+    """
+    share, bar_w = _bar_geometry(present)
+    marked = 0
+    for s_i, solver in enumerate(present):
+        for v_i, variant in enumerate(VARIANTS):
+            for g_i, idx in enumerate(order):
+                row = table[idx].get(solver, {}).get(variant)
+                if row is None or int(row.get("factor_mb_reported", 1)):
+                    continue
+                x = _bar_x(g_i, s_i, v_i, share, bar_w)
+                y = float(row["matrix_mb"]) + float(row.get("krylov_mb", 0.0))
+                ax.plot([x - bar_w / 2, x + bar_w / 2], [y, y], ls=":", lw=1.6,
+                        color="#D62728", zorder=5)
+                marked += 1
+    return marked
 
 
 def _environment_line(attrs):
@@ -323,16 +452,21 @@ def _environment_line(attrs):
     return "   |   ".join(bits)
 
 
-def _legend(fig, present, attrs, not_converged, n_unstable=0, limit=2.0):
+def _legend(fig, present, attrs, not_converged, n_unstable=0, limit=2.0,
+            n_unreported=0, drawn=MEMORY_PHASES):
     """
-    Two legends, because a bar carries two independent things. Colour is the
-    solver; shade is the stage. Combining them would need one entry per
-    (solver, stage) pair, which is twelve entries saying four things.
+    Three legend rows in the band beneath the panels: the solver colours, then
+    one row per panel naming its own stacking.
 
-    Both are laid out horizontally in the band beneath the axes rather than in
-    its upper corners. In the corners they cost the top third of the axis --
-    the bars then occupy the bottom of the figure and the stage boundaries,
-    which are the point of the figure, become too small to read.
+    Colour is the solver and shade is the stage, and the two are separate
+    legends because combining them would need one entry per (solver, stage)
+    pair -- twelve entries saying four things. The two stage rows are separate
+    from each other because the panels stack different quantities: the word
+    "factorization" means its time above and its size below.
+
+    They sit below the panels rather than in a corner of one. In a corner they
+    cost the top third of that panel, and the stage boundaries -- the point of
+    the figure -- become too small to read.
 
     Which bar of a pair is which precision is not a legend entry either: it is
     left and right, and a legend cannot show a position. It is said in the
@@ -346,30 +480,50 @@ def _legend(fig, present, attrs, not_converged, n_unstable=0, limit=2.0):
                     + (" (no symbolic split)" if s in fused else ""))
         for s in present]
     fig.legend(handles=solver_handles, fontsize=8, frameon=False,
-               loc="upper center", bbox_to_anchor=(0.5, 0.16),
+               loc="upper center", bbox_to_anchor=(0.5, 0.155),
                ncol=len(solver_handles))
 
     # The stage shades are shown in grey rather than in one solver's hue: they
-    # mean the same thing in all four colours, and drawing them in, say, blue
-    # would read as a statement about Block Thomas.
-    phase_handles = [
-        Patch(facecolor=_shade("#7F7F7F", amount), edgecolor="black", lw=0.5,
-              label=label)
-        for label, amount in (PHASE_STYLE[p] for p in PHASES)]
+    # mean the same thing in every colour, and drawing them in, say, blue would
+    # read as a statement about Block Thomas.
+    def _shades(phases, table):
+        return [Patch(facecolor=_shade("#7F7F7F", table[p][1]),
+                      edgecolor="black", lw=0.5, label=table[p][0])
+                for p in phases]
+
+    time_handles = _shades(PHASES, PHASE_STYLE)
     if not_converged:
-        phase_handles.append(
+        time_handles.append(
             Patch(facecolor="white", edgecolor="black", lw=0.5, hatch="///",
                   label="did not converge"))
     if n_unstable:
-        phase_handles.append(
+        time_handles.append(
             Patch(facecolor="white", edgecolor="#D62728", lw=1.4,
                   label=f"repeats disagree > {limit:g}x"))
-    phase_handles.append(
+    time_handles.append(
         Line2D([0], [0], color="#222222", lw=0.9, marker="_", ms=3.0,
                label="repeat spread (min-max)"))
-    fig.legend(handles=phase_handles, fontsize=8, frameon=False,
-               loc="upper center", bbox_to_anchor=(0.5, 0.113),
-               ncol=len(phase_handles))
+
+    # Only the segments that actually appear. krylov_mb is zero for both
+    # variants until GMRES-IR is measured, and a legend entry for a band that
+    # is never drawn invites the reader to look for it. It reappears on its own
+    # the first time a run holds a Krylov basis.
+    memory_handles = _shades([p for p in MEMORY_PHASES if p in drawn],
+                             MEMORY_STYLE)
+    if n_unreported:
+        memory_handles.append(
+            Line2D([0], [0], color="#D62728", ls=":", lw=1.6,
+                   label="factor size not reported (lower bound)"))
+
+    # Left-aligned, not centred: the two rows have different entry counts, and
+    # centring them would run the wider one under the row label at the margin.
+    for y, label, handles in ((0.112, "time", time_handles),
+                              (0.069, "memory", memory_handles)):
+        fig.legend(handles=handles, fontsize=8, frameon=False,
+                   loc="upper left", bbox_to_anchor=(0.085, y),
+                   ncol=len(handles))
+        fig.text(0.012, y - 0.013, label + ":", fontsize=8, color="#333333",
+                 ha="left", va="center")
 
 
 def _summary_title(attrs, order, present):

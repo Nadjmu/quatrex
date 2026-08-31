@@ -771,11 +771,34 @@ per-repeat totals that the median hides.
 
 ### Memory
 
-Recorded and not yet drawn: `factor_mb` (the stored factorization, from each
-solver's `factor_nbytes`), `matrix_mb` (`A` at `complex128`, which *both*
-variants hold — LU-IR forms its residual at the working precision, which is why
-the working set does not halve when the factorization does) and their sum
-`working_mb`. `factor_nbytes` returns 0 where a backend exposes no size — MUMPS
+Three components summing to `working_mb`, drawn as the lower panel of the
+summary figure with the same geometry as the upper one:
+
+| Column | What it is |
+|---|---|
+| `matrix_mb` | `A` at `complex128`, which **both** variants hold — LU-IR forms its residual at the working precision. Identical in the two bars of a pair; it does not shrink with `u_f` |
+| `factor_mb` | the stored factorization, from each solver's `factor_nbytes`. Halves exactly at `complex64` |
+| `krylov_mb` | the inner GMRES basis, `(restart+1)` vectors of length `n`. Zero until a GMRES-IR variant is measured |
+
+Most of this is analytic and needed no measurement. The matrix term is exactly
+`nnz·s + nnz·4 + (n+1)·4`; Block Thomas's factorization is exactly
+`s(Σ bᵢ² + 2Σ bᵢbᵢ₊₁) + 4Σ bᵢ` from the block partition, since a
+block-tridiagonal LU has no fill beyond the band. Both were verified to the
+last digit on si-bulk (24.91 and 43.76 MiB). What is *not* predictable is the
+factorization size of a general sparse solver — that is fill-in, and depends on
+the ordering and on numerical pivoting, which is why `lu_nnz` and `INFOG(3)`
+exist at all.
+
+The working set therefore falls by less than half. With `f = factor/matrix`,
+
+    W(u) / W(u_f) = (F + M) / (F/2 + M) = 2(f+1) / (f+2)
+
+which reproduces both measured ratios to four significant figures (Block
+Thomas `f=1.757` → 1.4676 against 1.4675 measured; cuDSS `f=2.067` → 1.5082
+against 1.5081). The limits are the whole argument: `f → ∞` gives 2, the
+factorization dominating and memory halving with it; `f → 0` gives 1, the
+working-precision matrix dominating and a halved factorization buying nothing.
+si-bulk sits at `f ≈ 2`, hence ~1.5. `factor_nbytes` returns 0 where a backend exposes no size — MUMPS
 where `INFOG(3)` is unreachable, cuDSS where the factorization info carries no
 `lu_nnz` — and `factor_mb_reported` is 0 there. A figure must drop such a row
 rather than draw it at zero.
