@@ -219,6 +219,11 @@ include it.
 
 ### 2.5 Complete worked example
 
+The commands below are the shape of the pipeline. For the operational account
+of running one material on the cluster -- which node, what each stage costs,
+what to check after it, and the failure modes -- see
+[`RUNBOOK.md`](RUNBOOK.md).
+
 ```bash
 # Stage 1-2: export and consolidate. Cluster-side; needs the QTBM examples.
 python export_qtbm_systems.py <example> --mode full --energy-index 0
