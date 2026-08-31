@@ -972,6 +972,26 @@ def _two_prod(a, b):
     return p, ((ah * bh - p) + ah * bl + al * bh) + al * bl
 
 
+def _split(v):
+    """Dekker's split: v = hi + lo exactly, each half with 26 significand bits."""
+    c = _DD_SPLITTER * v
+    hi = c - (c - v)
+    return hi, v - hi
+
+
+def _two_prod_split(a, ah, al, b, bh, bl):
+    """
+    _two_prod for operands already split by _split.
+
+    The split is the expensive half of an error-free product, and every
+    operand here is used in two of the four partial products of one complex
+    multiply -- splitting inside _two_prod would do each of them twice. The
+    matrix side is split once at construction and never again.
+    """
+    p = a * b
+    return p, ((ah * bh - p) + ah * bl + al * bh) + al * bl
+
+
 def _dd_add(ah, al, bh, bl):
     """(ah, al) + (bh, bl), double-double, renormalised."""
     s, e = _two_sum(ah, bh)
@@ -1049,37 +1069,53 @@ class _ExtendedReference:
     products via _two_prod, summed per row by a pairwise double-double
     reduction over rows of equal length.
 
-    How much better this is, and why not more
-    ----------------------------------------
+    How much better this is, and what actually limits it
+    ---------------------------------------------------
     Refinement in a residual precision u_r converges to a relative error of
-    order kappa_inf(A) u_r, so this reference improves on a plain complex128
-    solve by roughly eps_double / EPS_EXT, about 1e16. Unlike the
-    np.clongdouble version this replaced, that factor is now the same on every
-    machine: EPS_EXT is 2^-106 by construction rather than whatever the
+    order kappa_inf(A) u_r. At u_r = EPS_EXT = 2^-106 that is below the
+    working precision for any kappa_inf these matrices reach, so the iteration
+    is not what limits the result: the solution is returned at complex128, and
+    what comes back is that solution correctly rounded, with an error of order
+    u/2 = 1.1e-16 whatever the conditioning. A plain complex128 solve, by
+    contrast, carries kappa_inf(A) u. The gain over one is therefore about
+    kappa_inf, capped at the representation floor -- not the eps/EPS_EXT ratio
+    of the arithmetic, which the complex128 return type never lets you see.
+
+    Returning complex128 rather than the double-double pair is deliberate:
+    every caller, including the sparse products in refinement_metrics, works
+    in complex128, and a reference already correctly rounded there is as good
+    as that type admits.
+
+    Unlike the np.clongdouble version this replaced, none of this depends on
+    the machine. EPS_EXT is 2^-106 by construction rather than whatever the
     platform's long double happens to be (1.1e-19 on x86-64, 1.9e-34 on
     aarch64), so a reference computed on one node matches one computed on
-    another.
+    another. On a binary128 platform the old code already reached the same
+    correctly-rounded answer, and this only changes what it costs to get it;
+    on an x86-64 node, where 1.1e-19 left kappa_inf(A) u_r above u/2 for an
+    ill-conditioned index, it is also more accurate.
 
-    It is still not a reason to treat the reference as exact:
-    reference_floor = kappa_inf(A) * EPS_EXT is recorded per index so that a
-    measured forward error within an order of magnitude of it can be
-    recognised as a measurement of the reference rather than of the method.
-
-    The solution is returned at complex128. Storing it wider would not help:
-    what limits the measurement is the reference's own error, not the 1e-16 of
-    rounding it for storage, and returning complex128 keeps it usable by every
-    caller including the sparse products in refinement_metrics.
+    reference_floor is recorded per index so that a measured forward error
+    near it can be recognised as a measurement of the reference rather than of
+    the method. It is max(kappa_inf(A) EPS_EXT, u/2): with double-double the
+    first term is essentially always the smaller, and the honest floor is the
+    complex128 return type.
     """
 
     def __init__(self, A, max_steps=DEFAULT_REF_STEPS):
         self._csr = A.tocsr().astype(HIGH_DTYPE)
-        # Split once. The reduction works on real and imaginary parts
-        # separately, and re-deriving them per call was the single largest
-        # avoidable cost in the version this replaced.
-        self._re = np.ascontiguousarray(self._csr.data.real)
-        self._im = np.ascontiguousarray(self._csr.data.imag)
-        self._indices = self._csr.indices
-        self._groups = _row_length_groups(self._csr.indptr)
+        re = np.ascontiguousarray(self._csr.data.real)
+        im = np.ascontiguousarray(self._csr.data.imag)
+        # One rectangular, already-split block per bucket of equal-length
+        # rows. The matrix does not change between calls and this is called
+        # n_rhs * (steps + 1) times per index, so both the gather and the
+        # Dekker split are hoisted here rather than repeated per call; that
+        # was the largest avoidable cost in the version this replaced.
+        self._blocks = []
+        for rows, pos in _row_length_groups(self._csr.indptr):
+            a, bb = re[pos], im[pos]
+            self._blocks.append((rows, self._csr.indices[pos],
+                                 a, *_split(a), bb, *_split(bb)))
         self._normA_inf = float(abs(self._csr).sum(axis=1).max())
         self._lu = spla.splu(A.tocsc().astype(HIGH_DTYPE))
         self._max_steps = int(max_steps)
@@ -1101,15 +1137,19 @@ class _ExtendedReference:
         im_h, im_l = np.zeros(n), np.zeros(n)
         xr = np.ascontiguousarray(xh.real)
         xi = np.ascontiguousarray(xh.imag)
-        for rows, pos in self._groups:
-            a, bb = self._re[pos], self._im[pos]
-            j = self._indices[pos]
-            c, d = xr[j], xi[j]
+        # x is split at length n and the halves gathered, rather than gathering
+        # x and splitting at length nnz: a gather is one pass where a split is
+        # four, and nnz is the larger of the two by orders of magnitude.
+        xrh, xrl = _split(xr)
+        xih, xil = _split(xi)
+        for rows, j, a, ah, al, bb, bh, bl in self._blocks:
+            c, ch, cl = xr[j], xrh[j], xrl[j]
+            d, dh, dl = xi[j], xih[j], xil[j]
             # (a + bi)(c + di) = (ac - bd) + (ad + bc)i, every product exact.
-            h1, l1 = _two_prod(a, c)
-            h2, l2 = _two_prod(bb, d)
-            h3, l3 = _two_prod(a, d)
-            h4, l4 = _two_prod(bb, c)
+            h1, l1 = _two_prod_split(a, ah, al, c, ch, cl)
+            h2, l2 = _two_prod_split(bb, bh, bl, d, dh, dl)
+            h3, l3 = _two_prod_split(a, ah, al, d, dh, dl)
+            h4, l4 = _two_prod_split(bb, bh, bl, c, ch, cl)
             prh, prl = _dd_add(h1, l1, -h2, -l2)
             pih, pil = _dd_add(h3, l3, h4, l4)
             srh, srl, sih, sil = _dd_reduce_rows(prh, prl, pih, pil)
@@ -1131,7 +1171,14 @@ class _ExtendedReference:
     def _solve_one(self, b):
         b = np.asarray(b, dtype=HIGH_DTYPE)
         xh, xl = self._lu.solve(b), None
-        tol = EPS_EXT * 10
+        # The result is returned at complex128, so a correction smaller than
+        # the working precision cannot change it and the next one would be
+        # smaller still: stop there rather than at EPS_EXT, which the
+        # complex128-rounded correction solve can never reach and which
+        # therefore made every call run the full max_steps. With a
+        # double-double residual one step already lands far below u, so this
+        # normally exits after two.
+        tol = unit_roundoff(HIGH_DTYPE)
         for _ in range(self._max_steps):
             r_h, r_l = self._residual_dd(b, xh, xl)
             # The correction solve is a working-precision solve either way, so
@@ -2463,7 +2510,11 @@ def run_benchmarks(h5path, idx, solver_name, bs, low_dtype, max_iter, repeats,
             print(f"           ||A@x_true - b|| / ||b|| for x_true itself: {ref_res:.2e}"
                   f"   nbe_inf: {ref_eta:.2e}")
             if reference_solver == EXTENDED_REFERENCE and kappa["inf"] is not None:
-                ref_floor = kappa["inf"] * EPS_EXT
+                # The reference is returned at complex128, so its floor is the
+                # representation floor whenever the arithmetic beats it, which
+                # with double-double it essentially always does.
+                ref_floor = max(kappa["inf"] * EPS_EXT,
+                                unit_roundoff(HIGH_DTYPE))
                 print(f"           reference floor kappa_inf*eps_ext = "
                       f"{ref_floor:.2e}; a ferr_ref near it measures the "
                       f"reference, not the method")

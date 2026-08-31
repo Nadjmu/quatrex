@@ -84,6 +84,17 @@ factorization.
 Output
 ------
     <outdir>/<material>_perf_summary.png
+    <outdir>/<material>_perf_report.txt
+
+The report is the numbers behind the figure and the configuration that
+produced them, so a run can be diagnosed without opening the HDF5 file and
+pasted somewhere for someone else to read. Eight sections: provenance, the
+machine, the run configuration, the material, CHECKS, the per-index tables,
+DERIVED, and the whole table as TSV. Read 5 and 7 first when something looks
+wrong -- 5 lists invariant violations, unstable rows, runs that did not
+converge and backends that reported no factor size; 7 gives the quantities
+that explain a bar rather than restate it, each against the closed form it
+should satisfy.
 
 The default output directory is perf<NNNN>/ beside the performance file, one
 subdirectory per experiment inside the material's own directory, the same
@@ -749,6 +760,354 @@ def plot_nrhs(h5path, out_path, wanted=None, solvers=None, limit=2.0):
     save_figure(fig, out_path)
 
 
+# Everything the report prints about the run, grouped in the order a reader
+# needs it rather than dumped alphabetically: what ran, on what machine, with
+# what settings. A key absent from an older experiment is simply skipped.
+REPORT_SECTIONS = (
+    ("provenance", ("material", "source", "timestamp", "command")),
+    ("environment", ("host", "platform", "processor", "cpu_count",
+                     "cpu_affinity", "blas_name", "blas_version",
+                     "blas_config", "env_OPENBLAS_NUM_THREADS",
+                     "env_OMP_NUM_THREADS", "env_MKL_NUM_THREADS",
+                     "env_GOTO_NUM_THREADS", "env_NUMEXPR_NUM_THREADS",
+                     "env_VECLIB_MAXIMUM_THREADS", "threadpools",
+                     "threadpools_end", "python_version", "numpy_version",
+                     "scipy_version", "loadavg_1_start", "loadavg_5_start",
+                     "loadavg_15_start", "loadavg_1_end", "loadavg_5_end",
+                     "loadavg_15_end")),
+    ("configuration", ("solvers", "inner", "inner_label", "variants",
+                       "variant_labels", "phases", "factor_dtype",
+                       "inv_dtype", "working_dtype", "u_f", "working_u",
+                       "repeats", "reduce", "stability_limit", "n_unstable",
+                       "max_iter", "ferr_tol", "reference_solver",
+                       "gmres_tol", "gmres_restart", "gmres_max_iter",
+                       "n_requested", "n_skipped", "indices", "skipped_idx",
+                       "skipped_reason")),
+    ("material", ("valence_band_edge", "conduction_band_edge",
+                  "grid_energy_min", "resolution")),
+)
+
+# Free text, so it goes last in the machine-readable block where a ragged
+# final field costs nothing.
+REPORT_TSV_LAST = ("stop_reason",)
+
+
+def _fmt(value):
+    """One attribute or cell as a single line of text."""
+    if isinstance(value, (bytes, np.bytes_)):
+        return value.decode()
+    if isinstance(value, np.ndarray):
+        flat = value.tolist()
+        if len(flat) > 24:
+            return (", ".join(str(v) for v in flat[:24])
+                    + f", ... (+{len(flat) - 24} more)")
+        return ", ".join(str(v) for v in flat)
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value)
+    if isinstance(value, (float, np.floating)):
+        return f"{float(value):.10g}"
+    return str(value)
+
+
+def _num(value, spec, blank_if_nan=True):
+    """`value` under `spec`, or the same width of spaces when it is nan."""
+    if blank_if_nan and not np.isfinite(value):
+        width = "".join(c for c in spec.split(".")[0] if c.isdigit())
+        return " " * int(width or 8)
+    return format(value, spec)
+
+
+def _checks(rows):
+    """
+    Every invariant the tables are supposed to satisfy, as a list of failures.
+
+    These are the things that, when they break, make a figure quietly wrong
+    rather than visibly broken: a bar whose segments do not add to its own
+    height, a memory total that is not the sum of its parts, a spread whose
+    minimum exceeds its maximum. Checked rather than assumed, because the
+    report exists to be read when something already looks wrong.
+    """
+    bad = []
+    for r in rows:
+        tag = f"idx={int(r['idx'])} {r['solver']}/{r['variant']}"
+        stages = np.nansum([r["symbolic_s"], r["factorization_s"],
+                            r["solve_s"]])
+        if abs(stages - r["total_s"]) > 1e-9:
+            bad.append(f"{tag}: symbolic+factorization+solve = {stages:.9g} "
+                       f"!= total_s = {r['total_s']:.9g}")
+        parts = r["triangular_s"] + r["residual_s"] + r.get("krylov_s", 0.0)
+        if abs(parts - r["solve_s"]) > 1e-9:
+            bad.append(f"{tag}: triangular+residual+krylov = {parts:.9g} "
+                       f"!= solve_s = {r['solve_s']:.9g}")
+        mem = r["factor_mb"] + r["matrix_mb"] + r.get("krylov_mb", 0.0)
+        if abs(mem - r["working_mb"]) > 1e-9:
+            bad.append(f"{tag}: factor+matrix+krylov = {mem:.9g} MiB "
+                       f"!= working_mb = {r['working_mb']:.9g} MiB")
+        if r["total_s_min"] > r["total_s_max"] + 1e-12:
+            bad.append(f"{tag}: total_s_min {r['total_s_min']:.9g} > "
+                       f"total_s_max {r['total_s_max']:.9g}")
+        if not int(r["phases_split"]) and np.isfinite(r["symbolic_s"]):
+            bad.append(f"{tag}: phases_split=0 but symbolic_s is finite "
+                       f"({r['symbolic_s']:.9g})")
+    return bad
+
+
+def write_report(out_path, h5path, name, attrs, rows, limit):
+    """
+    A complete plain-text record of one experiment, written beside its figure.
+
+    The figure shows what happened; this shows the numbers behind it and the
+    configuration that produced them, so a run can be diagnosed without the
+    file, reproduced without guesswork, and pasted somewhere for someone else
+    to read. It invents nothing: every line is an attribute, a column, or a
+    quantity derived from them by a formula stated in section 7.
+
+    Sections 5 and 7 are the ones to read first when something looks wrong.
+    5 lists invariant violations, unstable rows, runs that did not converge and
+    backends that reported no factor size. 7 gives the quantities that explain
+    a bar rather than restate it: the speedup, the share of the refinement
+    iteration spent on the working-precision residual, that residual's cost per
+    right-hand-side column -- which must agree across solvers at one index,
+    since it is the same b - Ax -- and the measured memory ratio against its
+    closed form.
+
+    Section 8 is the whole table as TSV, so nothing is lost to formatting.
+    """
+    lines = []
+    w = lines.append
+
+    def rule(char="="):
+        w(char * 104)
+
+    rule()
+    w(f"mpperf report -- {attrs.get('material', '?')}, experiment {name}")
+    w(f"source file: {h5path}")
+    rule()
+
+    for i, (title, keys) in enumerate(REPORT_SECTIONS, start=1):
+        present = [k for k in keys if k in attrs]
+        if not present:
+            continue
+        w("")
+        w(f"[{i}] {title.upper()}")
+        rule("-")
+        for key in present:
+            w(f"  {key:<28} {_fmt(attrs[key])}")
+
+    # ---- 5: checks ----------------------------------------------------------
+    w("")
+    w("[5] CHECKS")
+    rule("-")
+    failures = _checks(rows)
+    if failures:
+        w(f"  !! {len(failures)} INVARIANT VIOLATIONS -- the figure is wrong, "
+          f"not merely the run")
+        for f in failures:
+            w(f"     {f}")
+    else:
+        w("  invariants OK: stages sum to total_s, triangular+residual+krylov "
+          "sum to solve_s,")
+        w("                 factor+matrix+krylov sum to working_mb, "
+          "min <= max")
+
+    unstable = [r for r in rows if r["total_s_min"] > 0
+                and r["total_s_max"] / r["total_s_min"] > limit]
+    w(f"  unstable rows (max/min > {limit:g}): {len(unstable)} of {len(rows)}")
+    for r in sorted(unstable,
+                    key=lambda r: -r["total_s_max"] / r["total_s_min"]):
+        w(f"     idx={int(r['idx']):<6} {r['solver']:<14} {r['variant']:<10} "
+          f"min={r['total_s_min']*1e3:9.2f}ms drawn={r['total_s']*1e3:9.2f}ms "
+          f"max={r['total_s_max']*1e3:9.2f}ms  "
+          f"ratio={r['total_s_max']/r['total_s_min']:.1f}x")
+
+    unconverged = [r for r in rows if not int(r["converged"])]
+    w(f"  rows that did not converge: {len(unconverged)} of {len(rows)}")
+    for r in unconverged:
+        w(f"     idx={int(r['idx']):<6} {r['solver']:<14} {r['variant']:<10} "
+          f"outer={int(r['outer_iters']):<3} ferr={r['ferr_ref']:.3e} "
+          f"tol={r['ferr_tol']:.3e}  {r['stop_reason']}")
+
+    unreported = [r for r in rows if not int(r.get("factor_mb_reported", 1))]
+    w(f"  rows with no factor size reported: {len(unreported)} of {len(rows)}"
+      f"  (their working_mb is a lower bound)")
+    for r in unreported:
+        w(f"     idx={int(r['idx']):<6} {r['solver']:<14} {r['variant']}")
+
+    no_kappa = sorted({int(r["idx"]) for r in rows
+                       if not np.isfinite(r["kappa_inf"])})
+    w(f"  indices with no kappa_inf, dropped from the figure: {len(no_kappa)}"
+      + (f"  {no_kappa}" if no_kappa else ""))
+
+    # ---- 6: per index -------------------------------------------------------
+    by_idx = {}
+    for r in rows:
+        by_idx.setdefault(int(r["idx"]), {}).setdefault(r["solver"], {})[
+            r["variant"]] = r
+    variants = [v for v in (list(attrs.get("variants", [])) or
+                            list(ALL_VARIANTS))
+                if any(v in sv for g in by_idx.values() for sv in g.values())]
+
+    def _kappa_of(idx):
+        k = next(iter(next(iter(by_idx[idx].values())).values()))["kappa_inf"]
+        return k if np.isfinite(k) else float("inf")
+
+    w("")
+    w("[6] RESULTS BY INDEX   (times in ms, ordered by kappa_inf)")
+    rule("-")
+    for idx in sorted(by_idx, key=lambda i: (_kappa_of(i), i)):
+        any_row = next(iter(next(iter(by_idx[idx].values())).values()))
+        w("")
+        w(f"  E_{idx}   energy={any_row['energy']:.4f} eV   "
+          f"kappa_inf={any_row['kappa_inf']:.4e}   "
+          f"kappa_2={any_row['kappa_2']:.4e}")
+        w(f"      n={int(any_row['n'])}  nnz={int(any_row['nnz'])}  "
+          f"n_rhs={int(any_row['n_rhs'])}  n_blocks={int(any_row['n_blocks'])}"
+          f"  kappa_inf*u_f={any_row['lu_ir_bound']:.3e}  "
+          f"ferr_tol={any_row['ferr_tol']:.3e}")
+        w(f"      {'solver':<14} {'variant':<10} {'total':>9} {'symb':>8} "
+          f"{'fact':>8} {'solve':>8} | {'tri':>8} {'resid':>8} {'kryl':>8} | "
+          f"{'outer':>5} {'nsolv':>5} {'inner':>6} {'ferr':>10} {'cv':>3} "
+          f"{'speedup':>8}")
+        for solver in sorted(by_idx[idx]):
+            group = by_idx[idx][solver]
+            ref = group.get("c128")
+            for variant in variants:
+                r = group.get(variant)
+                if r is None:
+                    continue
+                sp = float("nan")
+                if ref is not None and variant != "c128" and r["total_s"] > 0:
+                    sp = ref["total_s"] / r["total_s"]
+                inner = int(r.get("gmres_total", -1))
+                w(f"      {solver:<14} {variant:<10} "
+                  f"{r['total_s']*1e3:9.2f} {r['symbolic_s']*1e3:8.2f} "
+                  f"{r['factorization_s']*1e3:8.2f} {r['solve_s']*1e3:8.2f} | "
+                  f"{r['triangular_s']*1e3:8.2f} {r['residual_s']*1e3:8.2f} "
+                  f"{r.get('krylov_s', 0.0)*1e3:8.2f} | "
+                  f"{int(r['outer_iters']):>5} {int(r['n_solves']):>5} "
+                  f"{(inner if inner >= 0 else 0):>6} {r['ferr_ref']:10.2e} "
+                  f"{int(r['converged']):>3} {_num(sp, '8.2f')}")
+        w(f"      {'':<14} {'memory MiB':<10} {'factor':>9} {'matrix':>8} "
+          f"{'krylov':>8} {'working':>8}    (? = factor size not reported)")
+        for solver in sorted(by_idx[idx]):
+            for variant in variants:
+                r = by_idx[idx][solver].get(variant)
+                if r is None:
+                    continue
+                flag = "" if int(r.get("factor_mb_reported", 1)) else "  ?"
+                w(f"      {solver:<14} {variant:<10} {r['factor_mb']:9.3f} "
+                  f"{r['matrix_mb']:8.3f} {r.get('krylov_mb', 0.0):8.3f} "
+                  f"{r['working_mb']:8.3f}{flag}")
+
+    # ---- 7: derived ---------------------------------------------------------
+    w("")
+    w("[7] DERIVED")
+    rule("-")
+    w("  speedup    total_s(c128) / total_s(variant), blank unless the variant "
+      "converged")
+    w("  resid%     residual_s / solve_s: the share of the refinement "
+      "iteration spent forming")
+    w("             b - Ax at the working precision -- a cost identical for "
+      "every solver and")
+    w("             one that u_f cannot reduce")
+    w("  resid/col  residual_s / ((outer_iters + 1) * n_rhs), the cost of one "
+      "residual per")
+    w("             right-hand-side column. It should agree closely across "
+      "solvers at one")
+    w("             index, since it is the same b - Ax; a large disagreement "
+      "means one of")
+    w("             them is not measuring what the others are, or the systems "
+      "are too small")
+    w("             for the timer to resolve")
+    w("  F ratio    factor_mb(c128) / factor_mb(variant). 2.00 only where the "
+      "counted bytes")
+    w("             are all values. Block Thomas stores dense blocks and "
+      "measures ~1.99 (the")
+    w("             int32 pivots do not halve); a sparse factor also carries "
+      "int32 indices")
+    w("             and indptr, giving ~(16+4)/(8+4) = 1.67 -- SuperLU "
+      "measures 1.65. That is")
+    w("             expected, NOT a changed fill pattern. cuDSS counts values "
+      "only, so it is")
+    w("             exactly 2.00. A ratio well away from its solver's own "
+      "expectation is the")
+    w("             thing worth chasing, and it makes 'predicted' below "
+      "disagree")
+    w("  f, k       factor_mb/matrix_mb of the c128 bar, and krylov_mb/"
+      "matrix_mb of this one.")
+    w("             With W(u) = F + M and W(u_f) = F/2 + M + K, the working-"
+      "set ratio is")
+    w("             W(u)/W(u_f) = 2(f+1)/(f+2+2k), which reduces to "
+      "2(f+1)/(f+2) for LU-IR,")
+    w("             where k = 0. GMRES-IR holds a basis the baseline does not, "
+      "so its ratio")
+    w("             can fall below 1. 'measured' should match 'predicted'; a "
+      "mismatch means")
+    w("             the factorization did not halve -- check F ratio")
+    w("")
+    w(f"      {'idx':>6} {'rhs':>4} {'solver':<14} {'variant':<10} "
+      f"{'speedup':>8} {'resid%':>7} {'resid/col':>10} {'F ratio':>8} "
+      f"{'f':>7} {'k':>7} {'measured':>9} {'predicted':>10}")
+    for idx in sorted(by_idx, key=lambda i: (_kappa_of(i), i)):
+        for solver in sorted(by_idx[idx]):
+            group = by_idx[idx][solver]
+            ref = group.get("c128")
+            for variant in variants:
+                r = group.get(variant)
+                if r is None or variant == "c128":
+                    continue
+                sp = float("nan")
+                if ref is not None and r["total_s"] > 0 and int(r["converged"]):
+                    sp = ref["total_s"] / r["total_s"]
+                share = (100.0 * r["residual_s"] / r["solve_s"]
+                         if r["solve_s"] > 0 else float("nan"))
+                cols = (int(r["outer_iters"]) + 1) * int(r["n_rhs"])
+                per_col = r["residual_s"] * 1e3 / cols if cols else float("nan")
+                fac_ratio = f_ratio = k_ratio = float("nan")
+                measured = predicted = float("nan")
+                if (ref is not None and ref["matrix_mb"] > 0
+                        and int(ref.get("factor_mb_reported", 1))
+                        and int(r.get("factor_mb_reported", 1))):
+                    if r["factor_mb"] > 0:
+                        fac_ratio = ref["factor_mb"] / r["factor_mb"]
+                    f_ratio = ref["factor_mb"] / ref["matrix_mb"]
+                    k_ratio = r.get("krylov_mb", 0.0) / ref["matrix_mb"]
+                    # W(u) = F + M against W(u_f) = F/2 + M + K. The Krylov
+                    # term is why this is not 2(f+1)/(f+2) for GMRES-IR: that
+                    # variant holds a basis the baseline does not, so its
+                    # working set can exceed the baseline's and the ratio fall
+                    # below 1.
+                    predicted = 2 * (f_ratio + 1) / (f_ratio + 2 + 2 * k_ratio)
+                    if r["working_mb"] > 0:
+                        measured = ref["working_mb"] / r["working_mb"]
+                w(f"      {idx:>6} {int(r['n_rhs']):>4} {solver:<14} "
+                  f"{variant:<10} {_num(sp, '8.2f')} {_num(share, '6.0f')}% "
+                  f"{_num(per_col, '10.3f')} {_num(fac_ratio, '8.2f')} "
+                  f"{_num(f_ratio, '7.3f')} {_num(k_ratio, '7.3f')} "
+                  f"{_num(measured, '9.4f')} {_num(predicted, '10.4f')}")
+
+    # ---- 8: the whole table -------------------------------------------------
+    w("")
+    w("[8] FULL TABLE (tab separated, every column)")
+    rule("-")
+    columns = ([c for c in rows[0] if c not in REPORT_TSV_LAST]
+               + [c for c in REPORT_TSV_LAST if c in rows[0]])
+    w("\t".join(columns))
+    for r in sorted(rows, key=lambda r: (int(r["idx"]), r["solver"],
+                                         r["variant"])):
+        w("\t".join(_fmt(r[c]) for c in columns))
+
+    w("")
+    rule()
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text("\n".join(lines) + "\n")
+    print(f"wrote {out_path}")
+    if failures:
+        print(f"  [WARNING] {len(failures)} invariant violations listed in "
+              f"section 5; the figure is wrong, not merely the run")
+
+
 def list_experiments(h5path):
     """Print what a file holds, one line per experiment."""
     names = experiment_names(h5path)
@@ -835,10 +1194,12 @@ def main():
         raise SystemExit(f"no style for solver {', '.join(unknown)}; "
                          f"add it to plotting/style.py SOLVER_STYLE")
 
+    limit = args.stability_limit or float(attrs.get("stability_limit", 2.0))
     plot_summary(rows, attrs, outdir / f"{material}_perf_summary.png",
-                 solvers, ymax=args.ymax,
-                 limit=args.stability_limit
-                       or float(attrs.get("stability_limit", 2.0)))
+                 solvers, ymax=args.ymax, limit=limit)
+    # Beside the figure, the numbers behind it: see write_report.
+    write_report(outdir / f"{material}_perf_report.txt", h5path, name, attrs,
+                 rows, limit)
 
 
 if __name__ == "__main__":

@@ -962,6 +962,24 @@ inner solver: a real zero would mean GMRES converged without iterating.
 one figure, `<material>_perf_summary.png`, into `perf<NNNN>/` beside the
 performance file, matching the `exp<NNNN>/` that `plot_mpir.py` writes.
 
+Beside the figure it also writes **`<material>_perf_report.txt`**: every
+number behind the figure plus the configuration that produced it, in eight
+sections — provenance, machine, configuration, material, **checks**, per-index
+tables, **derived**, and the full table as TSV. It exists so a run can be
+diagnosed without opening the HDF5 file, and so the whole thing can be pasted
+into a conversation.
+
+Sections 5 and 7 are the ones to read when something looks wrong. 5 lists
+invariant violations (stages not summing to `total_s`, parts not summing to
+`solve_s`, memory components not summing to `working_mb`), unstable rows,
+runs that did not converge with their stop reason, and backends that reported
+no factor size. 7 gives each derived quantity against the closed form it
+should satisfy: the speedup, the residual's share of the refinement iteration
+and its cost per right-hand-side column (which should agree across solvers at
+one index, since it is the same `b - Ax`), and the memory ratio against
+`2(f+1)/(f+2+2k)`. Where a number and its prediction disagree, the report says
+what would cause it.
+
 **`--nrhs` draws the second figure**, `<material>_perf_nrhs.png`: speedup over
 the `complex128` direct solve against the number of right-hand sides, pooled
 over every experiment in the file. This is the axis the cost data actually
