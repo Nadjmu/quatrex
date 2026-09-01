@@ -280,8 +280,8 @@ def _draw_panel(ax, table, order, present, variants, phases, phase_style,
 
 def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
     """
-    Two panels sharing one x axis: runtime above, memory below, against
-    kappa_inf(A). See the module docstring.
+    Two panels sharing one x axis: runtime above, memory below, the groups
+    ordered by n_rhs and then by kappa_inf(A). See the module docstring.
     """
     table, kappa, n_rhs, dropped = _grouped(rows, solvers)
     if not table:
@@ -377,7 +377,7 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
     # conditioning, and the reader has no other way to see it.
     ax_m.set_xticklabels([f"{kappa[i]:.1e}\nE_{i}\n{n_rhs[i]} rhs"
                           for i in order], fontsize=8)
-    ax_m.set_xlabel(r"$\kappa_\infty(A)$")
+    ax_m.set_xlabel(r"right-hand sides, then $\kappa_\infty(A)$ within each")
     ax_m.set_xlim(-0.5, len(order) - 0.5)
 
     if counters["n_unstable"]:
@@ -578,7 +578,7 @@ def _summary_title(attrs, order, present, variants):
         len(variants), f"each group of {len(variants)}")
     return (
         f"{attrs.get('material', '?')}   runtime and memory of "
-        f"mixed-precision refinement against $\\kappa_\\infty(A)$   "
+        f"mixed-precision refinement by $n_{{rhs}}$ and $\\kappa_\\infty(A)$   "
         f"({len(order)} indices, {len(present)} solvers)\n"
         f"{order_word}, left to right:   " + ",   ".join(labels) + "\n"
         f"{attrs.get('reduce', 'median')} of {attrs.get('repeats', '?')} "
