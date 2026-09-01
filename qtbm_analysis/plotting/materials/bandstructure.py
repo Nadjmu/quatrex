@@ -27,8 +27,19 @@ import scipy.sparse as sps
 
 sys.path.append(str((Path(__file__).resolve().parent / ".." / ".."
                      / "solvers").resolve()))
+sys.path.append(str((Path(__file__).resolve().parent / "..").resolve()))
 
 import cli
+from style import write_data_report
+
+# Above this many band-energy samples the report gives the per-band envelope
+# over k rather than the full (k, band) grid.
+MAX_BAND_SAMPLES = 60_000
+
+# The Hamiltonian figure: decades of |H_ij| shown below the largest entry, and
+# the resolution the matrix is binned down to when it has more rows than that.
+HAMILTONIAN_DYNAMIC_RANGE = 12
+HAMILTONIAN_MAX_PIXELS = 2000
 
 from qttools import xp
 from qttools.kernels.linalg import eigvalsh
@@ -377,22 +388,64 @@ def scan_lead_offsets(
             xp.get_default_memory_pool().free_all_blocks()
 
 
-def plot_hamiltonian(
-    hamiltonian: sps.spmatrix, blocksize: int, out_dir: Path
-) -> None:
-    """Plots the magnitude of the leading blocks of the Hamiltonian.
+def rasterize(matrix: sps.spmatrix, pixels: int) -> np.ndarray:
+    """Bins |matrix| into a `pixels` x `pixels` image, largest entry per bin.
 
-    Only the first three blocks are shown: a full device matrix can have
-    O(1e5) rows and cannot be densified.
+    A device matrix has O(1e5) rows and cannot be densified, but it can
+    be drawn whole: each pixel covers a square block of the index range
+    and takes the largest magnitude falling in it, so a lone large entry
+    stays visible however coarse the binning is. At pixels == n the
+    binning is the identity and the image is the exact matrix.
 
     """
-    size = min(hamiltonian.shape[0], 3 * blocksize)
-    leading = hamiltonian[:size, :size].toarray()
+    n = matrix.shape[0]
+    coo = matrix.tocoo()
+    row = (coo.row.astype(np.int64) * pixels) // n
+    col = (coo.col.astype(np.int64) * pixels) // n
+
+    grid = np.zeros((pixels, pixels))
+    np.maximum.at(grid, (row, col), np.abs(coo.data))
+    return grid
+
+
+def plot_hamiltonian(hamiltonian: sps.spmatrix, out_dir: Path) -> None:
+    """Plots the magnitude of the whole Hamiltonian."""
+    n = hamiltonian.shape[0]
+    pixels = min(n, HAMILTONIAN_MAX_PIXELS)
+    grid = rasterize(hamiltonian, pixels)
+
+    # An empty bin is not a small value and must not be drawn at the
+    # bottom of the colour scale; it is masked and rendered as white
+    # background, as in plotting/block-thomas/plot_lu_factors.py. The
+    # previous form, log10(|H| + 1e-16), put every empty region on the
+    # dark end of viridis and made the sparsity pattern the loudest thing
+    # in the figure.
+    with np.errstate(divide="ignore"):
+        logmag = np.ma.masked_invalid(np.log10(grid))
+
+    # Entries merely below vmin clamp to the bottom of the colormap, so a
+    # small nonzero stays distinguishable from no entry at all.
+    vmax = np.ceil(float(logmag.max()))
+    vmin = vmax - HAMILTONIAN_DYNAMIC_RANGE
+    cmap = matplotlib.colormaps["viridis"].with_extremes(bad="white")
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    image = ax.matshow(np.log10(np.abs(leading) + 1e-16), cmap="viridis")
+    ax.set_facecolor("white")
+
+    # imshow rather than matshow: `extent` keeps the axes labelled in
+    # matrix indices even when one pixel covers many of them. The ticks
+    # go on top, where matshow puts them and where the earlier figures
+    # had them.
+    image = ax.imshow(logmag, cmap=cmap, vmin=vmin, vmax=vmax,
+                      extent=(0, n, n, 0), interpolation="nearest")
+    ax.xaxis.set_ticks_position("top")
+    ax.xaxis.set_label_position("top")
+
     fig.colorbar(image, ax=ax, label=r"$\log_{10}|H_{ij}|$")
-    ax.set_title(f"Hamiltonian Matrix (first {size} of {hamiltonian.shape[0]})")
+    title = f"Hamiltonian matrix ({n} x {n})"
+    if pixels < n:
+        title += f", binned to {pixels} x {pixels}"
+    ax.set_title(title)
     fig.tight_layout()
     fig.savefig(out_dir / "hamiltonian_matrix.png", dpi=300)
     plt.close(fig)
@@ -447,6 +500,65 @@ def report_gaps(e_k: np.ndarray, num_gaps: int = 5) -> None:
         )
 
 
+def widest_gaps(e_k: np.ndarray, num_gaps: int = 5) -> dict:
+    """The `num_gaps` widest gaps in the spectrum, as report columns."""
+    levels = np.sort(e_k.ravel())
+    spacings = np.diff(levels)
+    widest = np.argsort(spacings)[::-1][:num_gaps]
+    return {
+        "gap_eV": spacings[widest],
+        "lower_eV": levels[widest],
+        "upper_eV": levels[widest + 1],
+        "mid_eV": 0.5 * (levels[widest] + levels[widest + 1]),
+    }
+
+
+def write_report(name: str, material: cli.Material, out_dir: Path,
+                 k: np.ndarray, e_k: np.ndarray,
+                 valence_band_edge: float, conduction_band_edge: float) -> None:
+    """The computed band structure behind the two figures, as text beside
+    them."""
+    e_k = np.asarray(e_k)
+    if e_k.size <= MAX_BAND_SAMPLES:
+        bands = {"k": np.asarray(k, dtype=float)}
+        for b in range(e_k.shape[1]):
+            bands[f"band_{b:03d}_eV"] = e_k[:, b]
+        series = {"band energies E(k), one column per band": bands}
+        band_note = "full (k, band) grid tabulated"
+    else:
+        series = {"per-band envelope over k": {
+            "band": np.arange(e_k.shape[1]),
+            "min_eV": e_k.min(axis=0),
+            "max_eV": e_k.max(axis=0),
+            "mean_eV": e_k.mean(axis=0),
+        }}
+        band_note = (f"{e_k.size} samples exceed {MAX_BAND_SAMPLES}; the full "
+                     f"E(k) grid is not tabulated, only its per-band envelope")
+    series["widest gaps in the spectrum"] = widest_gaps(e_k)
+
+    write_data_report(
+        out_dir / "bandstructure_data.txt",
+        title=f"contact band structure  —  {name}",
+        source=str(material.inputs / "hamiltonian.mat"),
+        config={
+            "figures": "bandstructure.png, bandstructure_zoom.png, "
+                       "hamiltonian_matrix.png",
+            "block size": str(material.block_size),
+            "transverse k": str(material.transverse_k),
+            "k points": str(material.num_k_points),
+            "lead offset": str(material.lead_offset),
+            "mid-gap energy (eV)": str(material.mid_gap_energy),
+            "valence band edge (eV)": f"{valence_band_edge:.6f}",
+            "conduction band edge (eV)": f"{conduction_band_edge:.6f}",
+            "band gap (eV)": f"{conduction_band_edge - valence_band_edge:.6f}",
+            "eigenvalue range (eV)": f"{e_k.min():.6f} .. {e_k.max():.6f}",
+        },
+        series=series,
+        notes=[f"Computed here, not read from a result file: the eigensolve "
+               f"H(k) v = E S(k) v is this figure's subject.  {band_note}."],
+    )
+
+
 def run(name: str, material: cli.Material) -> None:
     """Computes and plots the band structure of a single material."""
     out_dir = PLOTS_DIR / name
@@ -490,7 +602,7 @@ def run(name: str, material: cli.Material) -> None:
     check_block_tridiagonal(matrix, blocksize, label="h")
     check_periodicity(matrix, blocksize, label="h")
     find_period(matrix)
-    plot_hamiltonian(matrix, blocksize, out_dir)
+    plot_hamiltonian(matrix, out_dir)
 
     h_00, h_01, h_10 = lead_blocks(matrix, blocksize, material.lead_offset)
 
@@ -542,6 +654,8 @@ def run(name: str, material: cli.Material) -> None:
     plot_band_structure(
         k, e_k, valence_band_edge, conduction_band_edge, out_dir
     )
+    write_report(name, material, out_dir, k, e_k,
+                 valence_band_edge, conduction_band_edge)
     print(f"  wrote plots to {out_dir}")
 
 

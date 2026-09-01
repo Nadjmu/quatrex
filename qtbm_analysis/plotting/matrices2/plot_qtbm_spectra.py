@@ -68,7 +68,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import cli
-from style import save_figure
+from style import save_figure, write_data_report
+
+# Above this many pencil eigenvalues the spectrum is summarised in the report
+# rather than tabulated: the figure is a scatter and a hundred-thousand-row
+# table helps no one.
+MAX_SPECTRUM_ROWS = 50_000
 
 
 def load_optional(directory, name):
@@ -146,6 +151,56 @@ def plot_singular_values(energies, sigma_max, sigma_min, band_edge, material,
     save_figure(fig, out_path, dpi=300)
 
 
+def write_report(data_dir, material, out_path, energies, band_edge, eigenvalues,
+                 condition_bare, condition_full, sigma_max, sigma_min, zoom):
+    """The sweep arrays behind the three figures, as text beside them."""
+    series, notes = {}, []
+
+    if energies is not None:
+        sweep = {"energy_eV": np.asarray(energies, dtype=float)}
+        for name, arr in (("kappa2_bare_pencil", condition_bare),
+                          ("kappa2_full_svd", condition_full),
+                          ("sigma_max", sigma_max),
+                          ("sigma_min", sigma_min)):
+            if arr is not None and len(arr) == len(energies):
+                sweep[name] = np.asarray(arr, dtype=float)
+        series["conditioning and extreme singular values along the sweep"] = sweep
+
+    if eigenvalues is not None:
+        ev = np.asarray(eigenvalues).ravel()
+        if ev.size <= MAX_SPECTRUM_ROWS:
+            series["generalized eigenvalues of (H, S), complex plane"] = {
+                "Re_lambda_eV": ev.real, "Im_lambda_eV": ev.imag}
+        else:
+            notes.append(
+                f"pencil spectrum: {ev.size} eigenvalues, not tabulated.  "
+                f"Re in [{ev.real.min():.4f}, {ev.real.max():.4f}] eV, "
+                f"|Im| max {np.abs(ev.imag).max():.3e} eV.")
+
+    present = [n for n, a in (("energies", energies), ("band_edge", band_edge),
+                              ("spectrum_bare", eigenvalues),
+                              ("condition_bare", condition_bare),
+                              ("condition_full_svd", condition_full),
+                              ("max_singular_values", sigma_max),
+                              ("min_singular_values", sigma_min))
+               if a is not None]
+    write_data_report(
+        out_path,
+        title=f"QTBM spectra and conditioning  —  {material}",
+        source=str(data_dir),
+        config={
+            "figures": f"{material}_spectrum.png, {material}_condition.png, "
+                       f"{material}_singular_values.png",
+            "input arrays present": ", ".join(present),
+            "conduction band edge (eV)": ("n/a" if band_edge is None
+                                          else f"{band_edge:.6f}"),
+            "spectrum band-edge window half-width (eV)": f"{zoom:g}",
+        },
+        series=series,
+        notes=notes or None,
+    )
+
+
 def main():
     ap = cli.new_parser(__doc__)
     ap.add_argument("data_dir", type=Path,
@@ -199,6 +254,10 @@ def main():
 
     if produced == 0:
         raise SystemExit(f"no input arrays found in {data_dir}")
+
+    write_report(data_dir, material, outdir / f"{material}_qtbm_spectra_data.txt",
+                 energies, band_edge, eigenvalues, condition_bare,
+                 condition_full, sigma_max, sigma_min, args.zoom)
 
 
 if __name__ == "__main__":

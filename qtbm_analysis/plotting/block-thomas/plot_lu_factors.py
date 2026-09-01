@@ -60,7 +60,7 @@ import matplotlib.pyplot as plt
 
 import cli
 from factor_io import load_sparse_factor
-from style import energies_of, save_figure
+from style import columns_from_rows, energies_of, save_figure, write_data_report
 
 GROUP = "lu_factors"
 
@@ -174,6 +174,66 @@ def plot(groups, idx, dtype_name, material, attrs, dynamic_range, out_path):
     fig.suptitle(f"{material}  {position}  {dtype_name}", fontsize=14)
     save_figure(fig, out_path, dpi=160)
 
+    return _panel_rows(panels, groups, idx, dtype_name, attrs)
+
+
+def _panel_rows(panels, groups, idx, dtype_name, attrs):
+    """
+    One summary row per (solver, matrix) drawn: shape, nnz, fill and the
+    extreme and median entry magnitude -- the numbers behind a heat-map panel,
+    read straight off the arrays plot() already built. The full CSC triplets
+    stay in the source file at lu_factors/E_<idx>/<solver>/<dtype>.
+    """
+    energy = energies_of(attrs, [idx])
+    out = []
+    for solver in (s for s in ROWS if s in groups):
+        resid = float(groups[solver].attrs.get("resid_rel", np.nan))
+        for name in COLUMNS:
+            p = panels[(solver, name)]                 # log10(|entry|), zeros masked
+            logs = p.compressed()
+            out.append({
+                "idx": idx,
+                "energy_eV": np.nan if energy is None else float(energy[0]),
+                "dtype": dtype_name,
+                "solver": solver,
+                "matrix": name,
+                "rows": p.shape[0],
+                "cols": p.shape[1],
+                "nnz": int(logs.size),
+                "fill_frac": logs.size / (p.shape[0] * p.shape[1]),
+                "abs_min": float(10.0 ** logs.min()) if logs.size else np.nan,
+                "abs_median": float(10.0 ** np.median(logs)) if logs.size else np.nan,
+                "abs_max": float(10.0 ** logs.max()) if logs.size else np.nan,
+                "resid_rel": resid,
+            })
+    return out
+
+
+def write_report(h5path, material, out_path, group_attrs, rows, args):
+    """The per-panel summary over every (index, dtype) figure, as text."""
+    cols = ("idx", "energy_eV", "dtype", "solver", "matrix", "rows", "cols",
+            "nnz", "fill_frac", "abs_min", "abs_median", "abs_max", "resid_rel")
+    write_data_report(
+        out_path,
+        title=f"extracted L and U factors  —  {material}",
+        source=str(h5path),
+        source_attrs=group_attrs,
+        config={
+            "analysis group": GROUP,
+            "figures": f"{material}_E<idx>_<dtype>_lu.png, one per (index, dtype)",
+            "figures written": str(len({(r["idx"], r["dtype"]) for r in rows})),
+            "solver rows": ", ".join(ROWS),
+            "matrices per row": ", ".join(COLUMNS),
+            "dynamic range (decades)": f"{args.dynamic_range:g}",
+            "precision selection": (" ".join(args.dtypes) if args.dtypes
+                                    else "all present"),
+        },
+        series={"one row per heat-map panel": columns_from_rows(rows, cols)},
+        notes=["A_eff is the matrix the stored factors reconstruct, which is "
+               "solver dependent (see block-thomas/growth_factor.py).  "
+               "resid_rel = ||A_eff - LU|| / ||A_eff||."],
+    )
+
 
 def main():
     ap = cli.new_parser(__doc__)
@@ -221,10 +281,16 @@ def main():
                         set(args.dtypes) if args.dtypes else None)
         if not found:
             raise SystemExit("no combination remains after filtering")
+        report_rows = []
         for (idx, dtype_name), groups in found:
-            plot(groups, idx, dtype_name, material, group_attrs,
-                 args.dynamic_range,
-                 outdir / f"{material}_E{idx}_{dtype_name}_lu.png")
+            report_rows.extend(plot(
+                groups, idx, dtype_name, material, group_attrs,
+                args.dynamic_range,
+                outdir / f"{material}_E{idx}_{dtype_name}_lu.png"))
+
+        write_report(h5path, material,
+                     outdir / f"{material}_lu_factors_data.txt",
+                     group_attrs, report_rows, args)
 
 
 if __name__ == "__main__":

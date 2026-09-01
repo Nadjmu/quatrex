@@ -124,10 +124,17 @@ from matplotlib.colors import LogNorm
 import cli
 from factor_io import load_table, table_rows
 from style import (SOLVER_STYLE, DTYPE_STYLE, FP16_UNIT_ROUNDOFF, axis_label,
-                   energies_of, legend_handles, mark_band_edges,
-                   named_for_legend, save_figure, split_gaps, sweep_line)
+                   columns_from_rows, energies_of, legend_handles,
+                   mark_band_edges, named_for_legend, save_figure, split_gaps,
+                   sweep_line, write_data_report)
 
 GROUP = "growth_factor"
+
+# Scalar columns of the growth_factor group worth carrying into the report.
+# l_profile is a per-block array and is left out; it has no figure either.
+REPORT_COLUMNS = ("idx", "solver", "dtype", "norm", "nA", "nL", "nU", "prod",
+                  "LU_abs", "loose", "tight", "rho", "resid_rel",
+                  "schur_growth", "schur_cond_max", "schur_resid_max")
 
 # The forward_error group of the same analysis file, read only for its eta_inf
 # column by the backward-error-against-growth figure.
@@ -645,6 +652,45 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
     return True
 
 
+def write_report(records, attrs, material, h5path, args, norms, out_path,
+                 figures):
+    """The filtered growth_factor rows behind the figures, as text beside
+    them."""
+    rows = sorted((r for r in records if r["norm"] in norms),
+                  key=lambda r: (r["norm"], r["dtype"], r["solver"], r["idx"]))
+    colmap = columns_from_rows(rows, REPORT_COLUMNS)
+    energies = energies_of(attrs, colmap["idx"]) if "idx" in colmap else None
+    if energies is not None:
+        colmap = {"idx": colmap["idx"], "energy_eV": energies,
+                  **{k: v for k, v in colmap.items() if k != "idx"}}
+    eta_available = _eta_by_key(h5path) != {}
+    write_data_report(
+        out_path,
+        title=f"factor growth  —  {material}",
+        source=str(h5path),
+        source_attrs=attrs,
+        config={
+            "analysis group": GROUP,
+            "figures": ", ".join(figures),
+            "solvers drawn": ", ".join(sorted({r["solver"] for r in records})),
+            "precisions drawn": ", ".join(sorted({r["dtype"] for r in records})),
+            "norms drawn": ", ".join(norms),
+            "solver selection": (" ".join(args.solvers) if args.solvers
+                                 else ", ".join(DEFAULT_SOLVERS)),
+            "precision selection": (" ".join(args.dtypes) if args.dtypes
+                                    else "all present"),
+            "unit roundoff (backward_vs_growth)": ", ".join(
+                f"{k} u={v:.3e}" for k, v in UNIT_ROUNDOFF.items()),
+            "forward_error group present": "yes" if eta_available else "no",
+        },
+        series={"growth_factor group, filtered to the rows drawn": colmap},
+        notes=["Psi is the `loose` column ||L|| ||U|| / ||A_eff||, the ratio "
+               "Theorem 2.1 of Demmel, Higham and Schreiber is stated with.  "
+               "backward_vs_growth divides eta_inf, read from the "
+               "forward_error group of the same file, by u (1 + Psi)."],
+    )
+
+
 def main():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap, help=f"analysis file written by "
@@ -699,6 +745,13 @@ def main():
         print("no forward_error group in this file, or it shares no rows with "
               "growth_factor; run block-thomas/forward_error.py over the same "
               "indices for the backward-error-against-growth figure")
+
+    write_report(records, attrs, material, h5path, args, norms,
+                 outdir / f"{material}_growth_factor_data.txt",
+                 figures=[f"{material}_growth_factor.png",
+                          f"{material}_assembly_residual.png",
+                          f"{material}_schur_growth.png",
+                          f"{material}_backward_vs_growth.png"])
 
 
 if __name__ == "__main__":

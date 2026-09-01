@@ -66,7 +66,7 @@ import matplotlib.pyplot as plt
 import cli
 from factor_io import load_table
 from style import (FP16_UNIT_ROUNDOFF, axis_label, energies_of,
-                   mark_band_edges, save_figure)
+                   mark_band_edges, save_figure, write_data_report)
 
 GROUP = "fp16_sweep"
 COLUMNS = ("idx", "relres_fp16", "relres_fp16_inv", "fwd_err_fp16_vs_c128",
@@ -178,6 +178,35 @@ def plot_error_vs_condition(m, material, out_path):
     return True
 
 
+def write_report(m, attrs, material, h5path, out_path, figures):
+    """The fp16_sweep columns behind the figures, as text beside them."""
+    order = np.argsort(m["idx"])
+    colmap = {name: np.asarray(m[name])[order] for name in COLUMNS}
+    energies = energies_of(attrs, colmap["idx"])
+    if energies is not None:
+        colmap = {"idx": colmap["idx"], "energy_eV": energies,
+                  **{k: v for k, v in colmap.items() if k != "idx"}}
+    has_kappa = bool(np.isfinite(m["cond_full_svd"]).any())
+    write_data_report(
+        out_path,
+        title=f"half-precision Block Thomas accuracy  —  {material}",
+        source=str(h5path),
+        source_attrs=attrs,
+        config={
+            "analysis group": GROUP,
+            "figures": ", ".join(figures),
+            "rows": str(len(m["idx"])),
+            "fp16 unit roundoff": f"u = 2^-11 = {FP16_UNIT_ROUNDOFF:.3e}",
+            "cond_full_svd available": "yes" if has_kappa else "no",
+        },
+        series={"fp16_sweep group": colmap},
+        notes=["relres_* is the relative residual (backward error), "
+               "fwd_err_*_vs_c128 the forward error against the complex128 "
+               "solution.  Implementation 1 is the LU variant, 2 the "
+               "explicit-inverse variant."],
+    )
+
+
 def main():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap, help=f"analysis file written by "
@@ -195,10 +224,17 @@ def main():
                                     outdir / f"{material}_relres_fwderr.png")
     plot_forward_error(m, attrs, material,
                        outdir / f"{material}_forward_accuracy.png")
-    if not plot_error_vs_condition(m, material,
-                                   outdir / f"{material}_error_vs_condition.png"):
+    figures = [f"{material}_relres_fwderr.png",
+               f"{material}_forward_accuracy.png"]
+    if plot_error_vs_condition(m, material,
+                               outdir / f"{material}_error_vs_condition.png"):
+        figures.append(f"{material}_error_vs_condition.png")
+    else:
         print("cond_full_svd is absent or non-finite for every index; "
               "the error-against-conditioning figure was not produced")
+
+    write_report(m, attrs, material, h5path,
+                 outdir / f"{material}_fp16_sweep_data.txt", figures)
 
 
 if __name__ == "__main__":

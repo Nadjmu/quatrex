@@ -67,7 +67,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 
 import cli
-from style import energies_of
+from style import energies_of, write_data_report
 
 GROUP = "non_normality"
 REQUIRED = ("ratio", "log_cumulative_ratio", "indices", "valid")
@@ -238,6 +238,62 @@ def create_frames(frame_dir, indices, ratio_matrix, logcum_matrix, nnz_array,
     return frame_paths
 
 
+def write_report(out_path, h5path, material, indices, ratio_matrix,
+                 logcum_matrix, nnz_array, valid_rows, diff, attrs, figures):
+    """
+    One row per rendered frame: the scalars its title carries, over the whole
+    sweep, as text beside the frames.
+
+    The per-rank curves the frames draw are the columns of ``ratio`` and
+    ``log_cumulative_ratio`` in the source file; they are not duplicated here.
+    This is the frame-level summary -- the interior maximum of the cumulative
+    log-ratio is the scalar measure of non-normality that no single rank shows.
+    """
+    rows = {k: [] for k in ("idx", "energy_eV", "n", "nnz", "ratio_min",
+                            "ratio_max", "n_above", "n_below",
+                            "logcum_endpoint", "logcum_interior_max")}
+    for row in valid_rows:
+        ratio = np.asarray(ratio_matrix[row, :], dtype=float)
+        logcum = np.asarray(logcum_matrix[row, :], dtype=float)
+        index = int(indices[row])
+        energy = energies_of(attrs, [index])
+        rows["idx"].append(index)
+        rows["energy_eV"].append(np.nan if energy is None else float(energy[0]))
+        rows["n"].append(ratio.size)
+        rows["nnz"].append(int(nnz_array[row]) if nnz_array is not None
+                           and row < len(nnz_array) and nnz_array[row] >= 0
+                           else -1)
+        rows["ratio_min"].append(float(np.min(ratio)))
+        rows["ratio_max"].append(float(np.max(ratio)))
+        rows["n_above"].append(int(np.count_nonzero(ratio > 1.0 + diff)))
+        rows["n_below"].append(int(np.count_nonzero(ratio < 1.0 - diff)))
+        rows["logcum_endpoint"].append(float(logcum[-1]))
+        rows["logcum_interior_max"].append(float(np.max(logcum)))
+
+    colmap = {k: np.asarray(v) for k, v in rows.items()}
+    if colmap["energy_eV"].size and not np.isfinite(colmap["energy_eV"]).any():
+        del colmap["energy_eV"]
+
+    write_data_report(
+        out_path,
+        title=f"non-normality of M(E)  —  {material}",
+        source=str(h5path),
+        source_attrs=attrs,
+        config={
+            "analysis group": GROUP,
+            "figures": figures,
+            "valid frames": str(len(valid_rows)),
+            "sweep rows total": str(ratio_matrix.shape[0]),
+            "matrix dimension n": str(ratio_matrix.shape[1]),
+            "band half-width for the above/below counts": f"{diff:g}",
+        },
+        series={"per-frame summary (one row per rendered frame)": colmap},
+        notes=["ratio = sigma_i / |lambda_i|, sorted independently descending; "
+               "= 1 for every i iff M is normal.  logcum is non-negative, "
+               "non-decreasing, and returns to 0 at i = n (Weyl)."],
+    )
+
+
 def create_gif(frame_paths, gif_path, gif_fps, ping_pong):
     """
     Assemble the frames into an animated GIF. Frames are converted to an
@@ -316,6 +372,12 @@ def main():
                                     valid_rows=valid_rows, diff=args.diff,
                                     ratio_y_scale=args.ratio_y_scale,
                                     dpi=args.dpi, attrs=attrs)
+
+        write_report(out_dir / f"{material}_non_normal_data.txt", h5path,
+                     material, indices, ratio_matrix, logcum_matrix, nnz_array,
+                     valid_rows, args.diff, attrs,
+                     figures=f"{material}_frames/E_*.png, "
+                             f"{material}_non_normal.gif")
     print(f"[frames] created {len(frame_paths)} frames in {frame_dir}")
 
     if not args.skip_gif:

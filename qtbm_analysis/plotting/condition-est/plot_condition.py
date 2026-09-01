@@ -101,7 +101,8 @@ import matplotlib.pyplot as plt
 from matplotlib.ticker import ScalarFormatter
 
 import cli
-from style import axis_label, energies_of, mark_band_edges, save_figure, sweep_line
+from style import (axis_label, energies_of, mark_band_edges, save_figure,
+                   sweep_line, write_data_report)
 
 GROUP = "condition"
 EXACT_GROUP = "condition_exact"
@@ -414,6 +415,58 @@ def render_figure(outdir, filename, title, draw_value, draw_ratio, x, curves,
     save_figure(fig, outdir / filename, dpi=dpi)
 
 
+def write_report(h5path, material, out_path, x, curves, indices, attrs,
+                 have_energy, x_exact, points, indices_exact):
+    """The condition curves and the exact reference points behind the two
+    figures, as text beside them."""
+    sweep = {"idx": np.asarray(indices)}
+    if have_energy:
+        sweep["energy_eV"] = np.asarray(x, dtype=float)
+    for name in ALL_DATASETS:
+        if name in curves:
+            sweep[name] = np.asarray(curves[name], dtype=float)
+    series = {"condition group, valid rows": sweep}
+
+    if indices_exact is not None and points:
+        exact = {"idx": np.asarray(indices_exact)}
+        if x_exact is not None:
+            exact["energy_eV"] = np.asarray(x_exact, dtype=float)
+        for _, (name, _m) in EXACT_OF.items():
+            if name in points:
+                exact[name] = np.asarray(points[name], dtype=float)
+        series["condition_exact group, reference points"] = exact
+
+    notes = []
+    headroom = scaling_headroom(curves)
+    if headroom is not None:
+        notes.append(f"median kappa_inf / cond(M) = {headroom:.3e}  "
+                     f"(factor row equilibration could remove from kappa_inf)")
+    for column, (count, worst) in estimator_slack(
+            curves, indices, x, points, indices_exact).items():
+        notes.append(f"{column}: estimate/exact over {count} matched indices, "
+                     f"worst {worst:.4f}  (a lower-bound estimator, so <= 1)")
+
+    write_data_report(
+        out_path,
+        title=f"condition number of M(E)  —  {material}",
+        source=str(h5path),
+        source_attrs=attrs,
+        config={
+            "analysis groups": f"{GROUP}"
+                               + (f", {EXACT_GROUP}" if indices_exact is not None
+                                  else ""),
+            "figures": f"{material}_condition.png, "
+                       f"{material}_condition_kappa2.png",
+            "valid rows": str(len(np.asarray(indices))),
+            "exact reference indices": (str(len(indices_exact))
+                                        if indices_exact is not None else "0"),
+            "columns present": ", ".join(n for n in ALL_DATASETS if n in curves),
+        },
+        series=series,
+        notes=notes or None,
+    )
+
+
 def main():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap, required=False,
@@ -487,6 +540,11 @@ def main():
             draw_kappa2, draw_kappa2_ratio,
             x, curves, indices, attrs, have_energy, points, indices_exact,
             args.dpi)
+
+        write_report(h5path, material,
+                     outdir / f"{material}_condition_data.txt",
+                     x, curves, indices, attrs, have_energy,
+                     x_exact, points, indices_exact)
 
     if not n_loaded:
         raise SystemExit("no analysis file was read")

@@ -10,6 +10,16 @@ in order to change an axis label, the numbers behind every figure exist as a
 file that can be inspected or replotted, and a change to a figure cannot alter
 a measurement.
 
+Every script also writes a plain-text companion beside its figures — one
+`<material>_<analysis>_data.txt` per run — holding the plot command, the
+provenance the source file records, the options the figures were drawn under,
+and every numeric series behind them as an aligned table and again as TSV. A
+figure is then reproducible and readable without opening the HDF5 file: the
+numbers can be replotted, diffed between runs, or handed to a reader — or a
+language model — to interpret directly. `plot_mpir.py` and `plot_mpperf.py`
+predate this and keep their own richer `_report.txt`; every other script goes
+through `style.write_data_report`.
+
 `plotting/` mirrors the same per-category layout as the scratch directories:
 one subfolder per analysis, holding the scripts that plot it.
 
@@ -36,6 +46,9 @@ plotting/
     └── bandstructure.py
 ```
 
+Every script below also writes a `_data.txt` companion (see above); the column
+lists only the figures.
+
 | Script | Input | Figures produced |
 |---|---|---|
 | `block-thomas/plot_growth_factor.py` | analysis file, `growth_factor` | `<material>_growth_factor.png`, `<material>_schur_growth.png` |
@@ -44,8 +57,8 @@ plotting/
 | `block-thomas/plot_lu_factors.py` | analysis file, `lu_factors` | `<material>_E<idx>_<solver>_<dtype>_lu.png` |
 | `block-thomas/plot_fp16_accuracy.py` | analysis file, `fp16_sweep` | `_relres_fwderr.png`, `_forward_accuracy.png`, `_error_vs_condition.png` |
 | `condition-est/plot_condition.py` | analysis file, `condition` | `<material>_condition.png`, `condition_all.png` |
-| `mixed_prec_ir/plot_mpir.py` | convergence file, one `experiments/<NNNN>` | `exp<NNNN>/<material>_E<idx>.png`, `exp<NNNN>/<material>_summary.png` |
-| `mixed_prec_ir/plot_mpperf.py` | performance file, one `experiments/<NNNN>` | `perf<NNNN>/<material>_perf_summary.png` |
+| `mixed_prec_ir/plot_mpir.py` | convergence file, one `experiments/<NNNN>` | `exp<NNNN>/<material>_E<idx>.png`, `exp<NNNN>/<material>_summary.png`, `<material>_report.txt` |
+| `mixed_prec_ir/plot_mpperf.py` | performance file, one `experiments/<NNNN>` | `perf<NNNN>/<material>_perf_summary.png`, `<material>_perf_report.txt` |
 | `non-normal/plot_non_normal.py` | analysis file, `non_normality` | `<material>_frames/E_*.png`, `<material>_non_normal.gif` |
 | `matrices2/plot_qtbm_spectra.py` | a `main3.py` output directory | `_spectrum.png`, `_condition.png`, `_singular_values.png` |
 | `matrices2/plot_rhs.py` | material file, `E_<idx>/rhs` | `<material>_rhs.png` |

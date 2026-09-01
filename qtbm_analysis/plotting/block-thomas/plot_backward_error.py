@@ -76,10 +76,18 @@ import matplotlib.pyplot as plt
 import cli
 from factor_io import load_table, table_rows
 from style import (SOLVER_STYLE, DTYPE_STYLE, FP16_UNIT_ROUNDOFF, named_for_legend, axis_label,
-                   energies_of, legend_handles, mark_band_edges, save_figure,
-                   split_gaps, sweep_line)
+                   columns_from_rows, energies_of, legend_handles,
+                   mark_band_edges, save_figure, split_gaps, sweep_line,
+                   write_data_report)
 
 GROUP = "forward_error"
+
+# Every column of the forward_error group worth carrying into the report,
+# backward-error quantities first since that is what the figure is about.
+REPORT_COLUMNS = ("idx", "solver", "dtype", "omega", "eta_inf", "eta_1",
+                  "eta_2", "fwd_inf", "fwd_2", "cond_inf", "cond_skeel_x",
+                  "bound_nw", "bound_cw", "ratio_nw", "ratio_cw",
+                  "ref_res", "ref_floor", "ref_steps")
 
 # Block Thomas (inv) is left out by default: its explicit-inversion instability
 # at the band edges (omega -> O(1) at complex64) dwarfs every other curve and
@@ -187,6 +195,38 @@ def plot(records, attrs, material, out_path):
     save_figure(fig, out_path, dpi=140)
 
 
+def write_report(records, attrs, material, h5path, args, out_path, figures):
+    """The filtered forward_error rows behind the figure, as text beside it."""
+    rows = sorted(records, key=lambda r: (r["dtype"], r["solver"], r["idx"]))
+    colmap = columns_from_rows(rows, REPORT_COLUMNS)
+    energies = energies_of(attrs, colmap["idx"]) if "idx" in colmap else None
+    if energies is not None:
+        colmap = {"idx": colmap["idx"], "energy_eV": energies,
+                  **{k: v for k, v in colmap.items() if k != "idx"}}
+    write_data_report(
+        out_path,
+        title=f"backward error  —  {material}",
+        source=str(h5path),
+        source_attrs=attrs,
+        config={
+            "analysis group": GROUP,
+            "figures": ", ".join(figures),
+            "solvers drawn": ", ".join(sorted({r["solver"] for r in records})),
+            "precisions drawn": ", ".join(_sorted_dtypes(records)),
+            "solver selection": (" ".join(args.solvers) if args.solvers
+                                 else f"all present except {', '.join(DEFAULT_EXCLUDE)}"),
+            "precision selection": (" ".join(args.dtypes) if args.dtypes
+                                    else "all present"),
+            "unit roundoff reference": ", ".join(
+                f"{k} u={v:.3e}" for k, v in UNIT_ROUNDOFF.items()),
+        },
+        series={"forward_error group, filtered to the rows drawn": colmap},
+        notes=["omega (row 1) is the stability claim; eta_inf (row 2) is not "
+               "comparable across energies and is shown only to make that "
+               "visible.  See the module docstring."],
+    )
+
+
 def main():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap, help=f"analysis file written by "
@@ -217,6 +257,9 @@ def main():
         raise SystemExit("no rows remain after filtering")
 
     plot(records, attrs, material, outdir / f"{material}_backward_error.png")
+    write_report(records, attrs, material, h5path, args,
+                 outdir / f"{material}_backward_error_data.txt",
+                 figures=[f"{material}_backward_error.png"])
 
 
 if __name__ == "__main__":

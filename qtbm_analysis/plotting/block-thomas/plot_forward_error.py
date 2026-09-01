@@ -83,11 +83,20 @@ from matplotlib.lines import Line2D
 
 import cli
 from factor_io import load_table, table_rows
-from style import (SOLVER_STYLE, DTYPE_STYLE, axis_label, energies_of,
-                   legend_handles, mark_band_edges, named_for_legend,
-                   save_figure, split_gaps, sweep_line)
+from style import (SOLVER_STYLE, DTYPE_STYLE, axis_label, columns_from_rows,
+                   energies_of, legend_handles, mark_band_edges,
+                   named_for_legend, save_figure, split_gaps, sweep_line,
+                   write_data_report)
 
 GROUP = "forward_error"
+
+# Every column of the forward_error group worth carrying into the report,
+# forward-error quantities and the two bound ratios first.
+REPORT_COLUMNS = ("idx", "solver", "dtype", "fwd_inf", "fwd_2",
+                  "ratio_nw", "ratio_cw", "bound_nw", "bound_cw",
+                  "eta_inf", "eta_1", "eta_2", "omega",
+                  "cond_inf", "cond_skeel_x", "ref_res", "ref_floor",
+                  "ref_steps")
 
 DTYPE_ORDER = ("complex32", "complex64", "complex128")
 
@@ -259,6 +268,38 @@ def plot_ratios(records, attrs, material, out_path):
     save_figure(fig, out_path, dpi=140)
 
 
+def write_report(records, attrs, material, h5path, args, out_path, figures):
+    """The filtered forward_error rows behind both figures, as text beside
+    them."""
+    rows = sorted(records, key=lambda r: (r["dtype"], r["solver"], r["idx"]))
+    colmap = columns_from_rows(rows, REPORT_COLUMNS)
+    energies = energies_of(attrs, colmap["idx"]) if "idx" in colmap else None
+    if energies is not None:
+        colmap = {"idx": colmap["idx"], "energy_eV": energies,
+                  **{k: v for k, v in colmap.items() if k != "idx"}}
+    write_data_report(
+        out_path,
+        title=f"forward error against its bounds  —  {material}",
+        source=str(h5path),
+        source_attrs=attrs,
+        config={
+            "analysis group": GROUP,
+            "figures": ", ".join(figures),
+            "solvers drawn": ", ".join(sorted({r["solver"] for r in records})),
+            "precisions drawn": ", ".join(_sorted_dtypes(records)),
+            "solver selection": (" ".join(args.solvers) if args.solvers
+                                 else f"all present except {', '.join(DEFAULT_EXCLUDE)}"),
+            "precision selection": (" ".join(args.dtypes) if args.dtypes
+                                    else "all present"),
+        },
+        series={"forward_error group, filtered to the rows drawn": colmap},
+        notes=["ratio_nw = fwd_inf / (cond_inf * eta_inf), "
+               "ratio_cw = fwd_inf / (cond_skeel_x * omega); a bound holds "
+               "where its ratio is below 1.  A ratio above 1 usually means "
+               "the reference solution is at its floor ref_floor."],
+    )
+
+
 def main():
     ap = cli.new_parser(__doc__)
     cli.add_h5_input(ap, help=f"analysis file written by "
@@ -291,6 +332,10 @@ def main():
     plot(records, attrs, material, outdir / f"{material}_forward_error.png")
     plot_ratios(records, attrs, material,
                 outdir / f"{material}_forward_bound_ratio.png")
+    write_report(records, attrs, material, h5path, args,
+                 outdir / f"{material}_forward_error_data.txt",
+                 figures=[f"{material}_forward_error.png",
+                          f"{material}_forward_bound_ratio.png"])
 
 
 if __name__ == "__main__":

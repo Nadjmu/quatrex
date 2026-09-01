@@ -50,7 +50,8 @@ import matplotlib.pyplot as plt
 
 import cli
 from factor_io import material_metadata
-from style import axis_label, energies_of, mark_band_edges, save_figure
+from style import (axis_label, energies_of, mark_band_edges, save_figure,
+                   write_data_report)
 
 # Mirrors main3.EXAMPLES: the materials stage 1 exports by default.
 DEFAULT_MATERIALS = ["carbon-nanotube", "si-bulk", "carbon-chain", "graphene"]
@@ -127,6 +128,25 @@ def main():
         attrs = material_metadata(h5path)
         out_path = outdir / f"{material}_rhs.png"
         plot_rhs(indices, nmodes, attrs, material, out_path)
+
+        colmap = {"idx": np.asarray(indices)}
+        energies = energies_of(attrs, indices)
+        if energies is not None:
+            colmap["energy_eV"] = energies
+        colmap["n_modes"] = np.asarray(nmodes)
+        write_data_report(
+            outdir / f"{material}_rhs_data.txt",
+            title=f"right-hand side width along the energy sweep  —  {material}",
+            source=str(h5path),
+            source_attrs=attrs,
+            config={"figures": f"{material}_rhs.png",
+                    "exported indices": str(len(indices)),
+                    "quantity": "n_modes = rhs.shape[-1] at each exported "
+                                "E_<idx>/rhs"},
+            series={"open contact modes per exported energy index": colmap},
+            notes=["n_modes = 0 inside the band gap is kept, not dropped: "
+                   "main3.py writes rhs at every exported index."],
+        )
         produced += 1
 
     if produced == 0:
