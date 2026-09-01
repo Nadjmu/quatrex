@@ -36,10 +36,6 @@ from style import write_data_report
 # over k rather than the full (k, band) grid.
 MAX_BAND_SAMPLES = 60_000
 
-# The Hamiltonian figure: decades of |H_ij| shown below the largest entry, and
-# the resolution the matrix is binned down to when it has more rows than that.
-HAMILTONIAN_DYNAMIC_RANGE = 12
-HAMILTONIAN_MAX_PIXELS = 2000
 
 from qttools import xp
 from qttools.kernels.linalg import eigvalsh
@@ -388,64 +384,25 @@ def scan_lead_offsets(
             xp.get_default_memory_pool().free_all_blocks()
 
 
-def rasterize(matrix: sps.spmatrix, pixels: int) -> np.ndarray:
-    """Bins |matrix| into a `pixels` x `pixels` image, largest entry per bin.
-
-    A device matrix has O(1e5) rows and cannot be densified, but it can
-    be drawn whole: each pixel covers a square block of the index range
-    and takes the largest magnitude falling in it, so a lone large entry
-    stays visible however coarse the binning is. At pixels == n the
-    binning is the identity and the image is the exact matrix.
-
-    """
-    n = matrix.shape[0]
-    coo = matrix.tocoo()
-    row = (coo.row.astype(np.int64) * pixels) // n
-    col = (coo.col.astype(np.int64) * pixels) // n
-
-    grid = np.zeros((pixels, pixels))
-    np.maximum.at(grid, (row, col), np.abs(coo.data))
-    return grid
-
-
 def plot_hamiltonian(hamiltonian: sps.spmatrix, out_dir: Path) -> None:
     """Plots the magnitude of the whole Hamiltonian."""
-    n = hamiltonian.shape[0]
-    pixels = min(n, HAMILTONIAN_MAX_PIXELS)
-    grid = rasterize(hamiltonian, pixels)
+    dense = hamiltonian.toarray()
 
-    # An empty bin is not a small value and must not be drawn at the
+    # A structural zero is not a small value and must not be drawn at the
     # bottom of the colour scale; it is masked and rendered as white
     # background, as in plotting/block-thomas/plot_lu_factors.py. The
-    # previous form, log10(|H| + 1e-16), put every empty region on the
-    # dark end of viridis and made the sparsity pattern the loudest thing
-    # in the figure.
+    # previous form, log10(|H| + 1e-16), put every zero on the dark end of
+    # viridis.
     with np.errstate(divide="ignore"):
-        logmag = np.ma.masked_invalid(np.log10(grid))
+        logmag = np.ma.masked_invalid(np.log10(np.abs(dense)))
 
-    # Entries merely below vmin clamp to the bottom of the colormap, so a
-    # small nonzero stays distinguishable from no entry at all.
-    vmax = np.ceil(float(logmag.max()))
-    vmin = vmax - HAMILTONIAN_DYNAMIC_RANGE
     cmap = matplotlib.colormaps["viridis"].with_extremes(bad="white")
 
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.set_facecolor("white")
-
-    # imshow rather than matshow: `extent` keeps the axes labelled in
-    # matrix indices even when one pixel covers many of them. The ticks
-    # go on top, where matshow puts them and where the earlier figures
-    # had them.
-    image = ax.imshow(logmag, cmap=cmap, vmin=vmin, vmax=vmax,
-                      extent=(0, n, n, 0), interpolation="nearest")
-    ax.xaxis.set_ticks_position("top")
-    ax.xaxis.set_label_position("top")
-
+    image = ax.matshow(logmag, cmap=cmap)
     fig.colorbar(image, ax=ax, label=r"$\log_{10}|H_{ij}|$")
-    title = f"Hamiltonian matrix ({n} x {n})"
-    if pixels < n:
-        title += f", binned to {pixels} x {pixels}"
-    ax.set_title(title)
+    ax.set_title("Hamiltonian Matrix")
     fig.tight_layout()
     fig.savefig(out_dir / "hamiltonian_matrix.png", dpi=300)
     plt.close(fig)
