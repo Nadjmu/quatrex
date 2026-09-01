@@ -559,7 +559,8 @@ def write_report(name: str, material: cli.Material, out_dir: Path,
     )
 
 
-def run(name: str, material: cli.Material) -> None:
+def run(name: str, material: cli.Material,
+        hamiltonian_only: bool = False) -> None:
     """Computes and plots the band structure of a single material."""
     out_dir = PLOTS_DIR / name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -603,6 +604,12 @@ def run(name: str, material: cli.Material) -> None:
     check_periodicity(matrix, blocksize, label="h")
     find_period(matrix)
     plot_hamiltonian(matrix, out_dir)
+
+    # The eigensolve below is the expensive part; skip it when only the
+    # Hamiltonian figure is wanted.
+    if hamiltonian_only:
+        print(f"  wrote {out_dir / 'hamiltonian_matrix.png'}")
+        return
 
     h_00, h_01, h_10 = lead_blocks(matrix, blocksize, material.lead_offset)
 
@@ -667,6 +674,11 @@ def main() -> None:
         default=list(MATERIALS),
         help="Materials to process. Defaults to all configured ones.",
     )
+    parser.add_argument(
+        "--hamiltonian-only",
+        action="store_true",
+        help="Only write hamiltonian_matrix.png, skipping the band structure.",
+    )
     args = parser.parse_args()
 
     unknown = [name for name in args.materials if name not in MATERIALS]
@@ -682,7 +694,7 @@ def main() -> None:
         print(f"--- {name} ---")
 
         try:
-            run(name, material)
+            run(name, material, args.hamiltonian_only)
         except Exception as e:
             print(f"  FAILED: {type(e).__name__}: {e}")
             failed.append(name)
