@@ -25,7 +25,8 @@ and for what is deliberately outside every timed region.
 The figure
 ----------
 Two panels sharing one x axis: runtime above, memory below. One group of bars
-per energy index, the groups ordered by kappa_inf(A) and evenly spaced
+per energy index, the groups ordered by number of right-hand sides and then
+by kappa_inf(A) within each n_rhs, evenly spaced
 regardless of it -- bars of neighbouring indices would otherwise overlap
 wherever two condition numbers are close, which near a band edge is most of
 them. The kappa_inf each group stands at is its tick label, with the index and
@@ -292,9 +293,11 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
               f"drawn: {', '.join(str(i) for i in dropped[:12])}"
               f"{' ...' if len(dropped) > 12 else ''}")
 
-    # The x axis: evenly spaced slots, ordered by kappa_inf. See the docstring
-    # for why the bars do not sit at their true log positions.
-    order = sorted(table, key=lambda i: kappa[i])
+    # The x axis: evenly spaced slots, ordered by n_rhs first and by kappa_inf
+    # within an n_rhs. n_rhs leads because cost is monotone in it and flat in
+    # kappa_inf, so grouping by n_rhs keeps the comparable bars adjacent. See
+    # the docstring for why the bars do not sit at their true log positions.
+    order = sorted(table, key=lambda i: (n_rhs[i], kappa[i]))
     slot = np.arange(len(order), dtype=float)
 
     # Only the solvers that actually produced a row are laid out, so a cuDSS
@@ -959,10 +962,16 @@ def write_report(out_path, h5path, name, attrs, rows, limit):
         k = next(iter(next(iter(by_idx[idx].values())).values()))["kappa_inf"]
         return k if np.isfinite(k) else float("inf")
 
+    def _order_of(idx):
+        # The figure's group order, so a bar and its numbers are found in the
+        # same position in both.
+        r = next(iter(next(iter(by_idx[idx].values())).values()))
+        return int(r["n_rhs"]), _kappa_of(idx), idx
+
     w("")
-    w("[6] RESULTS BY INDEX   (times in ms, ordered by kappa_inf)")
+    w("[6] RESULTS BY INDEX   (times in ms, ordered by n_rhs then kappa_inf)")
     rule("-")
-    for idx in sorted(by_idx, key=lambda i: (_kappa_of(i), i)):
+    for idx in sorted(by_idx, key=_order_of):
         any_row = next(iter(next(iter(by_idx[idx].values())).values()))
         w("")
         w(f"  E_{idx}   energy={any_row['energy']:.4f} eV   "
@@ -1057,7 +1066,7 @@ def write_report(out_path, h5path, name, attrs, rows, limit):
     w(f"      {'idx':>6} {'rhs':>4} {'solver':<14} {'variant':<10} "
       f"{'speedup':>8} {'resid%':>7} {'resid/col':>10} {'F ratio':>8} "
       f"{'f':>7} {'k':>7} {'measured':>9} {'predicted':>10}")
-    for idx in sorted(by_idx, key=lambda i: (_kappa_of(i), i)):
+    for idx in sorted(by_idx, key=_order_of):
         for solver in sorted(by_idx[idx]):
             group = by_idx[idx][solver]
             ref = group.get("c128")
