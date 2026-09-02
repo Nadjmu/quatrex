@@ -113,9 +113,9 @@ EXACT_GROUP = "condition_exact"
 # of BAND_EDGE_STYLE, since a curve sharing a colour with a band edge is not
 # separable at a glance.
 LADDER_STYLE = {
-    "cond_inf": (r"$\kappa_\infty$  (normwise)", "#8E24AA", "-"),
-    "cond_skeel": (r"$\mathrm{cond}(M)$  (Skeel, worst rhs)", "#FF6D00", "-"),
-    "cond_skeel_x": (r"$\mathrm{cond}(M,x)$  (Skeel, this rhs)", "#00897B", "-"),
+    "cond_inf": (r"$\kappa_\infty$", "#8E24AA", "-"),
+    "cond_skeel": (r"$\mathrm{cond}(M)$", "#FF6D00", "-"),
+    "cond_skeel_x": (r"$\mathrm{cond}(M,x)$", "#00897B", "-"),
 }
 
 # 2-norm figure: a different norm, drawn alone.
@@ -273,8 +273,19 @@ def scaling_headroom(curves):
     return float(np.median(top[usable] / bottom[usable]))
 
 
-def draw_panel(ax, x, curves, styles, attrs, have_energy, title, ylabel):
-    """The curves of `styles` present in `curves`, on a log y axis."""
+def draw_panel(ax, x, curves, styles, attrs, have_energy, ylabel):
+    """
+    The curves of `styles` present in `curves`, on a log y axis.
+
+    A curve is plotted at the full length of `x`, with every non-finite or
+    non-positive entry replaced by NaN rather than removed. cond_skeel_x is
+    NaN at every index inside the band gap, since there is no right-hand side
+    there; deleting those points instead of masking them would pull the last
+    point before the gap and the first point after it next to each other in
+    the plotted array, and matplotlib would draw a straight segment across the
+    gap as if it were data. Matplotlib already breaks a line at a NaN value,
+    so masking rather than deleting is enough.
+    """
     drawn = 0
     for name, (label, colour, linestyle) in styles.items():
         if name not in curves:
@@ -283,14 +294,14 @@ def draw_panel(ax, x, curves, styles, attrs, have_energy, title, ylabel):
         finite = np.isfinite(y) & (y > 0)
         if not np.any(finite):
             continue
-        ax.plot(x[finite], y[finite], color=colour, ls=linestyle, label=label,
+        y_masked = np.where(finite, y, np.nan)
+        ax.plot(x, y_masked, color=colour, ls=linestyle, label=label,
                 **sweep_line(int(np.count_nonzero(finite))))
         drawn += 1
 
     ax.set_yscale("log")
     ax.set_xlabel(axis_label(have_energy))
     ax.set_ylabel(ylabel)
-    ax.set_title(title)
     ax.grid(alpha=0.3, which="both")
 
     # After the data, so the axis limits are those of the curves and an edge
@@ -369,15 +380,15 @@ def draw_ratio_panel(ax, curves, indices_curve, x_curve, points,
     return len(series)
 
 
-def draw_ladder(ax, x, curves, attrs, have_energy, title):
+def draw_ladder(ax, x, curves, attrs, have_energy):
     """The infinity-norm panel: cond_skeel_x <= cond_skeel <= kappa_inf."""
-    return draw_panel(ax, x, curves, LADDER_STYLE, attrs, have_energy, title,
+    return draw_panel(ax, x, curves, LADDER_STYLE, attrs, have_energy,
                       r"$\kappa_\infty(M)$,  $\mathrm{cond}(M)$")
 
 
-def draw_kappa2(ax, x, curves, attrs, have_energy, title):
+def draw_kappa2(ax, x, curves, attrs, have_energy):
     """The 2-norm panel, drawn alone."""
-    return draw_panel(ax, x, curves, KAPPA2_STYLE, attrs, have_energy, title,
+    return draw_panel(ax, x, curves, KAPPA2_STYLE, attrs, have_energy,
                       r"$\kappa_2(M)$")
 
 
@@ -393,24 +404,27 @@ def draw_kappa2_ratio(ax, curves, indices_curve, x_curve, points,
                             indices_exact, KAPPA2_STYLE, have_energy, attrs)
 
 
-def render_figure(outdir, filename, title, draw_value, draw_ratio, x, curves,
+def render_figure(outdir, filename, draw_value, draw_ratio, x, curves,
                   indices, attrs, have_energy, points, indices_exact, dpi):
     """
     One material's figure for one norm: the value panel alone where there is
     no exact reference, or the value panel with a shorter ratio panel below it
     where there is.
+
+    The figure carries no title; the two output files and the caption in the
+    thesis are what say which material and which norm it is.
     """
     if indices_exact is not None:
         fig, (ax_top, ax_bot) = plt.subplots(
             2, 1, figsize=(7.5, 6.4), sharex=True,
             gridspec_kw=dict(height_ratios=(3, 1)), constrained_layout=True)
-        draw_value(ax_top, x, curves, attrs, have_energy, title)
+        draw_value(ax_top, x, curves, attrs, have_energy)
         ax_top.set_xlabel("")
         draw_ratio(ax_bot, curves, indices, x, points, indices_exact,
                   have_energy, attrs)
     else:
         fig, ax_top = plt.subplots(figsize=(7.5, 4.5), constrained_layout=True)
-        draw_value(ax_top, x, curves, attrs, have_energy, title)
+        draw_value(ax_top, x, curves, attrs, have_energy)
 
     save_figure(fig, outdir / filename, dpi=dpi)
 
@@ -529,14 +543,12 @@ def main():
 
         render_figure(
             outdir, f"{material}_condition.png",
-            f"Condition number of M(E), infinity norm: {material}",
             draw_ladder, draw_ladder_ratio,
             x, curves, indices, attrs, have_energy, points, indices_exact,
             args.dpi)
 
         render_figure(
             outdir, f"{material}_condition_kappa2.png",
-            f"Condition number of M(E), 2-norm: {material}",
             draw_kappa2, draw_kappa2_ratio,
             x, curves, indices, attrs, have_energy, points, indices_exact,
             args.dpi)

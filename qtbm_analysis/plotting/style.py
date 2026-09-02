@@ -116,6 +116,20 @@ BAND_EDGE_STYLE = {
     "conduction_band_edge": ("tab:red", "conduction band edge"),
 }
 
+# Materials whose valence_band_edge/conduction_band_edge attributes are not a
+# semiconductor band gap. Graphene is gapless; the two energies recorded for it
+# are the boundaries of the window in which QTBM injects no modes at all --
+# read off the exported right-hand sides, not off a band structure -- so
+# calling them a "band edge" misdescribes the physics. cli.py's MATERIALS
+# entry for graphene documents the same distinction where the numbers are
+# defined.
+TRANSMISSION_GAP_MATERIALS = {"graphene"}
+
+TRANSMISSION_GAP_STYLE = {
+    "valence_band_edge": ("tab:blue", "transmission gap (lower edge)"),
+    "conduction_band_edge": ("tab:red", "transmission gap (upper edge)"),
+}
+
 
 def energies_of(attrs, indices):
     """
@@ -151,6 +165,12 @@ def mark_band_edges(ax, attrs, orientation="vertical", label=True):
     axis to accommodate a line carrying no data. A sweep positioned on the
     conduction edge commonly excludes the valence edge for that reason.
 
+    For a material in TRANSMISSION_GAP_MATERIALS, identified by attrs["material"],
+    the same two energies are drawn but labelled as the transmission gap rather
+    than a band edge, since that is what they are for such a material. `attrs`
+    without a "material" key, or naming a material not in that set, gets the
+    ordinary band-edge wording.
+
     Returns the list of keys actually drawn, which a caller building its own
     legend must use rather than the keys present in `attrs`, so that the legend
     names only lines the figure contains.
@@ -162,8 +182,11 @@ def mark_band_edges(ax, attrs, orientation="vertical", label=True):
     if not attrs:
         return []
     lo, hi = ax.get_xlim() if orientation == "vertical" else ax.get_ylim()
+    style = (TRANSMISSION_GAP_STYLE
+            if attrs.get("material") in TRANSMISSION_GAP_MATERIALS
+            else BAND_EDGE_STYLE)
     drawn = []
-    for key, (colour, text) in BAND_EDGE_STYLE.items():
+    for key, (colour, text) in style.items():
         if key not in attrs:
             continue
         edge = float(attrs[key])
