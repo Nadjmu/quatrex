@@ -11,6 +11,8 @@ All scripts here take the canonical option names; see
 |---|---|
 | `mpir.py` | does refinement converge, and to what accuracy: LU-IR and GMRES-IR over any solver in `../solvers/`, at any precision that solver supports |
 | `mpperf.py` | what refinement costs in runtime: the `complex64` + LU-IR solve against the `complex128` direct solve it replaces, across several solvers at a fixed `complex64` |
+| `run_overnight.py` | one batch of every accuracy run the thesis needs, over all four materials |
+| `run_perf_overnight.py` | one batch of the cost study: eight indices for every (material, n_rhs) group |
 | `sparse.py` | the earlier standalone study: fp32 SuperLU with fp64 refinement |
 | `dense.py` | the earlier standalone study: fp32 LAPACK with fp64 refinement |
 
@@ -999,7 +1001,7 @@ reported in full, since a curve assembled from differently configured runs is
 not a curve. `--experiments` restricts the pool.
 
 The summary figure itself: one group of bars per energy index, the groups
-ordered by `kappa_inf(A)` and
+ordered by number of right-hand sides and then by `kappa_inf(A)` within each,
 evenly spaced regardless of it — bars of neighbouring indices would otherwise
 overlap wherever two condition numbers are close, which near a band edge is
 most of them. Within a group each solver contributes a pair of bars in its own
@@ -1008,6 +1010,38 @@ the three stages and shaded light to dark. Reading one pair is the whole point:
 the left bar shorter than the right is the case for mixed precision at that
 conditioning, and the left bar growing past the right as `kappa_inf` rises is
 refinement giving back what the low precision won.
+
+`n_rhs` leads the ordering because that is the axis the cost data varies
+along: cost is monotone in the number of right-hand sides and flat across
+orders of magnitude of `kappa_inf`, so grouping by `n_rhs` keeps the bars that
+are comparable next to each other and leaves `kappa_inf` as the order within a
+group.
+
+### The batch driver
+
+`run_perf_overnight.py` runs the whole study unattended: eight energy indices
+for each of the twelve (material, `n_rhs`) groups that have any, one
+`mpperf.py` invocation per group, 4 solvers and 2 variants each. It pins
+`OMP_NUM_THREADS` and `OPENBLAS_NUM_THREADS` in the parent so no child can
+inherit an uncapped pool, draws each summary as its group finishes, and draws
+one pooled speedup-against-`n_rhs` figure per material at the end.
+
+    python run_perf_overnight.py --preflight   # check the index lists, run nothing
+    nohup python run_perf_overnight.py >&! .../driver.log &
+    python run_perf_overnight.py --replot      # redraw, solve nothing
+
+`--preflight` checks every index against the material file — that it exists,
+that its `n_rhs` is the group's, and that its `kappa_inf` converged — and the
+batch refuses to start if any of that fails. The three failures are silent at
+run time and each costs a group's worth of the night.
+
+A group whose repeats disagree by more than the stability limit is **measured
+again**, up to three times, and the attempt with the fewest unstable rows is
+the one drawn. Every attempt stays in the file, since numbered experiments are
+never overwritten, and `PERF_EXPERIMENT_INDEX.html` marks the superseded ones.
+Re-measuring is the way to remove a red outline from a figure; raising
+`--stability-limit` only stops the figure from saying that the node
+interfered.
 
 ---
 
