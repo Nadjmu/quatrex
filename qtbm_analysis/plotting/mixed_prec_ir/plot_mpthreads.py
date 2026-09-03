@@ -227,7 +227,6 @@ def plot(files, out_path, solvers=None):
                         hspace=0.10, wspace=0.08)
     style.plot_provenance()
     style.save_figure(fig, out_path)
-    print(f"wrote {out_path}")
 
     for material, name, why in skipped_all:
         print(f"  [note] {material} experiment {name} not drawn: {why}")
@@ -256,7 +255,6 @@ def _report(collected, path, files_drawn):
         series=series,
         config={"reference variant": REFERENCE, "refined variant": REFINED,
                 "point": "median over the indices at that thread count"})
-    print(f"wrote {path}")
 
 
 def main():
