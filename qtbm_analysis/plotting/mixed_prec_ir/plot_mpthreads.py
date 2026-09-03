@@ -192,11 +192,12 @@ def plot(files, out_path, solvers=None):
             ax_s.set_ylabel("LU-IR speedup over complex128")
 
     # One shared speedup axis, so the columns can be compared to each other
-    # and not only within themselves.
-    lo = min(l.get_ydata().min() for ax in axes[1] for l in ax.get_lines()
-             if len(l.get_ydata()))
-    hi = max(l.get_ydata().max() for ax in axes[1] for l in ax.get_lines()
-             if len(l.get_ydata()))
+    # and not only within themselves. Taken from the data rather than from the
+    # drawn artists: the break-even line is an artist too, and would pull the
+    # limits towards 1 on a panel that never goes near it.
+    every = [v for _material, data in collected for byn in data.values()
+             for _ref, speeds in byn.values() for v in speeds]
+    lo, hi = min(every + [BREAK_EVEN]), max(every + [BREAK_EVEN])
     pad = 0.05 * max(hi - lo, 0.1)
     for ax in axes[1]:
         ax.set_ylim(lo - pad, hi + pad)
