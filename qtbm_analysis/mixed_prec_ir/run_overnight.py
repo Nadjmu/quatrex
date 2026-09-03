@@ -29,6 +29,12 @@ Usage
 
 (tcsh: nohup ... & backgrounds and detaches; >&! forces the redirect past
 noclobber. Check progress with `tail -f` on that log or on EXPERIMENT_INDEX.html.)
+
+    python3 run_overnight.py --replot
+
+redraws every experiment already in the analysis files and runs nothing else,
+each with the --y-max its tier used here. That is how a change to plot_mpir.py
+reaches the figures without repeating hours of solves.
 """
 import datetime
 import os
@@ -118,6 +124,81 @@ def run_specs():
 _EXPERIMENT_RE = re.compile(r"wrote .+:/experiments/(\d+)")
 
 
+def y_max_by_config():
+    """
+    (factor_dtype, inner) -> y_max, read out of run_specs so the batch and a
+    later replot cannot drift apart. The three gmres_tol runs of a tier share
+    a y_max, which is why the key does not carry the tolerance.
+    """
+    table = {}
+    for _label, _description, extra, y_max in run_specs():
+        dtype = extra[extra.index("--factor-dtype") + 1]
+        inner = extra[extra.index("--inner") + 1] if "--inner" in extra else "lu"
+        key = (dtype, inner)
+        table[key] = max(table.get(key, 0), y_max)
+    return table
+
+
+def replot():
+    """
+    Redraw every experiment already in the analysis files, and nothing else.
+
+    The figures are a function of the stored experiment, so a change to
+    plot_mpir.py is applied by running it again -- the runs themselves cost
+    hours and do not need repeating. Each experiment keeps the --y-max its
+    tier used in the batch, so redrawn figures stay comparable with the ones
+    beside them; an experiment whose configuration matches no spec (the file
+    holds runs from before this batch) is drawn with its own recorded
+    max_iter.
+
+    EXPERIMENT_INDEX.html is not touched: it records which run wrote which
+    experiment number, and redrawing changes neither.
+    """
+    y_max = y_max_by_config()
+    drawn = failed = 0
+
+    for material in MATERIALS:
+        analysis_h5 = ANALYSIS_DIR / material / f"{material}.h5"
+        if not analysis_h5.exists():
+            print(f"  [skip] {analysis_h5} does not exist", flush=True)
+            continue
+
+        banner(f"replot: {material}")
+        listing = subprocess.run(
+            [sys.executable, str(PLOT), str(analysis_h5), "--list"],
+            capture_output=True, text=True)
+        if listing.returncode != 0:
+            print(f"  FAILED to list {analysis_h5}:\n{listing.stdout}"
+                  f"{listing.stderr}", flush=True)
+            failed += 1
+            continue
+
+        for line in listing.stdout.splitlines():
+            parts = line.split()
+            # "  NNNN  <timestamp>  <solver> <factor_dtype> <inner_label> N idx ..."
+            if len(parts) < 6 or not parts[0].isdigit():
+                continue
+            name, dtype, inner_label = parts[0], parts[3], parts[4]
+            inner = "gmres" if inner_label.upper().startswith("GMRES") else "lu"
+
+            argv = [sys.executable, str(PLOT), str(analysis_h5),
+                    "--experiment", name]
+            y = y_max.get((dtype, inner))
+            if y is not None:
+                argv += ["--y-max", str(y)]
+            print(f"  {name}  {dtype} {inner_label}"
+                  f"  y-max {y if y is not None else 'run max_iter'}", flush=True)
+            result = subprocess.run(argv, capture_output=True, text=True)
+            if result.returncode == 0:
+                drawn += 1
+            else:
+                failed += 1
+                print(f"    FAILED (exit {result.returncode}):\n"
+                      f"{result.stdout}{result.stderr}", flush=True)
+
+    banner(f"replot done: {drawn} experiments redrawn, {failed} failed")
+
+
 def banner(msg):
     ts = datetime.datetime.now().isoformat(timespec="seconds")
     print(f"\n{'=' * 78}\n{ts}  {msg}\n{'=' * 78}", flush=True)
@@ -181,6 +262,10 @@ def write_index_html(records, failures):
 
 
 def main():
+    if "--replot" in sys.argv[1:]:
+        replot()
+        return
+
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
     specs = run_specs()

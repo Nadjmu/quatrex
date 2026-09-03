@@ -30,12 +30,15 @@ unstable factorization.
 Figure 2 is the sweep, and is the figure the study exists to produce: outer
 iterations against kappa_inf(A), one point per index, blue where the run
 converged and red where it did not, with a vertical line at kappa_inf = 1/u_f
-marking the classical LU-IR requirement kappa_inf(A) u_f < 1. For GMRES-IR each
-point is additionally labelled with its mean inner-GMRES iteration count per
-correction, averaged over every outer step and right-hand side. The y axis
-runs 0 to --max-iter (the experiment's own, or --y-max to force a common
-scale), not to the largest outer_iters actually seen, so summaries from
-different solvers, precisions or experiments are comparable at a glance.
+marking the classical LU-IR requirement kappa_inf(A) u_f < 1. A GMRES-IR figure
+draws that same line in grey, as a reference rather than its own requirement:
+points to its right are where LU-IR is no longer guaranteed and GMRES-IR is
+still converging. For GMRES-IR each point is additionally labelled with its
+mean inner-GMRES iteration count per correction, averaged over every outer step
+and right-hand side. The y axis runs 0 to --max-iter (the experiment's own, or
+--y-max to force a common scale), not to the largest outer_iters actually seen,
+so summaries from different solvers, precisions or experiments are comparable
+at a glance.
 
 The iteration count is the only quantity here that decides anything: it
 multiplies the cost of the cheap low-precision factorization, so a method
@@ -133,10 +136,21 @@ def _role(variant, attrs):
 
 
 def plot_index(rows, runs_for_idx, attrs, idx, out_path):
-    """The convergence history of one energy index."""
+    """
+    The convergence history of one energy index.
+
+    The shaded band is the run's own convergence test, ferr_tol = cond(A,x) u:
+    a curve that reaches it has converged, one that flattens above it has not.
+    The number was already stated in the summary title and recorded per index
+    in the runs table, and this only draws it where the decision is actually
+    read off. It is per index, since cond(A,x) is.
+    """
     rows = sorted(rows, key=lambda r: r["outer_iteration"])
     steps = [r["outer_iteration"] for r in rows]
     u = float(attrs.get("working_u", unit_roundoff(np.complex128)))
+    refined = next((r for r in runs_for_idx
+                    if _role(r["variant"], attrs) == "refined"), None)
+    ferr_tol = float(refined.get("ferr_tol", np.nan)) if refined else np.nan
 
     fig, ax = plt.subplots(1, 1, figsize=(6.5, 4.2))
 
@@ -147,6 +161,14 @@ def plot_index(rows, runs_for_idx, attrs, idx, out_path):
         if x.size:
             ax.semilogy(x, y, color=colour, marker=marker, ls=ls, ms=4,
                         lw=1.1, label=label)
+    # Drawn after the curves so the band spans the axis the data set, and the
+    # bottom is restored afterwards because axhspan would otherwise widen it.
+    if np.isfinite(ferr_tol) and ferr_tol > 0:
+        bottom = ax.get_ylim()[0]
+        ax.axhspan(bottom, ferr_tol, color="#9E9E9E", alpha=0.18, lw=0,
+                   zorder=0,
+                   label=rf"converged: ferr < cond$(A,x)\,u$ = {ferr_tol:.1e}")
+        ax.set_ylim(bottom=bottom)
     ax.axhline(u, color="black", ls=":", lw=1.0,
                label=f"working precision $u$ = {u:.1e}")
     ax.set_xlabel("refinement step")
@@ -182,6 +204,37 @@ def _index_title(attrs, runs_for_idx, idx):
     return line
 
 
+def _theory_limits(attrs, refined):
+    """
+    kappa_inf = 1/u_f, the classical LU-IR requirement kappa_inf(A) u_f < 1,
+    as (kappa, colour, linestyle, legend label, plain-text name) -- the first
+    four for the figure, the last for the report, which cannot print TeX.
+
+    Carson and Higham, SIAM J. Sci. Comput. 40(2), 2018, section 7: the
+    correction is solved with the low-precision LU factors, so the convergence
+    factor is phi = 3n |||A^-1||L||U||| u_f and the limit is 1/u_f.
+
+    A GMRES-IR figure draws the same line in grey rather than black, because
+    there it is not that run's own requirement -- GMRES-IR solves the
+    correction at the working precision, so u_f does not bound it the same way.
+    It is drawn as a reference: points to its right are where LU-IR is no
+    longer guaranteed, and GMRES-IR still converging there is the result the
+    figure exists to show. No separate GMRES-IR limit is drawn.
+    """
+    if not refined:
+        return []
+    u_f = float(refined[0].get("u_f", np.nan))
+    if not (np.isfinite(u_f) and u_f > 0):
+        return []
+
+    lu = 1.0 / u_f
+    if str(attrs.get("inner", "")) == "gmres":
+        return [(lu, "#7F7F7F", ":", rf"LU-IR limit $1/u_f$ = {lu:.1e}",
+                 "LU-IR, kappa_inf = 1/u_f")]
+    return [(lu, "black", "--", rf"$\kappa_\infty = 1/u_f$ = {lu:.1e}",
+             "LU-IR, kappa_inf = 1/u_f")]
+
+
 def plot_summary(run_rows, attrs, out_path, y_max=None):
     """
     Outer iterations against kappa_inf(A), the whole sweep in one panel.
@@ -196,9 +249,10 @@ def plot_summary(run_rows, attrs, out_path, y_max=None):
     Colour is the verdict, not a quantity: blue where the run reached the
     accuracy of mpir.RefinementMonitor's ferr_tol, red where it did not. The
     vertical line at kappa_inf = 1/u_f is the classical LU-IR requirement
-    kappa_inf(A) u_f < 1; points to the right of it are outside what the
-    theory guarantees, which is exactly where GMRES-IR is supposed to keep
-    working and LU-IR is not.
+    kappa_inf(A) u_f < 1. On a GMRES-IR figure it is drawn grey, as a
+    reference rather than that run's own bound: points to its right are
+    outside what LU-IR is guaranteed, which is exactly where GMRES-IR is
+    supposed to keep working and LU-IR is not.
 
     For GMRES-IR each point is additionally labelled with the mean inner-GMRES
     iteration count of one correction, averaged over every (outer step, rhs
@@ -257,11 +311,10 @@ def plot_summary(run_rows, attrs, out_path, y_max=None):
                        edgecolors="white", linewidths=0.5, zorder=3,
                        label=label)
 
-    # kappa_inf = 1/u_f, the classical LU-IR requirement kappa_inf u_f < 1.
-    u_f = float(refined[0].get("u_f", np.nan))
-    if np.isfinite(u_f) and u_f > 0:
-        ax.axvline(1.0 / u_f, color="black", ls="--", lw=1.1, zorder=2,
-                   label=rf"$\kappa_\infty = 1/u_f$ = {1.0 / u_f:.1e}")
+    # kappa_inf = 1/u_f; see _theory_limits for why a GMRES-IR figure draws it
+    # grey rather than black.
+    for k, colour, ls, label, _name in _theory_limits(attrs, refined):
+        ax.axvline(k, color=colour, ls=ls, lw=1.1, zorder=2, label=label)
 
     # Mean inner-GMRES iterations per correction, for GMRES-IR only; see the
     # docstring. Points from an analysis file written before gmres_avg existed
@@ -527,6 +580,10 @@ def write_report(h5path, name, attrs, run_rows, iter_rows, out_path,
     add(f"  summary y axis      : 0 .. "
         f"{_fmt(y_max if y_max is not None else attrs.get('max_iter', '?'))}"
         f"   ({'--y-max' if y_max is not None else 'the run max_iter'})")
+    for k, _c, _ls, _label, name in _theory_limits(attrs, refined):
+        inside = int(np.sum(kap[drawable] <= k))
+        add(f"  theory limit        : {k:.2e}   ({name})")
+        add(f"    indices inside it : {inside}/{int(drawable.sum())} drawn")
     skipped = attrs.get("skipped_idx", [])
     if len(np.atleast_1d(skipped)):
         add("")
