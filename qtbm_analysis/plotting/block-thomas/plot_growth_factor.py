@@ -124,8 +124,9 @@ from matplotlib.colors import LogNorm
 import cli
 from factor_io import load_table, table_rows
 from style import (SOLVER_STYLE, DTYPE_STYLE, FP16_UNIT_ROUNDOFF, axis_label,
-                   columns_from_rows, energies_of, legend_handles,
-                   mark_band_edges, named_for_legend, save_figure, split_gaps,
+                   band_edge_legend, columns_from_rows, energies_of,
+                   legend_handles, mark_band_edges, named_for_legend,
+                   save_figure, split_gaps,
                    sweep_line, write_data_report)
 
 GROUP = "growth_factor"
@@ -201,7 +202,7 @@ def group_by_series(records, norm):
             for key, rows in sorted(grouped.items())}
 
 
-def _sweep_figure(records, attrs, material, norms, out_path, column,
+def _sweep_figure(records, attrs, norms, out_path, column,
                   title, ylabel, split_dtype=False):
     """
     A column of the growth_factor group against energy.
@@ -222,6 +223,7 @@ def _sweep_figure(records, attrs, material, norms, out_path, column,
                                       4.8 * len(norms)),
                              squeeze=False, sharey="row")
     have_energy = energies_of(attrs, [0]) is not None
+    edges = []
     solvers_present, dtypes_present = set(), set()
 
     for row_index, norm in enumerate(norms):
@@ -251,15 +253,16 @@ def _sweep_figure(records, attrs, material, norms, out_path, column,
             ax.set_xlabel(axis_label(have_energy))
             ax.grid(True, which="both", ls=":", alpha=0.4)
             if have_energy:
-                mark_band_edges(ax, attrs, label=False)
+                edges = mark_band_edges(ax, attrs, label=False)
 
     solvers = named_for_legend(_ordered(solvers_present, SOLVER_STYLE))
     dtypes_legend = _ordered(dtypes_present, DTYPE_STYLE)
     handles, labels = legend_handles(
-        solvers, [] if split_dtype else dtypes_legend)
+        solvers, [] if split_dtype else dtypes_legend,
+        extra=band_edge_legend(edges, attrs))
 
-    fig.suptitle(f"{title}  —  {material}" if split_dtype else material,
-                 fontsize=13, y=1.005)
+    if split_dtype:
+        fig.suptitle(title, fontsize=13, y=1.005)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 5),
                fontsize=8, frameon=False,
@@ -267,7 +270,7 @@ def _sweep_figure(records, attrs, material, norms, out_path, column,
     save_figure(fig, out_path, dpi=140)
 
 
-def plot(records, attrs, material, norms, out_path):
+def plot(records, attrs, norms, out_path):
     """
     Psi = ||L|| ||U|| / ||A_eff||, the precisions side by side.
 
@@ -276,12 +279,12 @@ def plot(records, attrs, material, norms, out_path):
     different matrix (s * embed(A), twice the dimension, |a|+|b| per entry), so
     its Psi is not on the same scale as the complex ones.
     """
-    _sweep_figure(records, attrs, material, norms, out_path, "loose",
+    _sweep_figure(records, attrs, norms, out_path, "loose",
                   r"$\Psi = \|L\|\,\|U\| / \|A_{\mathrm{eff}}\|$", r"$\Psi$",
                   split_dtype=True)
 
 
-def plot_residual(records, attrs, material, norms, out_path):
+def plot_residual(records, attrs, norms, out_path):
     """
     ||A_eff - LU|| / ||A_eff||, the reconstruction guard.
 
@@ -291,7 +294,7 @@ def plot_residual(records, attrs, material, norms, out_path):
     reproduce A_eff, and Psi may be trusted; values far above it mean they do
     not, and every other figure drawn from those factors must be discarded.
     """
-    _sweep_figure(records, attrs, material, norms, out_path, "resid_rel",
+    _sweep_figure(records, attrs, norms, out_path, "resid_rel",
                   r"$\|A_{\mathrm{eff}} - LU\| / \|A_{\mathrm{eff}}\|$",
                   "relative residual")
 
@@ -302,7 +305,7 @@ def plot_residual(records, attrs, material, norms, out_path):
 SCHUR_COLUMNS = ("nA", "nL", "nU")
 
 
-def plot_schur(records, attrs, material, out_path):
+def plot_schur(records, attrs, out_path):
     """
     The two factors that make up Psi.
 
@@ -352,6 +355,7 @@ def plot_schur(records, attrs, material, out_path):
                              figsize=(max(6.0, 4.6 * len(dtypes)), 9.0),
                              squeeze=False, sharey="row")
     have_energy = energies_of(attrs, [0]) is not None
+    edges = []
     solvers_present = set()
 
     for col_index, dtype in enumerate(dtypes):
@@ -392,15 +396,16 @@ def plot_schur(records, attrs, material, out_path):
             ax.set_xlabel(axis_label(have_energy))
             ax.grid(True, which="both", ls=":", alpha=0.4)
             if have_energy:
-                mark_band_edges(ax, attrs, label=False)
+                edges = mark_band_edges(ax, attrs, label=False)
 
     axes[0][0].set_ylabel(f"$\\|L\\|$  [{norm}]")
     axes[1][0].set_ylabel(f"$\\|U\\| / \\|A_{{\\mathrm{{eff}}}}\\|$  [{norm}]")
 
     solvers = named_for_legend(_ordered(solvers_present, SOLVER_STYLE))
-    handles, labels = legend_handles(solvers, [])
+    handles, labels = legend_handles(solvers, [],
+                                     extra=band_edge_legend(edges, attrs))
 
-    fig.suptitle(f"$\\Psi = \\|L\\| \\cdot \\|U\\| / \\|A\\|$  —  {material}",
+    fig.suptitle(r"$\Psi = \|L\| \cdot \|U\| / \|A\|$",
                  fontsize=13, y=1.005)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
@@ -424,7 +429,7 @@ def _runs(indices, factor=3.0):
     return [slice(a, b) for a, b in zip(bounds, bounds[1:]) if b > a]
 
 
-def plot_profile(records, attrs, material, out_path):
+def plot_profile(records, attrs, out_path):
     """
     ||L_k|| for every block k against energy, as a heat map.
 
@@ -501,7 +506,7 @@ def plot_profile(records, attrs, material, out_path):
         if mesh is not None:
             fig.colorbar(mesh, ax=ax, label=r"$\|L_k\|$", pad=0.02)
 
-    fig.suptitle(f"Block Thomas: where the multipliers grow — {material}",
+    fig.suptitle("Block Thomas: where the multipliers grow",
                  fontsize=14, y=1.02)
     fig.tight_layout()
     save_figure(fig, out_path, dpi=140)
@@ -529,7 +534,7 @@ def _eta_by_key(h5path):
     return out
 
 
-def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
+def plot_backward_vs_growth(records, attrs, h5path, out_path):
     """
     The measured backward error as a fraction of the bound the growth factor
     puts on it.
@@ -598,6 +603,7 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
     fig, axes = plt.subplots(1, len(dtypes), squeeze=False,
                              figsize=(5.8 * len(dtypes), 4.4))
     have_energy = energies_of(attrs, [0]) is not None
+    edges = []
     solvers_present = set()
 
     for column, dtype in enumerate(dtypes):
@@ -633,7 +639,7 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
         ax.set_xlabel(axis_label(have_energy))
         ax.grid(True, which="both", ls=":", alpha=0.4)
         if have_energy:
-            mark_band_edges(ax, attrs, label=False)
+            edges = mark_band_edges(ax, attrs, label=False)
 
     axes[0][0].set_ylabel(f"$\\eta_\\infty \\,/\\, [\\,u\\,(1+\\Psi)\\,]$  "
                           f"[{norm}]")
@@ -641,10 +647,11 @@ def plot_backward_vs_growth(records, attrs, material, h5path, out_path):
     solvers = named_for_legend(_ordered(solvers_present, SOLVER_STYLE))
     extra = [(plt.Line2D([], [], color="k", ls="--", lw=1.0),
               r"bound attained with $c(n)=1$")]
-    handles, labels = legend_handles(solvers, [], extra=extra)
+    handles, labels = legend_handles(solvers, [],
+                                     extra=extra + band_edge_legend(edges, attrs))
 
-    fig.suptitle(f"$\\eta_\\infty \\,/\\, [\\,u\\,(1+\\Psi)\\,]$  —  "
-                 f"{material}", fontsize=13, y=1.02)
+    fig.suptitle(r"$\eta_\infty \,/\, [\,u\,(1+\Psi)\,]$",
+                 fontsize=13, y=1.02)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 4),
                fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.08))
@@ -730,17 +737,17 @@ def main():
     present_norms = {r["norm"] for r in records}
     norms = [n for n in (args.norms or ["inf-norm"]) if n in present_norms]
     norms = norms or sorted(present_norms)
-    plot(records, attrs, material, norms,
+    plot(records, attrs, norms,
          outdir / f"{material}_growth_factor.png")
-    plot_residual(records, attrs, material, norms,
+    plot_residual(records, attrs, norms,
                   outdir / f"{material}_assembly_residual.png")
 
-    if not plot_schur(records, attrs, material,
+    if not plot_schur(records, attrs,
                       outdir / f"{material}_schur_growth.png"):
         print("no Block Thomas rows in this file; the factor-split figure "
               "needs at least one")
 
-    if not plot_backward_vs_growth(records, attrs, material, h5path,
+    if not plot_backward_vs_growth(records, attrs, h5path,
                                    outdir / f"{material}_backward_vs_growth.png"):
         print("no forward_error group in this file, or it shares no rows with "
               "growth_factor; run block-thomas/forward_error.py over the same "

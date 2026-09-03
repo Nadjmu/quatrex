@@ -76,8 +76,9 @@ import matplotlib.pyplot as plt
 import cli
 from factor_io import load_table, table_rows
 from style import (SOLVER_STYLE, DTYPE_STYLE, FP16_UNIT_ROUNDOFF, named_for_legend, axis_label,
-                   columns_from_rows, energies_of, legend_handles,
-                   mark_band_edges, save_figure, split_gaps, sweep_line,
+                   band_edge_legend, columns_from_rows, energies_of,
+                   legend_handles, mark_band_edges, save_figure, split_gaps,
+                   sweep_line,
                    write_data_report)
 
 GROUP = "forward_error"
@@ -132,10 +133,11 @@ def _sorted_dtypes(records):
     return [d for d in DTYPE_ORDER if d in present] + sorted(present - set(DTYPE_ORDER))
 
 
-def plot(records, attrs, material, out_path):
+def plot(records, attrs, out_path):
     dtypes = _sorted_dtypes(records)
     solvers = sorted({r["solver"] for r in records})
     have_energy = energies_of(attrs, [0]) is not None
+    edges = []
 
     fig, axes = plt.subplots(2, len(dtypes),
                              figsize=(5.6 * len(dtypes), 8.4), squeeze=False)
@@ -177,7 +179,7 @@ def plot(records, attrs, material, out_path):
             ax.set_xlabel(axis_label(have_energy))
             ax.grid(True, which="both", ls=":", alpha=0.4)
             if have_energy:
-                mark_band_edges(ax, attrs)
+                edges = mark_band_edges(ax, attrs, label=False)
 
     axes[0][0].set_ylabel(r"$\omega$")
     axes[1][0].set_ylabel(r"$\eta_\infty$")
@@ -185,9 +187,9 @@ def plot(records, attrs, material, out_path):
     handles, labels = legend_handles(
         named_for_legend(solvers), [],
         extra=[(plt.Line2D([], [], color="k", lw=1.0, ls="--"),
-               "unit roundoff u")])
+               "unit roundoff u")] + band_edge_legend(edges, attrs))
 
-    fig.suptitle(f"componentwise and normwise backward error — {material}",
+    fig.suptitle("componentwise and normwise backward error",
                  fontsize=13, y=1.01)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 7),
@@ -256,7 +258,7 @@ def main():
     if not records:
         raise SystemExit("no rows remain after filtering")
 
-    plot(records, attrs, material, outdir / f"{material}_backward_error.png")
+    plot(records, attrs, outdir / f"{material}_backward_error.png")
     write_report(records, attrs, material, h5path, args,
                  outdir / f"{material}_backward_error_data.txt",
                  figures=[f"{material}_backward_error.png"])

@@ -111,7 +111,7 @@ def block_boundaries(group, n):
     return [int(e) for e in edges if 0 < e < n]
 
 
-def plot(groups, idx, dtype_name, material, attrs, dynamic_range, out_path):
+def plot(groups, idx, dtype_name, attrs, dynamic_range, out_path):
     """One 3x3 figure: rows are solvers present in `groups`, columns A_eff/L/U."""
     rows = [s for s in ROWS if s in groups]
 
@@ -149,7 +149,6 @@ def plot(groups, idx, dtype_name, material, attrs, dynamic_range, out_path):
         group = groups[solver]
         n = int(group.attrs["n"])
         blocks = block_boundaries(group, n) if solver == "block-thomas" else []
-        resid = float(group.attrs.get("resid_rel", np.nan))
         for c, name in enumerate(COLUMNS):
             ax = axes[r][c]
             ax.set_facecolor("white")
@@ -160,18 +159,14 @@ def plot(groups, idx, dtype_name, material, attrs, dynamic_range, out_path):
                 # Grey, not white: the background is white now.
                 ax.axhline(edge - 0.5, color="0.45", lw=0.3, alpha=0.6)
                 ax.axvline(edge - 0.5, color="0.45", lw=0.3, alpha=0.6)
-        axes[r][0].set_ylabel(
-            f"{cli.label(solver)}\n"
-            r"$\|A_{\mathrm{eff}}-LU\|/\|A_{\mathrm{eff}}\|$ = "
-            f"{resid:.1e}",
-            fontsize=10)
+        # The solver name alone. The material, the energy and the precision are
+        # stated in the caption of the figure in the text, and the
+        # reconstruction residual is a guard reported in the data file rather
+        # than a quantity this figure is about.
+        axes[r][0].set_ylabel(cli.label(solver), fontsize=11)
 
     fig.colorbar(image, ax=axes, label=r"$\log_{10}|\cdot|$",
                  fraction=0.02, pad=0.02)
-    energy = energies_of(attrs, [idx])
-    position = f"E = {float(energy[0]):.4f} eV" if energy is not None \
-        else f"idx {idx}"
-    fig.suptitle(f"{material}  {position}  {dtype_name}", fontsize=14)
     save_figure(fig, out_path, dpi=160)
 
     return _panel_rows(panels, groups, idx, dtype_name, attrs)
@@ -284,8 +279,7 @@ def main():
         report_rows = []
         for (idx, dtype_name), groups in found:
             report_rows.extend(plot(
-                groups, idx, dtype_name, material, group_attrs,
-                args.dynamic_range,
+                groups, idx, dtype_name, group_attrs, args.dynamic_range,
                 outdir / f"{material}_E{idx}_{dtype_name}_lu.png"))
 
         write_report(h5path, material,

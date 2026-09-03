@@ -86,7 +86,7 @@ def read_metrics(h5path):
             attrs)
 
 
-def plot_residual_and_forward_error(m, attrs, material, out_path):
+def plot_residual_and_forward_error(m, attrs, out_path):
     """Residual and forward error of both implementations on one axis."""
     fig, ax = plt.subplots(figsize=(9, 5))
     x = energies_of(attrs, m["idx"])
@@ -108,15 +108,14 @@ def plot_residual_and_forward_error(m, attrs, material, out_path):
         mark_band_edges(ax, attrs)
     ax.set_xlabel(axis_label(have_energy))
     ax.set_ylabel("relative error")
-    ax.set_title(f"Half-precision Block Thomas: backward and forward error "
-                 f"— {material}")
+    ax.set_title("Half-precision Block Thomas: backward and forward error")
     ax.legend(fontsize=8)
     ax.grid(True, which="both", alpha=0.3)
     fig.tight_layout()
     save_figure(fig, out_path)
 
 
-def plot_forward_error(m, attrs, material, out_path):
+def plot_forward_error(m, attrs, out_path):
     """Forward error of both half-precision variants against complex64."""
     fig, ax = plt.subplots(figsize=(9, 5))
     x = energies_of(attrs, m["idx"])
@@ -134,15 +133,14 @@ def plot_forward_error(m, attrs, material, out_path):
         mark_band_edges(ax, attrs)
     ax.set_xlabel(axis_label(have_energy))
     ax.set_ylabel(r"$\|x - x_{128}\| \,/\, \|x_{128}\|$")
-    ax.set_title(f"Forward error relative to the complex128 solution "
-                 f"— {material}")
+    ax.set_title("Forward error relative to the complex128 solution")
     ax.legend(fontsize=8)
     ax.grid(True, which="both", alpha=0.3)
     fig.tight_layout()
     save_figure(fig, out_path)
 
 
-def plot_error_vs_condition(m, material, out_path):
+def plot_error_vs_condition(m, out_path):
     """
     Forward error against kappa_2(M), with the reference line kappa_2 * u.
 
@@ -170,7 +168,7 @@ def plot_error_vs_condition(m, material, out_path):
               label=r"$\kappa_2(M)\,u_{16}$")
     ax.set_xlabel(r"$\kappa_2(M)$ (full SVD)")
     ax.set_ylabel(r"$\|x - x_{128}\| \,/\, \|x_{128}\|$")
-    ax.set_title(f"Forward error against conditioning — {material}")
+    ax.set_title("Forward error against conditioning")
     ax.legend(fontsize=8)
     ax.grid(True, which="both", alpha=0.3)
     fig.tight_layout()
@@ -220,13 +218,13 @@ def main():
     outdir = Path(args.outdir) if args.outdir else h5path.parent
 
     m, attrs = read_metrics(h5path)
-    plot_residual_and_forward_error(m, attrs, material,
+    plot_residual_and_forward_error(m, attrs,
                                     outdir / f"{material}_relres_fwderr.png")
-    plot_forward_error(m, attrs, material,
+    plot_forward_error(m, attrs,
                        outdir / f"{material}_forward_accuracy.png")
     figures = [f"{material}_relres_fwderr.png",
                f"{material}_forward_accuracy.png"]
-    if plot_error_vs_condition(m, material,
+    if plot_error_vs_condition(m,
                                outdir / f"{material}_error_vs_condition.png"):
         figures.append(f"{material}_error_vs_condition.png")
     else:

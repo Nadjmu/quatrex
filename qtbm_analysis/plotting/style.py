@@ -43,6 +43,7 @@ legend_handles(solvers, dtypes, ...) Proxy artists for a combined legend.
 energies_of(attrs, indices)          Energies in eV, or None if unavailable.
 axis_label(have_energy)              Axis label matching what was plotted.
 mark_band_edges(ax, attrs, ...)      Vertical lines at the two band edges.
+band_edge_legend(keys, attrs)        Legend entries naming the edges drawn.
 split_gaps(indices, x, *series)      NaN-break series where the sweep skips indices.
 sweep_line(n_points, weight)         Line kwargs scaled to the sweep density.
 save_figure(fig, path, dpi)          Create the parent directory, write, close.
@@ -197,6 +198,26 @@ def mark_band_edges(ax, attrs, orientation="vertical", label=True):
              label=text if label else None)
         drawn.append(key)
     return drawn
+
+
+def band_edge_legend(keys, attrs):
+    """
+    (artist, label) pairs naming the band edge lines, for the `extra` argument
+    of legend_handles.
+
+    `keys` is what mark_band_edges returned, so only edges the figure actually
+    contains are named, and `attrs` selects the wording: a material in
+    TRANSMISSION_GAP_MATERIALS gets the transmission gap reading of the same
+    two energies rather than the band-edge one.
+    """
+    style = (TRANSMISSION_GAP_STYLE
+             if (attrs or {}).get("material") in TRANSMISSION_GAP_MATERIALS
+             else BAND_EDGE_STYLE)
+    out = []
+    for key in dict.fromkeys(keys):
+        colour, text = style[key]
+        out.append((Line2D([], [], color=colour, ls="--", lw=1.0), text))
+    return out
 
 
 def solver_label(key):

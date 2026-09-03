@@ -84,7 +84,8 @@ from matplotlib.lines import Line2D
 import cli
 from factor_io import load_table, table_rows
 from style import (SOLVER_STYLE, DTYPE_STYLE, axis_label, columns_from_rows,
-                   energies_of, legend_handles, mark_band_edges,
+                   band_edge_legend, energies_of, legend_handles,
+                   mark_band_edges,
                    named_for_legend, save_figure, split_gaps, sweep_line,
                    write_data_report)
 
@@ -139,7 +140,7 @@ def _series(records):
     return grouped
 
 
-def plot(records, attrs, material, out_path):
+def plot(records, attrs, out_path):
     """
     The measured forward error against energy, all precisions on one axis.
 
@@ -178,20 +179,20 @@ def plot(records, attrs, material, out_path):
     ax.set_ylabel(r"$\|\hat{x}-x\|_\infty / \|x\|_\infty$")
     ax.set_xlabel(axis_label(have_energy))
     ax.grid(True, which="both", ls=":", alpha=0.4)
-    if have_energy:
-        mark_band_edges(ax, attrs)
+    edges = mark_band_edges(ax, attrs, label=False) if have_energy else []
 
-    handles, labels = legend_handles(named_for_legend(solvers), dtypes)
+    handles, labels = legend_handles(named_for_legend(solvers), dtypes,
+                                     extra=band_edge_legend(edges, attrs))
 
-    fig.suptitle(f"$\\|\\hat{{x}}-x\\|_\\infty / \\|x\\|_\\infty$  —  "
-                 f"{material}", fontsize=13, y=1.0)
+    fig.suptitle(r"$\|\hat{x}-x\|_\infty / \|x\|_\infty$",
+                 fontsize=13, y=1.0)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
                fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.08))
     save_figure(fig, out_path, dpi=140)
 
 
-def plot_ratios(records, attrs, material, out_path):
+def plot_ratios(records, attrs, out_path):
     """
     The forward error as a fraction of the two bounds that predict it.
 
@@ -213,6 +214,7 @@ def plot_ratios(records, attrs, material, out_path):
     dtypes = _sorted_dtypes(records)
     solvers = sorted({r["solver"] for r in records})
     have_energy = energies_of(attrs, [0]) is not None
+    edges = []
     by_dtype_solver = _series(records)
 
     fig, axes = plt.subplots(2, len(dtypes),
@@ -247,7 +249,7 @@ def plot_ratios(records, attrs, material, out_path):
             ax.set_xlabel(axis_label(have_energy))
             ax.grid(True, which="both", ls=":", alpha=0.4)
             if have_energy:
-                mark_band_edges(ax, attrs)
+                edges = mark_band_edges(ax, attrs, label=False)
 
     axes[0][0].set_ylabel(r"$\frac{\|\hat{x}-x\|_\infty / \|x\|_\infty}"
                           r"{\kappa_\infty(A)\,\eta_\infty}$", fontsize=16)
@@ -255,13 +257,14 @@ def plot_ratios(records, attrs, material, out_path):
                           r"{\mathrm{cond}(A,x)\,\omega}$", fontsize=16)
 
     extra = [(Line2D([], [], color="k", ls="--", lw=1.0), "bound attained")]
-    handles, labels = legend_handles(named_for_legend(solvers), [], extra=extra)
+    handles, labels = legend_handles(named_for_legend(solvers), [],
+                                     extra=extra + band_edge_legend(edges, attrs))
 
     fig.suptitle(
         r"top  $\|\hat{x}-x\|_\infty/\|x\|_\infty \,/\, "
         r"[\kappa_\infty(A)\,\eta_\infty]$" + "\n"
         r"bottom  $\|\hat{x}-x\|_\infty/\|x\|_\infty \,/\, "
-        r"[\mathrm{cond}(A,x)\,\omega]$" + f"\n{material}", fontsize=11, y=1.04)
+        r"[\mathrm{cond}(A,x)\,\omega]$", fontsize=11, y=1.04)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
                fontsize=8, frameon=False, bbox_to_anchor=(0.5, -0.05))
@@ -329,8 +332,8 @@ def main():
     if not records:
         raise SystemExit("no rows remain after filtering")
 
-    plot(records, attrs, material, outdir / f"{material}_forward_error.png")
-    plot_ratios(records, attrs, material,
+    plot(records, attrs, outdir / f"{material}_forward_error.png")
+    plot_ratios(records, attrs,
                 outdir / f"{material}_forward_bound_ratio.png")
     write_report(records, attrs, material, h5path, args,
                  outdir / f"{material}_forward_error_data.txt",
