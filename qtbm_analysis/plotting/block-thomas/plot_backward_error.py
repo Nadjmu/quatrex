@@ -189,7 +189,8 @@ def plot(records, attrs, out_path):
         extra=[(plt.Line2D([], [], color="k", lw=1.0, ls="--"),
                "unit roundoff u")] + band_edge_legend(edges, attrs))
 
-    fig.suptitle("componentwise and normwise backward error",
+    fig.suptitle(r"componentwise and normwise backward error  "
+                 r"$\omega$ and $\eta_\infty$",
                  fontsize=13, y=1.01)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 7),

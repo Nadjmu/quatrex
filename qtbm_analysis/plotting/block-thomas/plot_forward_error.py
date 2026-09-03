@@ -184,7 +184,8 @@ def plot(records, attrs, out_path):
     handles, labels = legend_handles(named_for_legend(solvers), dtypes,
                                      extra=band_edge_legend(edges, attrs))
 
-    fig.suptitle(r"$\|\hat{x}-x\|_\infty / \|x\|_\infty$",
+    fig.suptitle(r"forward error  "
+                 r"$\|\hat{x}-x\|_\infty / \|x\|_\infty$",
                  fontsize=13, y=1.0)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),

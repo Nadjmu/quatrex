@@ -77,9 +77,9 @@ conclusion for these matrices and merely doubles the figure height; --norms
 restores it when a specific reason to compare the two arises. Figures 3 and 4
 follow whichever norm is drawn first, since their identities hold in both.
 
-Panel titles carry the formula drawn and nothing else; the norm is appended to
-the y-label, and the precision is the column title where a figure has one
-column per precision. Every legend is shared and placed below its figure: one
+Panel titles name the quantity drawn and the formula for it; the norm is
+appended to the y-label, and the precision is the column title where a figure
+has one column per precision. Every legend is shared and placed below its figure: one
 colour per solver, one line style per precision.
 
 Output
@@ -207,8 +207,8 @@ def _sweep_figure(records, attrs, norms, out_path, column,
     """
     A column of the growth_factor group against energy.
 
-    `column` names the column to draw, `title` and `ylabel` its labels; the
-    norm is appended to `ylabel`, since the title carries the formula alone.
+    `column` names the column to draw, `title` and `ylabel` its labels. The
+    norm is appended to `ylabel`, so that `title` carries the quantity alone.
 
     With split_dtype the precisions present go side by side, one panel column
     each, with the precision as the panel title; the y-axes are shared down
@@ -280,7 +280,7 @@ def plot(records, attrs, norms, out_path):
     its Psi is not on the same scale as the complex ones.
     """
     _sweep_figure(records, attrs, norms, out_path, "loose",
-                  r"$\Psi = \|L\|\,\|U\| / \|A_{\mathrm{eff}}\|$", r"$\Psi$",
+                  r"$\Psi = \|L\|\,\|U\| / \|A\|$", r"$\Psi$",
                   split_dtype=True)
 
 
@@ -295,6 +295,7 @@ def plot_residual(records, attrs, norms, out_path):
     not, and every other figure drawn from those factors must be discarded.
     """
     _sweep_figure(records, attrs, norms, out_path, "resid_rel",
+                  r"relative residual  "
                   r"$\|A_{\mathrm{eff}} - LU\| / \|A_{\mathrm{eff}}\|$",
                   "relative residual")
 
@@ -399,13 +400,13 @@ def plot_schur(records, attrs, out_path):
                 edges = mark_band_edges(ax, attrs, label=False)
 
     axes[0][0].set_ylabel(f"$\\|L\\|$  [{norm}]")
-    axes[1][0].set_ylabel(f"$\\|U\\| / \\|A_{{\\mathrm{{eff}}}}\\|$  [{norm}]")
+    axes[1][0].set_ylabel(f"$\\|U\\| / \\|A\\|$  [{norm}]")
 
     solvers = named_for_legend(_ordered(solvers_present, SOLVER_STYLE))
     handles, labels = legend_handles(solvers, [],
                                      extra=band_edge_legend(edges, attrs))
 
-    fig.suptitle(r"$\Psi = \|L\| \cdot \|U\| / \|A\|$",
+    fig.suptitle(r"Decomposition of $\Psi$ into $\|L\|$ and $\|U\| / \|A\|$",
                  fontsize=13, y=1.005)
     fig.tight_layout()
     fig.legend(handles, labels, loc="lower center", ncol=min(len(labels), 6),
