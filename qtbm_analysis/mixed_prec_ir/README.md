@@ -1029,6 +1029,24 @@ one pooled speedup-against-`n_rhs` figure per material at the end.
     python run_perf_overnight.py --preflight   # check the index lists, run nothing
     nohup python run_perf_overnight.py >&! .../driver.log &
     python run_perf_overnight.py --replot      # redraw, solve nothing
+    python run_perf_overnight.py --threads 2   # a different cap
+
+`--threads` is not a tuning knob. Threading speeds up the factorization, which
+is what `u_f` halves, but not the `complex128` residual, which is memory
+bound, so the thread count moves the verdict and not just the runtime. On
+si-bulk index 1864, `complex128` Block Thomas and the LU-IR speedup beside it:
+
+| threads | 1 | 2 | 4 | 8 | 16 | 32 |
+|---|---|---|---|---|---|---|
+| `c128` ms | 224.3 | 150.4 | 103.0 | 81.4 | 77.4 | 83.7 |
+| speedup | 1.06 | 1.07 | 0.97 | 0.79 | 0.83 | 0.87 |
+
+Refinement wins at one and two threads and loses from four up. Carbon-nanotube
+is flat over the same range (9.2–9.6 ms): its blocks are 33×33, below the size
+at which OpenBLAS splits the work at all. The default 8 is near the floor for
+the large materials, harmless for the small ones, and one fixed value across
+the four keeps them comparable. `mpperf.py` records the cap in every
+experiment either way.
 
 `--preflight` checks every index against the material file — that it exists,
 that its `n_rhs` is the group's, and that its `kappa_inf` converged — and the

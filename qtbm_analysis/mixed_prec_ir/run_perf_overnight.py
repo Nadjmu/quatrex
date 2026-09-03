@@ -56,6 +56,11 @@ automatically before the batch as well.
     python3 run_perf_overnight.py --replot
 
 redraws every experiment this batch wrote and runs no solves.
+
+    python3 run_perf_overnight.py --threads 2
+
+runs the batch at a different thread cap. See the comment on THREADS: the
+count changes which precision wins, not only how long the batch takes.
 """
 import argparse
 import datetime
@@ -69,7 +74,38 @@ from pathlib import Path
 # parent, so every child inherits it. mpperf.py deliberately never sets these
 # -- it reports what it was given -- and an unpinned OpenBLAS on this node
 # costs up to 68x on a Block Thomas factorization.
-THREADS = "8"
+#
+# The count is not a tuning detail. Threading speeds up the factorization,
+# which is what u_f halves, but not the complex128 residual, which is memory
+# bound, so it moves the answer rather than just the runtime. Measured on
+# si-bulk idx 1864, complex128 Block Thomas and the LU-IR speedup beside it:
+#
+#     threads     1      2      4      8     16     32
+#     c128    224.3  150.4  103.0   81.4   77.4   83.7  ms
+#     speedup  1.06   1.07   0.97   0.79   0.83   0.87
+#
+# Refinement wins at one and two threads and loses from four up. On
+# carbon-nanotube the whole curve is flat (9.2-9.6 ms from 1 to 16): its
+# blocks are 33x33, below the size at which OpenBLAS splits the work at all.
+# 8 is the default because it is near the floor for the large materials,
+# harmless for the small ones, and one fixed value keeps the four materials
+# comparable. Whatever is chosen, mpperf.py records it in every experiment.
+#
+# Parsed before argparse because the environment must be set before numpy or
+# any solver library is imported; too late once a pool exists.
+def _threads_from_argv(default="8"):
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a == "--threads" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--threads="):
+            return a.split("=", 1)[1]
+    return default
+
+
+THREADS = _threads_from_argv()
+if not THREADS.isdigit() or int(THREADS) < 1:
+    sys.exit(f"--threads must be a positive integer, got {THREADS!r}")
 os.environ["OMP_NUM_THREADS"] = THREADS
 os.environ["OPENBLAS_NUM_THREADS"] = THREADS
 
@@ -410,6 +446,11 @@ def main():
                     help="redraw this batch's experiments and run no solves")
     ap.add_argument("--force", action="store_true",
                     help="run the batch even if the preflight found problems")
+    ap.add_argument("--threads", default=THREADS, metavar="N",
+                    help=f"OMP_NUM_THREADS and OPENBLAS_NUM_THREADS for every "
+                         f"run (default {THREADS}). Read before argparse, "
+                         f"since the cap must be set before numpy is "
+                         f"imported; listed here so --help shows it")
     args = ap.parse_args()
 
     if args.replot:
