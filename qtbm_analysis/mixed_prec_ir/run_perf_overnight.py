@@ -94,18 +94,32 @@ from pathlib import Path
 # Parsed before argparse because the environment must be set before numpy or
 # any solver library is imported; too late once a pool exists.
 def _threads_from_argv(default="8"):
+    """
+    The values of --threads, as a list of strings, without argparse.
+
+    More than one means a sweep: every group is measured once at each count.
+    The parent process does no arithmetic itself, so its own cap only matters
+    for the single-count case, where it is what the children inherit.
+    """
     argv = sys.argv[1:]
     for i, a in enumerate(argv):
-        if a == "--threads" and i + 1 < len(argv):
-            return argv[i + 1]
+        if a == "--threads":
+            rest = []
+            for b in argv[i + 1:]:
+                if b.startswith("-"):
+                    break
+                rest.append(b)
+            return rest or [default]
         if a.startswith("--threads="):
-            return a.split("=", 1)[1]
-    return default
+            return a.split("=", 1)[1].split(",")
+    return [default]
 
 
-THREADS = _threads_from_argv()
-if not THREADS.isdigit() or int(THREADS) < 1:
-    sys.exit(f"--threads must be a positive integer, got {THREADS!r}")
+THREAD_LIST = _threads_from_argv()
+for _t in THREAD_LIST:
+    if not _t.isdigit() or int(_t) < 1:
+        sys.exit(f"--threads takes positive integers, got {_t!r}")
+THREADS = THREAD_LIST[0]
 os.environ["OMP_NUM_THREADS"] = THREADS
 os.environ["OPENBLAS_NUM_THREADS"] = THREADS
 
@@ -114,6 +128,7 @@ import h5py  # noqa: E402  (after the thread cap, before anything numeric)
 HERE = Path(__file__).resolve().parent
 MPPERF = HERE / "mpperf.py"
 PLOT = HERE.parent / "plotting" / "mixed_prec_ir" / "plot_mpperf.py"
+THREAD_PLOT = HERE.parent / "plotting" / "mixed_prec_ir" / "plot_mpthreads.py"
 HDF5_DIR = Path("/scratch/yimili/matrices2/hdf5")
 ANALYSIS_DIR = Path("/scratch/yimili/mixed-precision-IR")
 LOG_DIR = Path("/scratch/yimili/mpperf_overnight_logs")
@@ -179,9 +194,24 @@ def groups():
     return out
 
 
-def perf_h5(material):
+def out_root(threads):
+    """
+    Where one thread count's results go.
+
+    A single count writes to ANALYSIS_DIR, which is where the 8-thread batch
+    already is. A sweep writes each count to its own t<N>/ below it, so that
+    two counts never share a file: a pooled figure drawn over one file would
+    otherwise put measurements from different machines on the same line.
+    """
+    if len(THREAD_LIST) == 1:
+        return ANALYSIS_DIR
+    return ANALYSIS_DIR / f"t{threads}"
+
+
+def perf_h5(material, threads=None):
     """Where mpperf.py writes this material's performance file."""
-    return ANALYSIS_DIR / material / f"{material}_perf.h5"
+    return (out_root(threads if threads is not None else THREADS)
+            / material / f"{material}_perf.h5")
 
 
 def banner(msg):
@@ -258,7 +288,7 @@ def preflight():
     return problems
 
 
-def experiment_attrs(material, name):
+def experiment_attrs(material, name, threads):
     """
     n_unstable and the row count of one written experiment.
 
@@ -266,13 +296,13 @@ def experiment_attrs(material, name):
     the stability verdict as an attribute, so this cannot drift from what the
     run actually decided.
     """
-    with h5py.File(perf_h5(material), "r") as f:
+    with h5py.File(perf_h5(material, threads), "r") as f:
         g = f["experiments"][name]
         return (int(g.attrs.get("n_unstable", -1)),
                 int(g["runs"]["idx"].shape[0]))
 
 
-def run_group(material, rhs, indices, attempt, log_dir):
+def run_group(material, rhs, indices, attempt, log_dir, threads):
     """
     One mpperf.py invocation. Returns (experiment_name, n_unstable, n_rows,
     log_path), with experiment_name None if the run failed or wrote nothing.
@@ -280,17 +310,25 @@ def run_group(material, rhs, indices, attempt, log_dir):
     log = log_dir / f"{material}__rhs{rhs}__try{attempt}.log"
     argv = [sys.executable, str(MPPERF), str(HDF5_DIR / f"{material}.h5"),
             "--material", material,
-            "--outdir", str(ANALYSIS_DIR),
+            "--outdir", str(out_root(threads)),
             "--idx", *[str(i) for i in indices],
             "--solvers", *SOLVERS,
             "--inner", INNER,
             "--repeats", REPEATS,
             "--reduce", REDUCE]
 
+    # The cap is read when numpy is imported, so it can only be set by the
+    # process that is about to do the work, never changed inside one.
+    env = dict(os.environ)
+    env["OMP_NUM_THREADS"] = str(threads)
+    env["OPENBLAS_NUM_THREADS"] = str(threads)
+
     with open(log, "w") as f:
-        f.write(" ".join(argv) + "\n\n")
+        f.write(f"OMP_NUM_THREADS={threads} OPENBLAS_NUM_THREADS={threads} "
+                + " ".join(argv) + "\n\n")
         f.flush()
-        result = subprocess.run(argv, stdout=f, stderr=subprocess.STDOUT)
+        result = subprocess.run(argv, stdout=f, stderr=subprocess.STDOUT,
+                                env=env)
 
     if result.returncode != 0:
         print(f"    FAILED (exit {result.returncode}) -- see {log}", flush=True)
@@ -302,14 +340,14 @@ def run_group(material, rhs, indices, attempt, log_dir):
         return None, -1, 0, log
 
     name = f"{int(match.group(1)):04d}"
-    n_unstable, n_rows = experiment_attrs(material, name)
+    n_unstable, n_rows = experiment_attrs(material, name, threads)
     return name, n_unstable, n_rows, log
 
 
-def draw(material, name, log_dir, label):
+def draw(material, name, log_dir, label, threads):
     """Draw one experiment's summary figure and report."""
     plog = log_dir / f"{label}__plot.log"
-    argv = [sys.executable, str(PLOT), str(perf_h5(material)),
+    argv = [sys.executable, str(PLOT), str(perf_h5(material, threads)),
             "--experiment", name]
     ymax = YMAX.get(material)
     if ymax is not None:
@@ -324,7 +362,7 @@ def draw(material, name, log_dir, label):
     return r.returncode == 0
 
 
-def draw_nrhs(material, names, log_dir):
+def draw_nrhs(material, names, log_dir, threads):
     """
     The pooled speedup-against-n_rhs figure for one material.
 
@@ -337,7 +375,7 @@ def draw_nrhs(material, names, log_dir):
               f"figure needs at least two", flush=True)
         return
     plog = log_dir / f"{material}__nrhs__plot.log"
-    argv = [sys.executable, str(PLOT), str(perf_h5(material)),
+    argv = [sys.executable, str(PLOT), str(perf_h5(material, threads)),
             "--nrhs", "--experiments", *names]
     with open(plog, "w") as f:
         f.write(" ".join(argv) + "\n\n")
@@ -384,9 +422,11 @@ def write_index_html(records, failures):
         parts.append(f"<p><code>{perf_h5(material)}</code></p>")
         parts.append("<table><tr><th>experiment</th><th>n_rhs</th>"
                      "<th>indices</th><th>rows</th><th>unstable</th>"
-                     "<th>attempt</th><th>y-max</th><th>started</th>"
-                     "<th>log</th></tr>")
-        for r in sorted(rows, key=lambda r: (r["rhs"], int(r["experiment"]))):
+                     "<th>threads</th><th>attempt</th><th>y-max</th>"
+                     "<th>started</th><th>log</th></tr>")
+        for r in sorted(rows, key=lambda r: (int(r.get("threads", 8)),
+                                            r["rhs"],
+                                            int(r["experiment"]))):
             cls = " class='old'" if r["superseded"] else (
                 " class='warn'" if r["n_unstable"] else "")
             state = ("superseded" if r["superseded"]
@@ -396,6 +436,7 @@ def write_index_html(records, failures):
                          f"<td>{' '.join(str(i) for i in r['indices'])}</td>"
                          f"<td>{r['n_rows']}</td>"
                          f"<td>{state}</td>"
+                         f"<td>{r.get('threads', THREADS)}</td>"
                          f"<td>{r['attempt']} of {MAX_ATTEMPTS}</td>"
                          f"<td>{YMAX.get(material) or 'auto'}</td>"
                          f"<td>{r['timestamp']}</td>"
@@ -467,11 +508,12 @@ def main():
                     help="redraw this batch's experiments and run no solves")
     ap.add_argument("--force", action="store_true",
                     help="run the batch even if the preflight found problems")
-    ap.add_argument("--threads", default=THREADS, metavar="N",
-                    help=f"OMP_NUM_THREADS and OPENBLAS_NUM_THREADS for every "
-                         f"run (default {THREADS}). Read before argparse, "
-                         f"since the cap must be set before numpy is "
-                         f"imported; listed here so --help shows it")
+    ap.add_argument("--threads", nargs="+", default=THREAD_LIST, metavar="N",
+                    help=f"OMP_NUM_THREADS and OPENBLAS_NUM_THREADS (default "
+                         f"{THREADS}). Several values measure every group "
+                         f"once at each count, into t<N>/ directories. Read "
+                         f"before argparse, since the cap must be set before "
+                         f"numpy is imported; listed here so --help shows it")
     args = ap.parse_args()
 
     if args.replot:
@@ -490,28 +532,29 @@ def main():
               "why this is checked first.", flush=True)
         sys.exit(1)
 
-    todo = groups()
+    todo = [(t, m, r, i) for t in THREAD_LIST for m, r, i in groups()]
     records, failures = [], []
-    kept_by_material = {}
+    kept = {}                      # (threads, material) -> [experiment names]
     done = 0
 
-    for material, rhs, indices in todo:
+    for threads, material, rhs, indices in todo:
         done += 1
         ts = datetime.datetime.now().isoformat(timespec="seconds")
         banner(f"[{done}/{len(todo)}] {material}  n_rhs={rhs}  "
-               f"{len(indices)} indices")
+               f"{len(indices)} indices  threads={threads}")
 
         attempts = []
         for attempt in range(1, MAX_ATTEMPTS + 1):
             print(f"  attempt {attempt} of {MAX_ATTEMPTS}", flush=True)
             name, n_unstable, n_rows, log = run_group(
-                material, rhs, indices, attempt, LOG_DIR)
+                material, rhs, indices, attempt, LOG_DIR, threads)
             if name is None:
                 failures.append(dict(material=material, rhs=rhs,
-                                     timestamp=ts, log=log))
+                                     threads=threads, timestamp=ts, log=log))
                 write_index_html(records, failures)
                 break
             attempts.append(dict(material=material, rhs=rhs, indices=indices,
+                                 threads=threads,
                                  experiment=name, n_unstable=n_unstable,
                                  n_rows=n_rows, attempt=attempt,
                                  timestamp=ts, log=log, superseded=False))
@@ -535,19 +578,45 @@ def main():
             print(f"  still {best['n_unstable']} unstable row(s) after "
                   f"{len(attempts)} attempt(s); drawing experiment "
                   f"{best['experiment']} with them outlined", flush=True)
-        draw(material, best["experiment"], LOG_DIR, f"{material}__rhs{rhs}")
-        kept_by_material.setdefault(material, []).append(best["experiment"])
+        draw(material, best["experiment"], LOG_DIR,
+             f"t{threads}__{material}__rhs{rhs}", threads)
+        kept.setdefault((threads, material), []).append(best["experiment"])
         write_index_html(records, failures)
 
-    for material, names in kept_by_material.items():
-        banner(f"pooled n_rhs figure: {material}")
-        draw_nrhs(material, names, LOG_DIR)
+    for (threads, material), names in kept.items():
+        banner(f"pooled n_rhs figure: {material}  threads={threads}")
+        draw_nrhs(material, names, LOG_DIR, threads)
 
-    kept = [r for r in records if not r["superseded"]]
-    unstable = sum(r["n_unstable"] for r in kept)
-    banner(f"batch done: {len(kept)}/{len(todo)} groups measured, "
+    if len(THREAD_LIST) > 1:
+        draw_threads()
+
+    good = [r for r in records if not r["superseded"]]
+    unstable = sum(r["n_unstable"] for r in good)
+    banner(f"batch done: {len(good)}/{len(todo)} groups measured, "
            f"{len(failures)} failed, {unstable} unstable row(s) remaining "
            f"-- see {INDEX_HTML}")
+
+
+def draw_threads():
+    """
+    The speedup-against-thread-count figure, one per n_rhs.
+
+    One figure per n_rhs rather than one for everything: speedup falls with
+    n_rhs as well as with the thread count, so a curve pooled over several
+    n_rhs would mix the two effects and could not be read as either.
+    """
+    every_rhs = sorted({rhs for (_m, rhs) in SELECTION})
+    for rhs in every_rhs:
+        materials = [m for (m, r) in SELECTION if r == rhs]
+        files = [str(perf_h5(m, t)) for t in THREAD_LIST for m in materials
+                 if perf_h5(m, t).exists()]
+        if not files:
+            continue
+        banner(f"thread figure: n_rhs={rhs}")
+        argv = [sys.executable, str(THREAD_PLOT), *files,
+                "--n-rhs", str(rhs), "--outdir", str(ANALYSIS_DIR / "threads")]
+        r = subprocess.run(argv, capture_output=True, text=True)
+        print((r.stdout + r.stderr).strip(), flush=True)
 
 
 if __name__ == "__main__":

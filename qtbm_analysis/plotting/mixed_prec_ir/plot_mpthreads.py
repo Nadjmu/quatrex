@@ -88,7 +88,7 @@ def thread_count(attrs):
     return None
 
 
-def collect(h5path, solvers=None):
+def collect(h5path, solvers=None, want_rhs=None):
     """
     (material, {solver: {threads: (ref_ms, [speedups])}}, skipped).
 
@@ -96,7 +96,7 @@ def collect(h5path, solvers=None):
     same index and solver was measured: the speedup is a ratio against that
     solve, and without it there is no ratio to take.
     """
-    material, data, skipped = None, {}, []
+    material, data, skipped, used = None, {}, [], {}
     for name in experiment_names(h5path):
         _, attrs, columns = load_experiment(h5path, name)
         runs = table_rows(columns)
@@ -106,13 +106,17 @@ def collect(h5path, solvers=None):
             skipped.append((name, "no thread count recorded"))
             continue
 
-        ref, refined = {}, {}
+        ref, refined, seen = {}, {}, {}
         for row in runs:
+            if want_rhs is not None and int(row["n_rhs"]) != want_rhs:
+                continue
             key = (int(row["idx"]), row["solver"])
+            seen[int(row["idx"])] = int(row["n_rhs"])
             if row["variant"] == REFERENCE:
                 ref[key] = float(row["total_s"])
             elif row["variant"] == REFINED and row["converged"]:
                 refined[key] = float(row["total_s"])
+        used.update(seen)
 
         for key, t in refined.items():
             idx, solver = key
@@ -125,7 +129,7 @@ def collect(h5path, solvers=None):
             slot[0].append(t_ref * 1e3)
             slot[1].append(t_ref / t)
 
-    return material, data, skipped
+    return material, data, skipped, used
 
 
 def _order(data):
@@ -134,16 +138,26 @@ def _order(data):
     return known + [s for s in sorted(data) if s not in known]
 
 
-def plot(files, out_path, solvers=None):
-    collected, skipped_all = [], []
+def plot(files, out_path, solvers=None, want_rhs=None):
+    # Merged by material, not by file: a sweep writes one file per material
+    # per thread count, and all of a material's counts belong on one line.
+    merged, used_by, skipped_all = {}, {}, []
     for path in files:
-        material, data, skipped = collect(path, solvers)
+        material, data, skipped, used = collect(path, solvers, want_rhs)
         skipped_all += [(material, n, why) for n, why in skipped]
-        if data:
-            collected.append((material, data))
-        else:
+        if not data:
             print(f"  [skip] {path}: no usable rows")
+            continue
+        into = merged.setdefault(material, {})
+        for solver, byn in data.items():
+            slot = into.setdefault(solver, {})
+            for n, (refs, speeds) in byn.items():
+                have = slot.setdefault(n, ([], []))
+                have[0].extend(refs)
+                have[1].extend(speeds)
+        used_by.setdefault(material, {}).update(used)
 
+    collected = list(merged.items())          # insertion order = file order
     if not collected:
         print("  [skip] nothing to draw")
         return
@@ -177,7 +191,12 @@ def plot(files, out_path, solvers=None):
                     ax_s.plot([n] * len(per_index), per_index, marker=marker,
                               ms=3.0, lw=0, color=colour, alpha=0.35)
 
-        ax_t.set_title(material, fontsize=10)
+        rhs_seen = sorted(set(used_by.get(material, {}).values()))
+        n_idx = len(used_by.get(material, {}))
+        rhs_text = ("n_rhs " + "/".join(str(r) for r in rhs_seen)
+                    if rhs_seen else "n_rhs ?")
+        ax_t.set_title(f"{material}\n{rhs_text},  {n_idx} indices",
+                       fontsize=9.5)
         ax_t.set_yscale("log")
         ax_t.grid(True, which="both", alpha=0.25, lw=0.5)
         ax_s.grid(True, alpha=0.25, lw=0.5)
@@ -218,10 +237,14 @@ def plot(files, out_path, solvers=None):
     fig.legend(handles=handles, loc="lower center", ncol=len(handles),
                frameon=False, fontsize=9, bbox_to_anchor=(0.5, 0.005))
 
+    scope = ("" if want_rhs is None
+             else f"   at {want_rhs} right-hand side"
+                  f"{'s' if want_rhs != 1 else ''} per energy")
     fig.suptitle(
-        "cost of mixed-precision refinement against the BLAS thread count\n"
-        "top: the complex128 solve the speedup is taken against;  "
-        "bottom: LU-IR over it, above 1 = mixed precision is faster",
+        f"cost of mixed-precision refinement against the BLAS thread count"
+        f"{scope}\n"
+        f"top: the complex128 solve the speedup is taken against;  "
+        f"bottom: LU-IR over it, above 1 = mixed precision is faster",
         fontsize=9)
     fig.subplots_adjust(top=0.87, bottom=0.14, left=0.075, right=0.985,
                         hspace=0.10, wspace=0.08)
@@ -232,6 +255,7 @@ def plot(files, out_path, solvers=None):
         print(f"  [note] {material} experiment {name} not drawn: {why}")
 
     _report(collected, out_path.with_name(out_path.stem + "_data.txt"), files)
+    return True
 
 
 def _report(collected, path, files_drawn):
@@ -264,6 +288,11 @@ def main():
                          "one per material")
     ap.add_argument("--solvers", nargs="+", default=None, metavar="NAME",
                     help="draw only these solvers")
+    ap.add_argument("--n-rhs", type=int, default=None, metavar="N",
+                    help="keep only rows with this many right-hand sides. "
+                         "Speedup falls with n_rhs as well as with the thread "
+                         "count, so a figure pooled over several n_rhs mixes "
+                         "the two and cannot be read as either")
     cli.add_output(ap, outdir_help="output directory (default: beside the "
                                    "first input file)")
     args = ap.parse_args()
@@ -275,7 +304,9 @@ def main():
 
     outdir = Path(args.outdir) if args.outdir else files[0].parent
     outdir.mkdir(parents=True, exist_ok=True)
-    plot(files, outdir / "perf_threads.png", solvers=args.solvers)
+    name = ("perf_threads.png" if args.n_rhs is None
+            else f"perf_threads_rhs{args.n_rhs}.png")
+    plot(files, outdir / name, solvers=args.solvers, want_rhs=args.n_rhs)
 
 
 if __name__ == "__main__":
