@@ -246,8 +246,12 @@ def plot(files, out_path, solvers=None, want_rhs=None):
         f"top: the complex128 solve the speedup is taken against;  "
         f"bottom: LU-IR over it, above 1 = mixed precision is faster",
         fontsize=9)
+    # wspace has to clear the top row's y tick labels. Each top panel carries
+    # its own log scale, since the materials differ by two orders of
+    # magnitude, so every column draws its own labels and a narrow gap puts
+    # them on top of the panel to their left.
     fig.subplots_adjust(top=0.87, bottom=0.14, left=0.075, right=0.985,
-                        hspace=0.10, wspace=0.08)
+                        hspace=0.10, wspace=0.30)
     style.plot_provenance()
     style.save_figure(fig, out_path)
 
