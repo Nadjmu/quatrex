@@ -66,6 +66,10 @@ REFINED = "c64_ir"
 REFERENCE = "c128"
 BREAK_EVEN = 1.0
 
+# What each refined variant is called in a label. mpperf.py names the variants;
+# these are the method names used in the figure text.
+METHOD_LABEL = {"c64_ir": "LU-IR", "c64_gmres": "GMRES-IR"}
+
 
 def thread_count(attrs):
     """
@@ -88,7 +92,7 @@ def thread_count(attrs):
     return None
 
 
-def collect(h5path, solvers=None, want_rhs=None):
+def collect(h5path, solvers=None, want_rhs=None, refined_variant=REFINED):
     """
     (material, {solver: {threads: (ref_ms, [speedups])}}, skipped).
 
@@ -114,7 +118,7 @@ def collect(h5path, solvers=None, want_rhs=None):
             seen[int(row["idx"])] = int(row["n_rhs"])
             if row["variant"] == REFERENCE:
                 ref[key] = float(row["total_s"])
-            elif row["variant"] == REFINED and row["converged"]:
+            elif row["variant"] == refined_variant and row["converged"]:
                 refined[key] = float(row["total_s"])
         used.update(seen)
 
@@ -138,12 +142,13 @@ def _order(data):
     return known + [s for s in sorted(data) if s not in known]
 
 
-def plot(files, out_path, solvers=None, want_rhs=None):
+def plot(files, out_path, solvers=None, want_rhs=None, refined=REFINED):
     # Merged by material, not by file: a sweep writes one file per material
     # per thread count, and all of a material's counts belong on one line.
     merged, used_by, skipped_all = {}, {}, []
     for path in files:
-        material, data, skipped, used = collect(path, solvers, want_rhs)
+        material, data, skipped, used = collect(path, solvers, want_rhs,
+                                                refined)
         skipped_all += [(material, n, why) for n, why in skipped]
         if not data:
             print(f"  [skip] {path}: no usable rows")
@@ -208,7 +213,8 @@ def plot(files, out_path, solvers=None, want_rhs=None):
         ax_s.set_xlabel("BLAS threads")
         if col == 0:
             ax_t.set_ylabel("complex128 direct solve [ms]")
-            ax_s.set_ylabel("LU-IR speedup over complex128")
+            ax_s.set_ylabel(f"{METHOD_LABEL.get(refined, refined)} speedup "
+                            f"over complex128")
 
     # One shared speedup axis, so the columns can be compared to each other
     # and not only within themselves. Taken from the data rather than from the
@@ -244,7 +250,8 @@ def plot(files, out_path, solvers=None, want_rhs=None):
         f"cost of mixed-precision refinement against the BLAS thread count"
         f"{scope}\n"
         f"top: the complex128 solve the speedup is taken against;  "
-        f"bottom: LU-IR over it, above 1 = mixed precision is faster",
+        f"bottom: {METHOD_LABEL.get(refined, refined)} over it, "
+        f"above 1 = mixed precision is faster",
         fontsize=9)
     # wspace has to clear the top row's y tick labels. Each top panel carries
     # its own log scale, since the materials differ by two orders of
@@ -258,11 +265,12 @@ def plot(files, out_path, solvers=None, want_rhs=None):
     for material, name, why in skipped_all:
         print(f"  [note] {material} experiment {name} not drawn: {why}")
 
-    _report(collected, out_path.with_name(out_path.stem + "_data.txt"), files)
+    _report(collected, out_path.with_name(out_path.stem + "_data.txt"),
+            files, refined)
     return True
 
 
-def _report(collected, path, files_drawn):
+def _report(collected, path, files_drawn, refined=REFINED):
     """The numbers behind the figure, as every plotting script here writes."""
     series = {}
     for material, data in collected:
@@ -278,10 +286,11 @@ def _report(collected, path, files_drawn):
                                        for n in counts]),
             }
     style.write_data_report(
-        path, title="LU-IR speedup against BLAS thread count",
+        path, title=f"{METHOD_LABEL.get(refined, refined)} speedup against "
+                    f"BLAS thread count",
         source=[str(p) for p in files_drawn],
         series=series,
-        config={"reference variant": REFERENCE, "refined variant": REFINED,
+        config={"reference variant": REFERENCE, "refined variant": refined,
                 "point": "median over the indices at that thread count"})
 
 
@@ -292,6 +301,11 @@ def main():
                          "one per material")
     ap.add_argument("--solvers", nargs="+", default=None, metavar="NAME",
                     help="draw only these solvers")
+    ap.add_argument("--refined", default=REFINED,
+                    choices=tuple(METHOD_LABEL),
+                    help=f"the refined variant to take the speedup of "
+                         f"(default {REFINED}). A GMRES-IR batch records "
+                         f"c64_gmres instead")
     ap.add_argument("--n-rhs", type=int, default=None, metavar="N",
                     help="keep only rows with this many right-hand sides. "
                          "Speedup falls with n_rhs as well as with the thread "
@@ -311,7 +325,7 @@ def main():
     stem = ("perf_threads" if args.n_rhs is None
             else f"perf_threads_rhs{args.n_rhs}")
     plot(files, outdir / f"{stem}.{args.format}",
-         solvers=args.solvers, want_rhs=args.n_rhs)
+         solvers=args.solvers, want_rhs=args.n_rhs, refined=args.refined)
 
 
 if __name__ == "__main__":

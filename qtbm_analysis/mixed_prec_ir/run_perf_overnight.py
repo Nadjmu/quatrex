@@ -123,6 +123,24 @@ THREADS = THREAD_LIST[0]
 os.environ["OMP_NUM_THREADS"] = THREADS
 os.environ["OPENBLAS_NUM_THREADS"] = THREADS
 
+def _inner_from_argv(default="direct"):
+    """
+    --inner, read before argparse for the same reason as --threads: the output
+    paths below depend on it, and they are module constants.
+    """
+    argv = sys.argv[1:]
+    for i, a in enumerate(argv):
+        if a == "--inner" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--inner="):
+            return a.split("=", 1)[1]
+    return default
+
+
+INNER = _inner_from_argv()
+if INNER not in ("direct", "gmres", "both"):
+    sys.exit(f"--inner takes direct, gmres or both, got {INNER!r}")
+
 import h5py  # noqa: E402  (after the thread cap, before anything numeric)
 
 HERE = Path(__file__).resolve().parent
@@ -131,8 +149,13 @@ PLOT = HERE.parent / "plotting" / "mixed_prec_ir" / "plot_mpperf.py"
 THREAD_PLOT = HERE.parent / "plotting" / "mixed_prec_ir" / "plot_mpthreads.py"
 HDF5_DIR = Path("/scratch/yimili/matrices2/hdf5")
 ANALYSIS_DIR = Path("/scratch/yimili/mixed-precision-IR")
-LOG_DIR = Path("/scratch/yimili/mpperf_overnight_logs")
-INDEX_HTML = ANALYSIS_DIR / "PERF_EXPERIMENT_INDEX.html"
+# LU-IR keeps the original tree. Any other inner solve writes to its own tree
+# beside it. The thread figure pools every experiment it finds at a thread
+# count, so two inner solves sharing one file would be drawn as one curve.
+BASE_DIR = ANALYSIS_DIR if INNER == "direct" else ANALYSIS_DIR / INNER
+LOG_DIR = Path("/scratch/yimili/mpperf_overnight_logs"
+               + ("" if INNER == "direct" else f"_{INNER}"))
+INDEX_HTML = BASE_DIR / "PERF_EXPERIMENT_INDEX.html"
 
 # Eight indices per group, spread over that group's kappa_inf range. Keyed by
 # (material, n_rhs); a group with no indices at that n_rhs is simply absent.
@@ -175,9 +198,6 @@ YMAX = {"si-bulk": 200.0, "graphene": 130.0,
 SOLVERS = ["block-thomas", "mumps", "cudss", "superlu"]
 REPEATS = "9"
 REDUCE = "min"
-# LU-IR only. The GMRES-IR inner solve has never been measured on this node,
-# so it is not what an unattended overnight batch should be finding out.
-INNER = "direct"
 MAX_ATTEMPTS = 3
 
 _EXPERIMENT_RE = re.compile(r"wrote .+:/experiments/(\d+)")
@@ -203,9 +223,9 @@ def out_root(threads):
     two counts never share a file: a pooled figure drawn over one file would
     otherwise put measurements from different machines on the same line.
     """
-    if len(THREAD_LIST) == 1:
-        return ANALYSIS_DIR
-    return ANALYSIS_DIR / f"t{threads}"
+    if INNER == "direct" and len(THREAD_LIST) == 1:
+        return BASE_DIR
+    return BASE_DIR / f"t{threads}"
 
 
 def perf_h5(material, threads=None):
@@ -514,6 +534,14 @@ def main():
                          f"once at each count, into t<N>/ directories. Read "
                          f"before argparse, since the cap must be set before "
                          f"numpy is imported; listed here so --help shows it")
+    ap.add_argument("--inner", default=INNER,
+                    choices=("direct", "gmres", "both"),
+                    help=f"inner correction solve (default {INNER}). direct "
+                         f"is LU-IR, gmres is GMRES-IR, both times the two "
+                         f"side by side. Anything but direct writes to its "
+                         f"own tree under the analysis directory, so the two "
+                         f"are never pooled into one figure. Read before "
+                         f"argparse, since the output paths depend on it")
     args = ap.parse_args()
 
     if args.replot:
@@ -524,7 +552,7 @@ def main():
         sys.exit(1 if preflight() else 0)
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
+    BASE_DIR.mkdir(parents=True, exist_ok=True)
 
     if preflight() and not args.force:
         print("\nrefusing to start: fix SELECTION, or pass --force to run "
@@ -607,7 +635,7 @@ def thread_roots():
     one.
     """
     found = {}
-    for path in ANALYSIS_DIR.glob("t*"):
+    for path in BASE_DIR.glob("t*"):
         if path.is_dir() and path.name[1:].isdigit():
             found[int(path.name[1:])] = path
     return [found[n] for n in sorted(found)]
@@ -634,7 +662,9 @@ def draw_threads():
             continue
         banner(f"thread figure: n_rhs={rhs}")
         argv = [sys.executable, str(THREAD_PLOT), *files,
-                "--n-rhs", str(rhs), "--outdir", str(ANALYSIS_DIR / "threads")]
+                "--n-rhs", str(rhs), "--outdir", str(BASE_DIR / "threads")]
+        if INNER == "gmres":
+            argv += ["--refined", "c64_gmres"]
         r = subprocess.run(argv, capture_output=True, text=True)
         print((r.stdout + r.stderr).strip(), flush=True)
 
