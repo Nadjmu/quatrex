@@ -5,8 +5,13 @@ List energy indices by kappa_inf bucket, from a condition_est.py output file.
 Input
 -----
 A condition-est analysis file (condition_est.py's output), holding the
-condition group written there: indices, cond_2, cond_inf, valid, and the
-grid_energy_min / resolution attributes copied from the material file.
+condition group written there: indices, cond_2, cond_inf, cond_skeel_x, valid,
+and the grid_energy_min / resolution attributes copied from the material
+file. cond_skeel_x is cond(M, x), the componentwise condition number for the
+actual stored right-hand side; it is NaN at an index whose right-hand side has
+no columns, and it is absent from a file made before condition_est.py wrote
+that column, in which case every row prints "n/a" for it instead of the
+listing failing.
 
 Only rows with valid == True are considered; energy(i) = grid_energy_min +
 resolution * i.
@@ -24,8 +29,8 @@ Buckets widen by a factor of 10 above --first-edge, e.g. 0-100, 100-1e3,
 1e3-1e4, 1e4-1e5, ..., covering the observed kappa_inf range -- kappa_inf is
 the bucketing variable, matching the LU-IR bound, which is stated in the
 infinity norm (see mixed_prec_ir/README.md); kappa_2 is listed alongside it.
-For each bucket, the index, energy, both condition numbers and the number of
-right-hand sides of every row falling in it, in index order, unless
+For each bucket, the index, energy, kappa_inf, kappa_2, cond(M, x) and the
+number of right-hand sides of every row falling in it, in index order, unless
 --max-per-bin caps it.
 
 The listing is written to --out as well as printed, so a full (uncapped)
@@ -131,6 +136,9 @@ def main():
         indices = g["indices"][:]
         cond_2 = g["cond_2"][:]
         cond_inf = g["cond_inf"][:]
+        cond_skeel_x = (g["cond_skeel_x"][:] if "cond_skeel_x" in g
+                        else np.full(indices.shape, np.nan))
+        have_skeel_x = "cond_skeel_x" in g
         valid = g["valid"][:]
         grid_energy_min = g.attrs.get("grid_energy_min")
         resolution = g.attrs.get("resolution")
@@ -144,7 +152,13 @@ def main():
         return grid_energy_min + resolution * idx
 
     try:
-        indices, cond_2, cond_inf = indices[valid], cond_2[valid], cond_inf[valid]
+        if not have_skeel_x:
+            emit("[warning] no cond_skeel_x column in this file; run "
+                 "condition_est.py --only-skeel to add it. Showing n/a for "
+                 "cond(M, x) on every row.")
+
+        indices, cond_2, cond_inf, cond_skeel_x = \
+            indices[valid], cond_2[valid], cond_inf[valid], cond_skeel_x[valid]
         if indices.size == 0:
             emit("no valid rows")
             return
@@ -152,8 +166,9 @@ def main():
         if valence is not None and conduction is not None:
             energies = np.array([energy_of(int(i)) for i in indices])
             in_gap = (energies >= valence) & (energies <= conduction)
-            indices, cond_2, cond_inf = \
-                indices[~in_gap], cond_2[~in_gap], cond_inf[~in_gap]
+            indices, cond_2, cond_inf, cond_skeel_x = (
+                indices[~in_gap], cond_2[~in_gap], cond_inf[~in_gap],
+                cond_skeel_x[~in_gap])
             if indices.size == 0:
                 emit("no valid rows outside the band gap "
                      f"[{valence:.4f}, {conduction:.4f}] eV")
@@ -162,7 +177,8 @@ def main():
             emit("[warning] no band edges recorded; showing all indices")
 
         order = np.argsort(indices)
-        indices, cond_2, cond_inf = indices[order], cond_2[order], cond_inf[order]
+        indices, cond_2, cond_inf, cond_skeel_x = (
+            indices[order], cond_2[order], cond_inf[order], cond_skeel_x[order])
 
         nrhs = rhs_counts(source, indices)
 
@@ -179,8 +195,10 @@ def main():
                 e = energy_of(idx)
                 e_str = f"{e:.4f} eV" if e is not None else "unknown"
                 n = nrhs.get(idx, "n/a")
+                cx = (f"{cond_skeel_x[i]:.3e}" if have_skeel_x
+                     and np.isfinite(cond_skeel_x[i]) else "n/a")
                 emit(f"  idx={idx:<6} E={e_str:<14} kappa_inf={cond_inf[i]:.3e}  "
-                     f"kappa_2={cond_2[i]:.3e}  nrhs={n}")
+                     f"kappa_2={cond_2[i]:.3e}  cond_skeel_x={cx:<10}  nrhs={n}")
     finally:
         out_fh.close()
 
