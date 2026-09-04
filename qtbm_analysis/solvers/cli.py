@@ -671,8 +671,9 @@ def add_inv_dtype(ap, default="float32"):
 # silently wrong result.
 
 
-def add_output(ap, material=True, outdir_default=None, outdir_help=None):
-    """--outdir, and optionally --material."""
+def add_output(ap, material=True, outdir_default=None, outdir_help=None,
+               figure_format=False):
+    """--outdir, and optionally --material and --format."""
     ap.add_argument("--outdir", type=str, default=outdir_default,
                     metavar="DIR",
                     help=outdir_help or "output directory")
@@ -680,4 +681,11 @@ def add_output(ap, material=True, outdir_default=None, outdir_help=None):
         ap.add_argument("--material", type=str, default=None, metavar="NAME",
                         help="label used in output filenames and figure "
                              "titles (default: derived from the input path)")
+    if figure_format:
+        ap.add_argument("--format", type=str, default="png",
+                        choices=("png", "pdf", "svg"), metavar="EXT",
+                        help="figure file type. png is a raster at 150 dpi "
+                             "and is what the HTML index shows. pdf and svg "
+                             "are vector and stay sharp at any size, which is "
+                             "what a LaTeX document wants (default: png)")
     return ap

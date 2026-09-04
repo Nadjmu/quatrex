@@ -294,7 +294,7 @@ def main():
                          "count, so a figure pooled over several n_rhs mixes "
                          "the two and cannot be read as either")
     cli.add_output(ap, outdir_help="output directory (default: beside the "
-                                   "first input file)")
+                                   "first input file)", figure_format=True)
     args = ap.parse_args()
 
     files = [Path(p) for p in args.h5path]
@@ -304,9 +304,10 @@ def main():
 
     outdir = Path(args.outdir) if args.outdir else files[0].parent
     outdir.mkdir(parents=True, exist_ok=True)
-    name = ("perf_threads.png" if args.n_rhs is None
-            else f"perf_threads_rhs{args.n_rhs}.png")
-    plot(files, outdir / name, solvers=args.solvers, want_rhs=args.n_rhs)
+    stem = ("perf_threads" if args.n_rhs is None
+            else f"perf_threads_rhs{args.n_rhs}")
+    plot(files, outdir / f"{stem}.{args.format}",
+         solvers=args.solvers, want_rhs=args.n_rhs)
 
 
 if __name__ == "__main__":

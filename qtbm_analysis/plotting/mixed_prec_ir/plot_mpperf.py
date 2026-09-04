@@ -1178,7 +1178,8 @@ def main():
                          "axis is always in ms; without this it is sized to "
                          "the tallest bar plus 8%%")
     cli.add_output(ap, outdir_help="output directory (default: perf<NNNN>/ "
-                                   "beside the performance file)")
+                                   "beside the performance file)",
+                   figure_format=True)
     args = ap.parse_args()
 
     h5path = Path(args.h5path)
@@ -1192,7 +1193,7 @@ def main():
         _, attrs, _ = load_experiment(h5path, args.experiment)
         material = args.material or attrs.get("material") or h5path.stem
         outdir = Path(args.outdir) if args.outdir else h5path.parent
-        plot_nrhs(h5path, outdir / f"{material}_perf_nrhs.png",
+        plot_nrhs(h5path, outdir / f"{material}_perf_nrhs.{args.format}",
                   wanted=args.experiments, solvers=args.solvers,
                   limit=args.stability_limit or 2.0)
         return
@@ -1214,7 +1215,7 @@ def main():
                          f"add it to plotting/style.py SOLVER_STYLE")
 
     limit = args.stability_limit or float(attrs.get("stability_limit", 2.0))
-    plot_summary(rows, attrs, outdir / f"{material}_perf_summary.png",
+    plot_summary(rows, attrs, outdir / f"{material}_perf_summary.{args.format}",
                  solvers, ymax=args.ymax, limit=limit)
     # Beside the figure, the numbers behind it: see write_report.
     write_report(outdir / f"{material}_perf_report.txt", h5path, name, attrs,
