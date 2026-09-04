@@ -597,6 +597,22 @@ def main():
            f"-- see {INDEX_HTML}")
 
 
+def thread_roots():
+    """
+    Every t<N>/ directory that already holds results, ordered by N.
+
+    Read off the filesystem rather than from THREAD_LIST, because the thread
+    figure is shared: a run that measures only two counts must extend the
+    curves with those two, not replace a six-count figure with a two-point
+    one.
+    """
+    found = {}
+    for path in ANALYSIS_DIR.glob("t*"):
+        if path.is_dir() and path.name[1:].isdigit():
+            found[int(path.name[1:])] = path
+    return [found[n] for n in sorted(found)]
+
+
 def draw_threads():
     """
     The speedup-against-thread-count figure, one per n_rhs.
@@ -608,8 +624,12 @@ def draw_threads():
     every_rhs = sorted({rhs for (_m, rhs) in SELECTION})
     for rhs in every_rhs:
         materials = [m for (m, r) in SELECTION if r == rhs]
-        files = [str(perf_h5(m, t)) for t in THREAD_LIST for m in materials
-                 if perf_h5(m, t).exists()]
+        files = []
+        for root in thread_roots():
+            for m in materials:
+                path = root / m / f"{m}_perf.h5"
+                if path.exists():
+                    files.append(str(path))
         if not files:
             continue
         banner(f"thread figure: n_rhs={rhs}")
