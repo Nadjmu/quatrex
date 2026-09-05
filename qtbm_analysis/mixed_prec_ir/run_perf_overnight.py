@@ -123,23 +123,34 @@ THREADS = THREAD_LIST[0]
 os.environ["OMP_NUM_THREADS"] = THREADS
 os.environ["OPENBLAS_NUM_THREADS"] = THREADS
 
-def _inner_from_argv(default="direct"):
+def _value_from_argv(flag, default):
     """
-    --inner, read before argparse for the same reason as --threads: the output
-    paths below depend on it, and they are module constants.
+    One option's value, read before argparse for the same reason as --threads:
+    the output paths below depend on it, and they are module constants. The
+    string is kept as typed, since it also names a directory.
     """
     argv = sys.argv[1:]
     for i, a in enumerate(argv):
-        if a == "--inner" and i + 1 < len(argv):
+        if a == flag and i + 1 < len(argv):
             return argv[i + 1]
-        if a.startswith("--inner="):
+        if a.startswith(flag + "="):
             return a.split("=", 1)[1]
     return default
 
 
-INNER = _inner_from_argv()
+INNER = _value_from_argv("--inner", "direct")
 if INNER not in ("direct", "gmres", "both"):
     sys.exit(f"--inner takes direct, gmres or both, got {INNER!r}")
+
+# The inner GMRES tolerance decides how many inner iterations a correction
+# costs and is therefore the main term in the runtime of GMRES-IR. Two
+# tolerances are two different methods as far as a timing is concerned, so
+# each writes to its own tree.
+GMRES_TOL = _value_from_argv("--gmres-tol", "1e-8")
+try:
+    float(GMRES_TOL)
+except ValueError:
+    sys.exit(f"--gmres-tol takes a number, got {GMRES_TOL!r}")
 
 import h5py  # noqa: E402  (after the thread cap, before anything numeric)
 
@@ -152,9 +163,14 @@ ANALYSIS_DIR = Path("/scratch/yimili/mixed-precision-IR")
 # LU-IR keeps the original tree. Any other inner solve writes to its own tree
 # beside it. The thread figure pools every experiment it finds at a thread
 # count, so two inner solves sharing one file would be drawn as one curve.
-BASE_DIR = ANALYSIS_DIR if INNER == "direct" else ANALYSIS_DIR / INNER
+if INNER == "direct":
+    BASE_DIR = ANALYSIS_DIR
+    _TAG = ""
+else:
+    _TAG = INNER if INNER == "both" else f"gmres/tol{GMRES_TOL}"
+    BASE_DIR = ANALYSIS_DIR / _TAG
 LOG_DIR = Path("/scratch/yimili/mpperf_overnight_logs"
-               + ("" if INNER == "direct" else f"_{INNER}"))
+               + ("" if not _TAG else "_" + _TAG.replace("/", "_")))
 INDEX_HTML = BASE_DIR / "PERF_EXPERIMENT_INDEX.html"
 
 # Eight indices per group, spread over that group's kappa_inf range. Keyed by
@@ -334,6 +350,7 @@ def run_group(material, rhs, indices, attempt, log_dir, threads):
             "--idx", *[str(i) for i in indices],
             "--solvers", *SOLVERS,
             "--inner", INNER,
+            "--gmres-tol", GMRES_TOL,
             "--repeats", REPEATS,
             "--reduce", REDUCE]
 
@@ -542,6 +559,13 @@ def main():
                          f"own tree under the analysis directory, so the two "
                          f"are never pooled into one figure. Read before "
                          f"argparse, since the output paths depend on it")
+    ap.add_argument("--gmres-tol", default=GMRES_TOL, metavar="TOL",
+                    help=f"inner GMRES tolerance (default {GMRES_TOL}). Each "
+                         f"tolerance writes to gmres/tol<TOL>/, because the "
+                         f"tolerance sets the inner iteration count and so "
+                         f"two tolerances are two different costs. Read "
+                         f"before argparse, since the output paths depend "
+                         f"on it")
     args = ap.parse_args()
 
     if args.replot:
