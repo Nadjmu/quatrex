@@ -229,6 +229,30 @@ def _bar_x(slot_i, s_i, v_i, share, bar_w):
             + v_i * bar_w + bar_w / 2)
 
 
+def _tallest_over(table, order, solvers, variants, phases, scale):
+    """
+    The tallest stacked bar among `solvers`, in the panel's own units.
+
+    Same sum as _draw_panel puts on the axis, so a limit derived from it lands
+    where the bar does. Used to size the time axis by the solvers that have to
+    stay readable rather than by the slowest one on the panel.
+    """
+    tallest = 0.0
+    for idx in order:
+        for solver in solvers:
+            for variant in variants:
+                row = table[idx].get(solver, {}).get(variant)
+                if row is None:
+                    continue
+                total = 0.0
+                for phase in phases:
+                    height = float(row.get(phase, 0.0)) * scale
+                    if np.isfinite(height) and height > 0:
+                        total += height
+                tallest = max(tallest, total)
+    return tallest
+
+
 def _draw_panel(ax, table, order, present, variants, phases, phase_style,
                 scale, marks=None):
     """
@@ -278,7 +302,8 @@ def _draw_panel(ax, table, order, present, variants, phases, phase_style,
     return tallest
 
 
-def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
+def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0,
+                 ymax_fit=None, ymax_fill=0.8):
     """
     Two panels sharing one x axis: runtime above, memory below, the groups
     ordered by n_rhs and then by kappa_inf(A). See the module docstring.
@@ -349,7 +374,19 @@ def plot_summary(rows, attrs, out_path, solvers, ymax=None, limit=2.0):
     # about, at the cost of the data it is annotating. Whiskers that exceed
     # the top are clipped and marked with a caret instead; the bar is also
     # outlined in red and the run reported as unstable, so nothing is hidden.
-    top_ms = 1.08 * tallest if ymax is None else float(ymax)
+    if ymax is not None:
+        top_ms = float(ymax)
+    elif ymax_fit:
+        # Size the axis by the solvers that have to stay readable. One solver
+        # an order of magnitude slower than the rest otherwise sets the limit
+        # and leaves the others in the bottom fifth of the panel, where a pair
+        # of bars cannot be compared. Anything taller is clipped and carries a
+        # caret, so nothing is hidden.
+        fit = [s for s in present if s in ymax_fit]
+        reach = _tallest_over(table, order, fit, variants, PHASES, scale)
+        top_ms = reach / ymax_fill if reach > 0 else 1.08 * tallest
+    else:
+        top_ms = 1.08 * tallest
     ax_t.set_ylim(top=top_ms)
     _draw_whiskers(ax_t, table, order, present, variants, scale, top_ms)
     ax_t.set_ylabel("time [ms]")
@@ -1177,6 +1214,14 @@ def main():
                          "that one slow solver does not flatten the rest. The "
                          "axis is always in ms; without this it is sized to "
                          "the tallest bar plus 8%%")
+    ap.add_argument("--ymax-fit", nargs="+", default=None, metavar="NAME",
+                    help="size the time axis so the tallest bar among these "
+                         "solvers reaches --ymax-fill of it. Use where one "
+                         "solver is much slower than the rest and would "
+                         "otherwise set the limit. Ignored if --ymax is given")
+    ap.add_argument("--ymax-fill", type=float, default=0.8, metavar="F",
+                    help="fraction of the time axis the tallest --ymax-fit "
+                         "bar should reach (default 0.8)")
     cli.add_output(ap, outdir_help="output directory (default: perf<NNNN>/ "
                                    "beside the performance file)",
                    figure_format=True)
@@ -1216,7 +1261,8 @@ def main():
 
     limit = args.stability_limit or float(attrs.get("stability_limit", 2.0))
     plot_summary(rows, attrs, outdir / f"{material}_perf_summary.{args.format}",
-                 solvers, ymax=args.ymax, limit=limit)
+                 solvers, ymax=args.ymax, limit=limit,
+                 ymax_fit=args.ymax_fit, ymax_fill=args.ymax_fill)
     # Beside the figure, the numbers behind it: see write_report.
     write_report(outdir / f"{material}_perf_report.txt", h5path, name, attrs,
                  rows, limit)

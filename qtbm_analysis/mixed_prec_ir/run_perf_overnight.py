@@ -198,18 +198,16 @@ SELECTION = {
 # last group finishes.
 MATERIAL_ORDER = ["carbon-nanotube", "carbon-chain", "si-bulk", "graphene"]
 
-# Where one solver is so much slower than the rest that it sets the y axis and
-# flattens them, the time panel is clipped at this many milliseconds and the
-# bars that run past it are cut and marked with a caret. On si-bulk and
-# graphene SuperLU is 4 to 6 times the next slowest solver -- it is
-# single-threaded, and these are the two largest matrices -- which leaves the
-# other three in the bottom fifth of the panel, where a pair of bars cannot be
-# compared. One value per material rather than per experiment, so a material's
-# figures stay comparable with each other. None means the axis is sized to the
-# tallest bar. Kept here rather than passed by hand so that --replot draws the
-# same figures the batch did.
-YMAX = {"si-bulk": 200.0, "graphene": 130.0,
-        "carbon-nanotube": None, "carbon-chain": None}
+# One solver is often much slower than the rest -- SuperLU is single threaded
+# and is 6.6 and 8.8 times the fastest solver on bulk silicon and graphene --
+# and sizing the time axis to it leaves the others in the bottom fifth of the
+# panel, where a pair of bars cannot be compared. The axis is instead sized so
+# that the tallest bar among these solvers reaches 80% of it. Anything taller
+# is clipped and carries a caret. This replaces a per-material limit in
+# milliseconds, which had to be retuned whenever the thread count changed the
+# runtimes.
+YMAX_FIT = ["block-thomas", "mumps", "cudss"]
+YMAX_FILL = "0.8"
 
 SOLVERS = ["block-thomas", "mumps", "cudss", "superlu"]
 REPEATS = "9"
@@ -386,9 +384,7 @@ def draw(material, name, log_dir, label, threads):
     plog = log_dir / f"{label}__plot.log"
     argv = [sys.executable, str(PLOT), str(perf_h5(material, threads)),
             "--experiment", name]
-    ymax = YMAX.get(material)
-    if ymax is not None:
-        argv += ["--ymax", str(ymax)]
+    argv += ["--ymax-fit", *YMAX_FIT, "--ymax-fill", YMAX_FILL]
     with open(plog, "w") as f:
         f.write(" ".join(argv) + "\n\n")
         f.flush()
@@ -459,7 +455,7 @@ def write_index_html(records, failures):
         parts.append(f"<p><code>{perf_h5(material)}</code></p>")
         parts.append("<table><tr><th>experiment</th><th>n_rhs</th>"
                      "<th>indices</th><th>rows</th><th>unstable</th>"
-                     "<th>threads</th><th>attempt</th><th>y-max</th>"
+                     "<th>threads</th><th>attempt</th><th>y-axis</th>"
                      "<th>started</th><th>log</th></tr>")
         for r in sorted(rows, key=lambda r: (int(r.get("threads", 8)),
                                             r["rhs"],
@@ -475,7 +471,7 @@ def write_index_html(records, failures):
                          f"<td>{state}</td>"
                          f"<td>{r.get('threads', THREADS)}</td>"
                          f"<td>{r['attempt']} of {MAX_ATTEMPTS}</td>"
-                         f"<td>{YMAX.get(material) or 'auto'}</td>"
+                         f"<td>fit {'/'.join(YMAX_FIT)} @ {YMAX_FILL}</td>"
                          f"<td>{r['timestamp']}</td>"
                          f"<td><code>{r['log'].name}</code></td></tr>")
         parts.append("</table>")
@@ -521,9 +517,7 @@ def replot():
         for name in kept:
             argv = [sys.executable, str(PLOT), str(perf_h5(material)),
                     "--experiment", name]
-            ymax = YMAX.get(material)
-            if ymax is not None:
-                argv += ["--ymax", str(ymax)]
+            argv += ["--ymax-fit", *YMAX_FIT, "--ymax-fill", YMAX_FILL]
             r = subprocess.run(argv, capture_output=True, text=True)
             print(f"  {name}: {'ok' if r.returncode == 0 else 'FAILED'}",
                   flush=True)
